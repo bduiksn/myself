@@ -24,8 +24,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest
-from telethon.tl.types import SendMessageTypingAction, ReactionEmoji
+from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest, TranslateTextRequest
+from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -180,7 +180,7 @@ async def send_phone_request(user_id: int):
     await bot.send_message(
         user_id,
         "📱 برای ادامه، شماره موبایل ایران خودت را از دکمه زیر به اشتراک بگذار.",
-        buttons=[[Button.request_phone("📱 اشتراک‌گذاری شماره", style="success")]],
+        buttons=[[Button.request_phone("📱 اشتراک‌گذاری شماره")]],
     )
 
 
@@ -303,6 +303,7 @@ purchase_state = {}
 active_games = {}
 self_workers = {}
 self_clients = {}
+_self_reply_cache = set()
 
 
 # ============================================================
@@ -391,23 +392,28 @@ async def user_name(user_id: int):
 # ============================================================
 
 SELF_CLOCK_FONTS = {
-    "normal": "0123456789", "bold": "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗", "double": "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡",
-    "sans": "𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫", "sans_bold": "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵", "mono": "𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿",
-    "full": "０１２３４５６７８９", "circled": "⓪①②③④⑤⑥⑦⑧⑨",
+    "normal":"0123456789","bold":"𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟳𝟖𝟗","double":"𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡",
+    "sans":"𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫","sans_bold":"𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵",
+    "mono":"𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿","full":"０１２３４５６７８９",
+    "circled":"⓪①②③④⑤⑥⑦⑧⑨","negative":"⓿❶❷❸❹❺❻❼❽❾",
 }
-SELF_FONT_ALIASES = {"عادی":"normal", "بولد":"bold", "دوبل":"double", "سانس":"sans", "سانس بولد":"sans_bold", "مونو":"mono", "فول":"full", "دایره":"circled"}
+SELF_FONT_ALIASES = {
+    "عادی":"normal","بولد":"bold","دوبل":"double","سانس":"sans","سانس بولد":"sans_bold",
+    "مونو":"mono","فول":"full","دایره":"circled","منفی":"negative"
+}
 SELF_ENGLISH_FONTS = {
     "normal": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
     "bold": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"),
     "italic": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "𝘈𝘉𝘊𝘋𝘌𝘍𝘎𝘏𝘐𝘑𝘒𝘓𝘔𝘕𝘖𝘗𝘘𝘙𝘚𝘛𝘜𝘝𝘞𝘟𝘠𝘡𝘢𝘣𝘤𝘥𝘦𝘧𝘨𝘩𝘪𝘫𝘬𝘭𝘮𝘯𝘰𝘱𝘲𝘳𝘴𝘵𝘶𝘷𝘸𝘹𝘺𝘻"),
     "bold_italic": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛"),
     "monospace": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"),
+    "double": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫"),
 }
-SELF_ENGLISH_FONT_ALIASES = {"عادی":"normal", "بولد":"bold", "ایتالیک":"italic", "بولد ایتالیک":"bold_italic", "مونو":"monospace"}
+SELF_ENGLISH_FONT_ALIASES = {"عادی":"normal","بولد":"bold","ایتالیک":"italic","بولد ایتالیک":"bold_italic","مونو":"monospace","دوبل":"double"}
 SELF_DEFAULTS = {
     "time_name":"on", "clock_font":"normal", "bold":"off", "persian_font":"off", "english_font":"normal",
     "translate":"off", "auto_reply":"off", "auto_reply_text":"سلام، فعلاً در دسترس نیستم.", "auto_read":"off",
-    "typing":"off", "game_mode":"off", "reaction_targets":"[]",
+    "typing":"off", "game_mode":"off", "reaction_targets":"[]", "reaction_emojis":"{}",
 }
 STRETCH_MAP = dict(zip("بپتثجچحخدذرزژسشصضطظعغفقکگلمنهیيك", "بـپـتـثـجـچـحـخـدـذـرـزـژـسـشـصـضـطـظـعـغـفـقـکـگـلـمـنـهـیـيـكـ"))
 
@@ -424,7 +430,24 @@ def self_reaction_targets(uid):
         return set()
 
 def self_save_reaction_targets(uid, targets):
-    self_set(uid, "reaction_targets", json.dumps(sorted(targets)))
+    self_set(uid, "reaction_targets", json.dumps(sorted(int(x) for x in targets)))
+
+def self_reaction_map(uid):
+    try:
+        raw = json.loads(self_get(uid, "reaction_emojis", "{}"))
+        return {int(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+def self_set_reaction(uid, target_id, emoji):
+    mapping = self_reaction_map(uid)
+    mapping[int(target_id)] = emoji
+    self_set(uid, "reaction_emojis", json.dumps(mapping, ensure_ascii=False))
+
+def self_remove_reaction(uid, target_id):
+    mapping = self_reaction_map(uid)
+    mapping.pop(int(target_id), None)
+    self_set(uid, "reaction_emojis", json.dumps(mapping, ensure_ascii=False))
 
 def self_clock(uid):
     now=datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
@@ -435,25 +458,46 @@ def self_transform_english(text, uid):
     return text.translate(SELF_ENGLISH_FONTS.get(self_get(uid,"english_font","normal"), SELF_ENGLISH_FONTS["normal"]))
 
 def self_stretch(text):
-    # Kashida is inserted only between Persian letters; punctuation, spaces and Latin text stay untouched.
-    chars = list(text)
+    if not text:
+        return text
+    non_joining_right = set("اآأإدذرزژوؤء")
+    persian = set("بپتثجچحخسشصضطظعغفقکگلمنهىيیک")
     out = []
-    for i, ch in enumerate(chars):
-        out.append(ch)
-        if ch in STRETCH_MAP:
-            j = i + 1
-            while j < len(chars) and chars[j].isspace():
-                break
-            if j < len(chars) and chars[j] in STRETCH_MAP and (i % 2 == 0):
+    for piece in re.split(r"(\s+)", text):
+        if not piece or piece.isspace() or len(piece) < 4:
+            out.append(piece)
+            continue
+        chars = list(piece)
+        candidates = [i for i in range(len(chars)-1)
+                      if chars[i] in persian and chars[i+1] in persian and chars[i] not in non_joining_right]
+        selected = set(candidates[1::2][:max(1, min(2, len(chars)//5))])
+        for i,ch in enumerate(chars):
+            out.append(ch)
+            if i in selected:
                 out.append("ـ")
     return "".join(out)[:3900]
 
-async def self_translate(text):
+async def self_translate(client, text):
+    if not text.strip():
+        return None
+    try:
+        result = await client(TranslateTextRequest(
+            to_lang="en",
+            text=[TextWithEntities(text=text, entities=[])],
+        ))
+        values = getattr(result, "result", None)
+        if values:
+            translated = getattr(values[0], "text", None)
+            if translated:
+                return translated.strip()
+    except Exception as exc:
+        print(f"[SELF] Telegram translation failed: {exc}")
     try:
         import argostranslate.translate as argos
-        result=argos.translate(text,"fa","en")
+        result = argos.translate(text, "fa", "en")
         return result.strip() if result else None
-    except Exception:
+    except Exception as exc:
+        print(f"[SELF] Argos translation unavailable: {exc}")
         return None
 
 def _self_cb(uid: int, action: str) -> bytes:
@@ -462,11 +506,10 @@ def _self_cb(uid: int, action: str) -> bytes:
 
 def _font_label(kind: str, key: str) -> str:
     labels = {
-        "clock": {"normal": "عادی", "bold": "بولد", "double": "دوبل", "sans": "سانس", "sans_bold": "سانس بولد", "mono": "مونو", "full": "فول", "circled": "دایره"},
-        "english": {"normal": "عادی", "bold": "بولد", "italic": "ایتالیک", "bold_italic": "بولد ایتالیک", "monospace": "مونو"},
+        "clock":{"normal":"عادی","bold":"بولد","double":"دوبل","sans":"سانس","sans_bold":"سانس بولد","mono":"مونو","full":"فول","circled":"دایره","negative":"منفی"},
+        "english":{"normal":"عادی","bold":"بولد","italic":"ایتالیک","bold_italic":"بولد ایتالیک","monospace":"مونو","double":"دوبل"},
     }
     return labels.get(kind, {}).get(key, key)
-
 
 def self_panel_buttons(uid):
     def toggle_style(key):
@@ -743,18 +786,26 @@ async def self_handle_outgoing(event, uid):
         await event.edit(self_font_preview(uid, "english"), parse_mode="html")
         return
 
-    if low in {"ریاکشن ❤️", "ریاکشن ❤", "ریاکشن", "ریاکشن ❤️ + ریپلای", "ریاکشن + ریپلای"}:
+    reaction_match = re.fullmatch(r"ریاکشن(?:\s+(.+?))?", text)
+    if reaction_match:
+        emoji = (reaction_match.group(1) or "❤️").strip()
+        allowed = {"❤️","❤","🧡","💛","💚","💙","💜","🖤","🤍","🤎","🔥","✨","⭐","👍","👎","😂","🤣","😍","🥰","😎","😢","😡","👏","🙏","🎉","💯","⚡","🌹","😈","🕊"}
+        if emoji not in allowed:
+            await event.edit("❌ این ریاکشن پشتیبانی نمی‌شود. مثال: ریاکشن 🔥")
+            return
         if not event.is_reply:
-            await event.edit("❌ روی پیام کاربر ریپلای کن و سپس «ریاکشن ❤️» را بفرست.")
+            await event.edit("❌ روی پیام کاربر ریپلای کن و سپس «ریاکشن 🔥» را بفرست.")
             return
         replied = await event.get_reply_message()
         if not replied or not replied.sender_id:
             await event.edit("❌ کاربر پیدا نشد.")
             return
+        target = int(replied.sender_id)
         targets = self_reaction_targets(uid)
-        targets.add(int(replied.sender_id))
+        targets.add(target)
         self_save_reaction_targets(uid, targets)
-        await event.edit(f"✅ ریاکشن ❤️ برای کاربر `{replied.sender_id}` فعال شد.")
+        self_set_reaction(uid, target, "❤️" if emoji == "❤" else emoji)
+        await event.edit(f"✅ ریاکشن {emoji} برای کاربر `{target}` فعال شد.")
         return
 
     if low in {"حذف ریاکشن", "ریاکشن خاموش", "حذف ریاکشن ❤️", "حذف ریاکشن + ریپلای"}:
@@ -763,9 +814,11 @@ async def self_handle_outgoing(event, uid):
             return
         replied = await event.get_reply_message()
         if replied and replied.sender_id:
+            target = int(replied.sender_id)
             targets = self_reaction_targets(uid)
-            targets.discard(int(replied.sender_id))
+            targets.discard(target)
             self_save_reaction_targets(uid, targets)
+            self_remove_reaction(uid, target)
             await event.edit("✅ ریاکشن خودکار این کاربر حذف شد.")
         return
 
@@ -807,7 +860,7 @@ async def self_handle_outgoing(event, uid):
     transformed = text
     changed = False
     if self_get(uid, "translate") == "on":
-        translated = await self_translate(transformed)
+        translated = await self_translate(event.client, transformed)
         if translated:
             transformed = translated
             changed = True
@@ -823,6 +876,68 @@ async def self_handle_outgoing(event, uid):
     if changed:
         await event.edit(transformed)
 
+
+# ============================================================
+# SELF INCOMING / PRESENCE
+# ============================================================
+
+async def self_handle_incoming(event, uid):
+    client = event.client
+
+    if self_get(uid, "auto_read", "off") == "on":
+        with contextlib.suppress(Exception):
+            await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+
+    if event.sender_id and int(event.sender_id) in self_reaction_targets(uid):
+        emoji = self_reaction_map(uid).get(int(event.sender_id), "❤️")
+        with contextlib.suppress(Exception):
+            await client(SendReactionRequest(
+                peer=event.peer_id,
+                msg_id=event.id,
+                reaction=[ReactionEmoji(emoticon=emoji)],
+            ))
+
+    if event.is_private and self_get(uid, "auto_reply", "off") == "on" and event.sender_id and int(event.sender_id) != int(uid):
+        cache_key = (int(uid), int(event.sender_id))
+        if cache_key not in _self_reply_cache:
+            _self_reply_cache.add(cache_key)
+            with contextlib.suppress(Exception):
+                await event.respond(self_get(uid, "auto_reply_text", "سلام، فعلاً در دسترس نیستم."))
+            asyncio.create_task(_clear_self_reply_cache(cache_key))
+
+async def _clear_self_reply_cache(key):
+    await asyncio.sleep(60)
+    _self_reply_cache.discard(key)
+
+async def _send_presence(client, entity, game=False):
+    try:
+        from telethon.tl.types import SendMessageGamePlayAction
+        action = SendMessageGamePlayAction() if game else SendMessageTypingAction()
+        await client(SetTypingRequest(peer=entity, action=action))
+        return True
+    except Exception:
+        return False
+
+async def _presence_loop(client, uid):
+    while True:
+        try:
+            typing_on = self_get(uid, "typing", "off") == "on"
+            game_on = self_get(uid, "game_mode", "off") == "on"
+            if not typing_on and not game_on:
+                await asyncio.sleep(2)
+                continue
+            async for dialog in client.iter_dialogs():
+                entity = getattr(dialog, "entity", None)
+                if not entity or getattr(entity, "bot", False) or getattr(entity, "id", None) == uid:
+                    continue
+                await _send_presence(client, entity, game=game_on)
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[SELF {uid}] presence loop: {exc}")
+            await asyncio.sleep(3)
 
 # ============================================================
 # SELF WORKER
@@ -866,6 +981,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     )
 
     self_clients[user_id] = client
+    presence_task = None
 
     @client.on(events.NewMessage(outgoing=True))
     async def _self_outgoing(event):
@@ -890,6 +1006,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             return
 
         self_workers[user_id] = asyncio.current_task()
+        presence_task = asyncio.create_task(_presence_loop(client, user_id))
         print(f"[SELF {user_id}] started")
 
         last_name_update = 0
@@ -961,6 +1078,10 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     except Exception as exc:
         print(f"[SELF {user_id}] worker error: {exc}")
     finally:
+        if presence_task:
+            presence_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await presence_task
         self_workers.pop(user_id, None)
         self_clients.pop(user_id, None)
         with contextlib.suppress(Exception):
@@ -1200,7 +1321,8 @@ async def private_message(event):
             with contextlib.suppress(Exception):
                 await process_referral(user_id, int(pending_referrer))
             set_setting(user_id, "pending_referrer", "")
-        await bot.send_message(user_id, "✅ شماره شما ثبت شد. حالا می‌توانی مستقیم از گزینه‌های ربات استفاده کنی.", buttons=main_buttons(user_id))
+        await bot.send_message(user_id, "✅ شماره شما ثبت شد. حالا می‌توانی مستقیم از گزینه‌های ربات استفاده کنی.", buttons=Button.clear())
+        await send_main(user_id, user_id)
         return
 
     # --------------------------------------------------------
