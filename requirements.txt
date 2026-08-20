@@ -1,0 +1,2 @@
+telethon>=1.42,<2
+argostranslate>=1.9
