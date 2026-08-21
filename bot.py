@@ -84,16 +84,16 @@ GAME_DIGIT_EMOJI_IDS = {
 # Telegram custom-emoji entities need an actual emoji character as their
 # fallback/alt text. These plain digits are only the required fallback text; Telegram should replace them with the custom emoji entity.
 GAME_DIGIT_FALLBACK = {
-    "0": "0",
-    "1": "1",
-    "2": "2",
-    "3": "3",
-    "4": "4",
-    "5": "5",
-    "6": "6",
-    "7": "7",
-    "8": "8",
-    "9": "9",
+    "0": "▫️",
+    "1": "▫️",
+    "2": "▫️",
+    "3": "▫️",
+    "4": "▫️",
+    "5": "▫️",
+    "6": "▫️",
+    "7": "▫️",
+    "8": "▫️",
+    "9": "▫️",
 }
 
 
@@ -1775,7 +1775,8 @@ async def group_commands(event):
 
         if amount < MIN_GAME:
             await event.reply(
-                f"❌ حداقل مبلغ بازی {game_number(MIN_GAME)} الماس است."
+                f"❌ حداقل مبلغ بازی {game_number(MIN_GAME)} الماس است.",
+                parse_mode="html"
             )
             return
 
@@ -1783,7 +1784,8 @@ async def group_commands(event):
         if balance < amount:
             await event.reply(
                 f"❌ موجودی کافی نیست.\n"
-                f"💎 موجودی: {game_number(balance)}"
+                f"💎 موجودی: {game_number(balance)}",
+                parse_mode="html"
             )
             return
 
