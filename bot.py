@@ -24,7 +24,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest, TranslateTextRequest
+from telethon.tl.functions.messages import (
+    SetTypingRequest,
+    SendReactionRequest,
+    TranslateTextRequest,
+    GetInlineBotResultsRequest,
+    SendInlineBotResultRequest,
+)
 from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -304,6 +310,7 @@ active_games = {}
 self_workers = {}
 self_clients = {}
 _self_reply_cache = set()
+_inline_bot_cache = {}
 
 
 # ============================================================
@@ -609,6 +616,70 @@ def self_font_preview(uid, kind):
     )
 
 
+async def _get_inline_bot_entity(client):
+    """Resolve the bot entity once per logged-in self client."""
+    cache_key = id(client)
+    cached = _inline_bot_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    me = await bot.get_me()
+    if not me:
+        raise RuntimeError("Bot entity could not be resolved")
+
+    username = getattr(me, "username", None)
+    entity = await client.get_input_entity(f"@{username}" if username else me.id)
+    _inline_bot_cache[cache_key] = entity
+    return entity
+
+
+async def send_self_inline_result(event, query: str):
+    """Insert the bot's inline result using the logged-in user account.
+
+    Unlike bot.send_message(), this does not require the bot to be a member
+    of the target chat.
+    """
+    if not event.peer_id:
+        raise RuntimeError("Target peer is unavailable")
+
+    bot_entity = await _get_inline_bot_entity(event.client)
+    results = await event.client(
+        GetInlineBotResultsRequest(
+            bot=bot_entity,
+            peer=event.peer_id,
+            geo_point=None,
+            query=query,
+            offset="",
+        )
+    )
+
+    if not getattr(results, "results", None):
+        raise RuntimeError(f"Inline bot returned no result for query: {query}")
+
+    result = results.results[0]
+    await event.client(
+        SendInlineBotResultRequest(
+            peer=event.peer_id,
+            query_id=results.query_id,
+            id=result.id,
+            hide_via=True,
+            clear_draft=True,
+        )
+    )
+
+
+async def _transfer_sender_label(client, user_id: int) -> str:
+    """@username when available, otherwise the numeric Telegram ID."""
+    try:
+        entity = await client.get_entity(int(user_id))
+        username = getattr(entity, "username", None)
+        if username:
+            return f"@{username}"
+    except Exception:
+        pass
+    return str(int(user_id))
+
+
 async def send_self_panel(chat_id: int, uid: int, reply_to=None):
     """Inline panels are bot messages; Telegram does not deliver callback queries to user accounts."""
     return await bot.send_message(
@@ -716,29 +787,28 @@ async def self_handle_outgoing(event, uid):
     if not text:
         return
 
-    if low == "پنل":
-        with contextlib.suppress(Exception):
-            await event.delete()
+    if low in {"پنل", "panel"}:
         try:
-            await send_self_panel(event.chat_id, uid)
-        except Exception as exc:
-            print(f"[SELF {uid}] panel send failed: {exc}")
+            # The self account invokes the bot's inline mode and inserts the
+            # result into this chat. The bot does NOT need to be a member here.
+            await send_self_inline_result(event, "پنل")
             with contextlib.suppress(Exception):
-                await event.client.send_message(
-                    event.chat_id,
-                    "❌ پنل شیشه‌ای ارسال نشد. مطمئن شوید ربات در این چت عضو است و اجازه ارسال پیام دارد."
-                )
+                await event.delete()
+        except Exception as exc:
+            print(f"[SELF {uid}] inline panel failed: {exc}")
+            with contextlib.suppress(Exception):
+                await event.edit("❌ پنل شیشه‌ای ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
 
-    if low == "راهنما":
-        with contextlib.suppress(Exception):
-            await event.delete()
+    if low in {"راهنما", "guide"}:
         try:
-            await send_self_guide(event.chat_id, uid)
-        except Exception as exc:
-            print(f"[SELF {uid}] guide send failed: {exc}")
+            await send_self_inline_result(event, "راهنما")
             with contextlib.suppress(Exception):
-                await event.client.send_message(event.chat_id, "❌ راهنما ارسال نشد؛ ربات باید در این چت قابل دسترس باشد.")
+                await event.delete()
+        except Exception as exc:
+            print(f"[SELF {uid}] inline guide failed: {exc}")
+            with contextlib.suppress(Exception):
+                await event.edit("❌ راهنما ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
 
     switches = {
@@ -849,9 +919,26 @@ async def self_handle_outgoing(event, uid):
         init_user_db(target)
         change_balance(uid, -amount)
         change_balance(target, amount)
-        await event.edit(f"✅ انتقال انجام شد.\n💎 {amount:,} الماس به کاربر `{target}` منتقل شد.\n💰 موجودی باقی‌مانده: {get_balance(uid):,}")
+
+        sender_label = await _transfer_sender_label(event.client, uid)
+        sender_balance = get_balance(uid)
+        recipient_balance = get_balance(target)
+
+        await event.edit(
+            f"✅ انتقال انجام شد.\n"
+            f"💎 {amount:,} الماس به کاربر `{target}` منتقل شد.\n"
+            f"💰 موجودی باقی‌مانده: {sender_balance:,}"
+        )
+
+        # IMPORTANT: this is sent by the logged-in self account, not by the bot.
         with contextlib.suppress(Exception):
-            await event.client.send_message(target, f"🎁 الماس دریافت کردید!\n\n💎 مقدار: {amount:,} الماس")
+            await event.client.send_message(
+                target,
+                "🎁 **الماس دریافت کردید!**\n\n"
+                f"👤 از طرف {sender_label} برای شما ارسال شده.\n"
+                f"💎 مقدار: {amount:,} الماس\n"
+                f"💎 موجودی فعلی: {recipient_balance:,} الماس"
+            )
         return
 
     if text.startswith(("/", ".")):
@@ -1242,7 +1329,7 @@ async def finish_login(user_id: int):
 async def inline_query_handler(event):
     """Insert the self panel into any chat through Telegram inline mode."""
     query = (event.text or "").strip().casefold()
-    if query not in {"پنل", "panel"}:
+    if query not in {"پنل", "panel", "راهنما", "guide"}:
         await event.answer([], cache_time=0, private=True)
         return
 
@@ -1265,13 +1352,22 @@ async def inline_query_handler(event):
         await event.answer([result], cache_time=0, private=True)
         return
 
-    result = event.builder.article(
-        title="⚙️ پنل سلف",
-        description="پنل تنظیمات سلف را در همین چت ارسال کن.",
-        text=self_panel_text(uid),
-        parse_mode="html",
-        buttons=self_panel_buttons(uid),
-    )
+    if query in {"راهنما", "guide"}:
+        result = event.builder.article(
+            title="📚 راهنمای سلف",
+            description="راهنمای سلف را در همین چت ارسال کن.",
+            text=self_guide_text(),
+            parse_mode="html",
+            buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+        )
+    else:
+        result = event.builder.article(
+            title="⚙️ پنل سلف",
+            description="پنل تنظیمات سلف را در همین چت ارسال کن.",
+            text=self_panel_text(uid),
+            parse_mode="html",
+            buttons=self_panel_buttons(uid),
+        )
     await event.answer([result], cache_time=0, private=True)
 
 
@@ -1614,10 +1710,12 @@ async def group_commands(event):
             )
         ]]
 
+        balance_value_toman = balance * DIAMOND_PRICE_TOMAN
         await event.reply(
             f"🎖️ **موجودی الماس**\n\n"
             f"👤 آیدی: `{target}`\n"
-            f"💎 موجودی: `{balance:,}`",
+            f"💎 موجودی: `{balance:,}`\n"
+            f"💰 ارزش موجودی: `{balance_value_toman:,}` تومان",
             buttons=buttons
         )
         return
@@ -1775,6 +1873,10 @@ async def callbacks(event):
         await handle_self_panel_callback(event)
         return
 
+    if data.startswith("game_noop_"):
+        await safe_answer(event)
+        return
+
     if not has_registered_phone(user_id):
         await safe_answer(event, "📱 ابتدا شماره موبایل ایران خود را ثبت کنید.", True)
         with contextlib.suppress(Exception):
@@ -1803,10 +1905,12 @@ async def callbacks(event):
             self_status = "غیرفعال ❌"
             duration = "—"
 
+        balance_value_toman = balance * DIAMOND_PRICE_TOMAN
         text = (
             "👤 **حساب کاربری**\n\n"
             f"🆔 آیدی: `{user_id}`\n"
             f"💎 موجودی: `{balance:,}` الماس\n"
+            f"💰 ارزش موجودی: `{balance_value_toman:,}` تومان\n"
             f"🔐 وضعیت سلف: `{self_status}`\n"
             f"⏱ مدت فعالیت: `{duration}`"
         )
@@ -2041,6 +2145,13 @@ async def callbacks(event):
         with contextlib.suppress(Exception):
             await bot.delete_messages(event.chat_id, event.message_id)
 
+        game_result_buttons = [
+            [
+                btn(f"🎉 {prize:,} 💎", b"game_noop_prize", "success"),
+                btn(f"💎 {winner_balance:,}", b"game_noop_winner", "primary"),
+                btn(f"💎 {loser_balance:,}", b"game_noop_loser", "danger"),
+            ],
+        ]
         await bot.send_message(
             event.chat_id,
             "💎 **نتیجه بازی**\n\n"
@@ -2049,7 +2160,8 @@ async def callbacks(event):
             f"🎉 **جایزه برنده:** {prize:,} 💎\n"
             f"💰 **مالیات:** {tax:,} 💎\n\n"
             f"💎 **موجودی برنده:** {winner_balance:,}\n"
-            f"💎 **موجودی بازنده:** {loser_balance:,}"
+            f"💎 **موجودی بازنده:** {loser_balance:,}",
+            buttons=game_result_buttons,
         )
 
         await safe_answer(event, "✅ بازی به پایان رسید.")
