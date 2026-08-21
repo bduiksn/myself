@@ -16,6 +16,9 @@ import contextlib
 import json
 import os
 import random
+import secrets
+import tempfile
+import shutil
 import re
 import sqlite3
 import time
@@ -600,6 +603,17 @@ def self_guide_text():
         "• تبچی متن متن دلخواه\n\n"
         "💎 <b>انتقال</b>\n"
         "• روی پیام کاربر ریپلای کن و بنویس: انتقال 500\n\n"
+        "💾 <b>دانلود</b>\n"
+        "• روی هر پیام، عکس، ویدیو، ویس یا رسانه ریپلای کن و «دانلود» بفرست.\n\n"
+        "📝 <b>ویس به متن</b>\n"
+        "• روی ویس ریپلای کن و «متن» بفرست.\n\n"
+        "🔎 <b>OCR</b>\n"
+        "• روی تصویر ریپلای کن و «OCR» بفرست.\n\n"
+        "👥 <b>ساخت</b>\n"
+        "• ساخت گروه اسم گروه\n"
+        "• ساخت چنل اسم چنل\n\n"
+        "🎲 <b>تاس</b>\n"
+        "• «تاس 6» تاس واقعی تلگرام را تا رسیدن به ۶ رول می‌کند.\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━━━╯"
     )
 
@@ -721,7 +735,9 @@ async def handle_self_panel_callback(event):
 
     if action == "close":
         with contextlib.suppress(Exception):
-            await event.delete()
+            await bot.delete_messages(event.chat_id, event.message_id)
+        with contextlib.suppress(Exception):
+            await event.answer("پنل بسته شد.")
         return True
     if action == "guide":
         await event.edit(
@@ -781,10 +797,201 @@ async def handle_self_panel_callback(event):
     return True
 
 
+
+async def _self_save_replied_message(event, uid):
+    """Save the replied message/media into Telegram Saved Messages."""
+    if not event.is_reply:
+        return "❌ روی پیام موردنظر ریپلای کن و سپس «دانلود» را بفرست."
+    replied = await event.get_reply_message()
+    if not replied:
+        return "❌ پیام ریپلای‌شده پیدا نشد."
+
+    client = event.client
+    try:
+        await client.forward_messages("me", replied, from_peer=event.chat_id)
+        return "✅ پیام با موفقیت به پیام‌های ذخیره‌شده ارسال شد."
+    except Exception:
+        pass
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_save_{uid}_"))
+    try:
+        if replied.media:
+            path = await replied.download_media(file=str(tmp_dir))
+            if not path:
+                return "❌ این رسانه قابل دانلود نیست یا زمان آن تمام شده است."
+            await client.send_file("me", path, caption=replied.raw_text or "")
+        else:
+            await client.send_message("me", replied.raw_text or "")
+        return "✅ پیام به پیام‌های ذخیره‌شده منتقل شد."
+    except Exception as exc:
+        print(f"[SELF {uid}] save message failed: {exc}")
+        return "❌ ذخیره پیام انجام نشد؛ ممکن است پیام محافظت‌شده یا منقضی‌شده باشد."
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _self_transcribe_reply(event, uid):
+    """Voice/audio -> text with faster-whisper."""
+    if not event.is_reply:
+        return "❌ روی ویس ریپلای کن و «متن» را بفرست."
+    replied = await event.get_reply_message()
+    if not replied or not replied.media:
+        return "❌ ویس یا فایل صوتی پیدا نشد."
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
+    try:
+        path = await replied.download_media(file=str(tmp_dir))
+        if not path:
+            return "❌ دانلود ویس ناموفق بود."
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد."
+
+        model = getattr(_self_transcribe_reply, "_model", None)
+        if model is None:
+            model = WhisperModel(
+                os.getenv("WHISPER_MODEL", "small"),
+                device=os.getenv("WHISPER_DEVICE", "cpu"),
+                compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
+            )
+            _self_transcribe_reply._model = model
+
+        def run_transcription():
+            segments, _ = model.transcribe(
+                str(path),
+                language=os.getenv("WHISPER_LANGUAGE", "fa"),
+                vad_filter=True,
+            )
+            return " ".join(seg.text.strip() for seg in segments).strip()
+
+        result = await asyncio.to_thread(run_transcription)
+        return f"📝 **متن ویس:**\n\n{result}" if result else "❌ صدایی برای تبدیل به متن پیدا نشد."
+    except Exception as exc:
+        print(f"[SELF {uid}] transcription failed: {exc}")
+        return "❌ تبدیل ویس به متن انجام نشد."
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _self_ocr_reply(event, uid):
+    """Image -> text with Tesseract OCR."""
+    if not event.is_reply:
+        return "❌ روی تصویر ریپلای کن و «OCR» را بفرست."
+    replied = await event.get_reply_message()
+    if not replied or not replied.photo:
+        return "❌ تصویر پیدا نشد."
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_ocr_{uid}_"))
+    try:
+        path = await replied.download_media(file=str(tmp_dir))
+        if not path:
+            return "❌ دانلود تصویر ناموفق بود."
+
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            return "❌ قابلیت OCR نیاز به نصب `pytesseract` و `Pillow` دارد."
+
+        def run_ocr():
+            image = Image.open(path)
+            try:
+                return pytesseract.image_to_string(image, lang="fas+eng").strip()
+            except Exception:
+                return pytesseract.image_to_string(image, lang="eng").strip()
+
+        result = await asyncio.to_thread(run_ocr)
+        return f"🔎 **متن تصویر:**\n\n{result}" if result else "❌ متنی در تصویر پیدا نشد."
+    except Exception as exc:
+        print(f"[SELF {uid}] OCR failed: {exc}")
+        return "❌ OCR انجام نشد؛ مطمئن شو Tesseract روی سرور نصب است."
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _self_create_chat_or_channel(event, uid, kind, title):
+    """Create a Telegram supergroup or channel."""
+    title = re.sub(r"\s+", " ", title or "").strip()
+    if not title:
+        return f"❌ اسم {kind} را وارد کن."
+
+    try:
+        from telethon.tl import functions
+        result = await event.client(functions.channels.CreateChannelRequest(
+            title=title,
+            about="ساخته‌شده توسط HusteRIX Self",
+            broadcast=(kind == "چنل"),
+            megagroup=(kind == "گروه"),
+        ))
+        created = getattr(result, "chats", None) or []
+        if created:
+            username = getattr(created[0], "username", None)
+            extra = f"\n🔗 @{username}" if username else ""
+            return f"✅ {kind} «{title}» ساخته شد.{extra}"
+        return f"✅ {kind} «{title}» ساخته شد."
+    except Exception as exc:
+        print(f"[SELF {uid}] create {kind} failed: {exc}")
+        return f"❌ ساخت {kind} ناموفق بود.\n{exc}"
+
+
+async def _self_roll_guaranteed_six(event, uid):
+    """Send a real Telegram dice and reroll until Telegram returns 6."""
+    try:
+        from telethon.tl import types
+        for _ in range(60):
+            msg = await event.client.send_file(
+                event.chat_id,
+                types.InputMediaDice("🎲"),
+            )
+            value = getattr(getattr(msg, "media", None), "value", None)
+            if value == 6:
+                return True
+            with contextlib.suppress(Exception):
+                await event.client.delete_messages(event.chat_id, msg.id)
+            await asyncio.sleep(0.05)
+        return False
+    except Exception as exc:
+        print(f"[SELF {uid}] forced dice failed: {exc}")
+        return False
+
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
     if not text:
+        return
+
+    if low in {"دانلود", "download"}:
+        await event.edit(await _self_save_replied_message(event, uid))
+        return
+
+    if low in {"متن", "text"} and event.is_reply:
+        await event.edit(await _self_transcribe_reply(event, uid), parse_mode="md")
+        return
+
+    if low in {"ocr", "او سی آر"} and event.is_reply:
+        await event.edit(await _self_ocr_reply(event, uid), parse_mode="md")
+        return
+
+    group_match = re.fullmatch(r"ساخت\s+گروه\s+(.+)", text, flags=re.S)
+    if group_match:
+        await event.edit(await _self_create_chat_or_channel(event, uid, "گروه", group_match.group(1)))
+        return
+
+    channel_match = re.fullmatch(r"ساخت\s+چنل\s+(.+)", text, flags=re.S)
+    if channel_match:
+        await event.edit(await _self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
+        return
+
+    if low in {"تاس 6", "تاس ۶"}:
+        chat_id = event.chat_id
+        with contextlib.suppress(Exception):
+            await event.delete()
+        ok = await _self_roll_guaranteed_six(event, uid)
+        if not ok:
+            await event.client.send_message(chat_id, "❌ تلگرام اجازه تولید تاس ۶ را نداد.")
         return
 
     if low in {"پنل", "panel"}:
@@ -2133,7 +2340,7 @@ async def callbacks(event):
         tax = max(1, int(total * GAME_TAX))
         prize = total - tax
 
-        winner = random.choice([organizer, joiner])
+        winner = secrets.choice((organizer, joiner))
         loser = joiner if winner == organizer else organizer
 
         change_balance(winner, prize)
