@@ -20,7 +20,7 @@ from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEn
 
 
 TZ = ZoneInfo("Asia/Tehran")
-SELF_CLOCK_UPDATE_INTERVAL = 30
+SELF_CLOCK_UPDATE_INTERVAL = 1
 _workers = {}
 _clients = {}
 _reply_cache = set()
@@ -168,6 +168,38 @@ async def handle_outgoing(event, uid):
             await app.send_self_guide(event.chat_id, uid)
         except Exception as exc:
             print(f"[SELF {uid}] guide: {exc}")
+        return
+
+    if low in {"استیکر", "تبدیل عکس به استیکر", "عکس به استیکر"}:
+        result = await app._self_image_to_sticker(event, uid, keep_reply=False)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"استیکر + ریپلای", "استیکر ریپلای"}:
+        result = await app._self_image_to_sticker(event, uid, keep_reply=True)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"عکس", "تبدیل استیکر به عکس", "استیکر به عکس"}:
+        result = await app._self_sticker_to_photo(event, uid, keep_reply=False)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"عکس + ریپلای", "عکس ریپلای", "استیکر به عکس + ریپلای"}:
+        result = await app._self_sticker_to_photo(event, uid, keep_reply=True)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
         return
 
     switches = {
@@ -457,7 +489,7 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
         presence_task = asyncio.create_task(_presence_loop(client, uid))
         print(f"[SELF {uid}] started")
 
-        last_clock = 0.0
+        last_clock_value = None
         while True:
             if not app.get_active_session(uid):
                 break
@@ -465,15 +497,15 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
                 app.deactivate_session(uid)
                 break
 
-            now = time.time()
-            if now - last_clock >= SELF_CLOCK_UPDATE_INTERVAL:
+            clock_value = _clock(uid) if _get(uid, "time_name", "on") == "on" else None
+            if clock_value and clock_value != last_clock_value:
                 await _update_profile_clock(client, uid)
-                last_clock = now
+                last_clock_value = clock_value
 
             if not await _charge(uid):
                 break
 
-            await asyncio.sleep(15)
+            await asyncio.sleep(1)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
