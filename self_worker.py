@@ -118,6 +118,37 @@ async def handle_outgoing(event, uid):
     if not text:
         return
 
+    if low in {"دانلود", "download"}:
+        await event.edit(await app._self_save_replied_message(event, uid))
+        return
+
+    if low in {"متن", "text"} and event.is_reply:
+        await event.edit(await app._self_transcribe_reply(event, uid), parse_mode="md")
+        return
+
+    if low in {"ocr", "او سی آر"} and event.is_reply:
+        await event.edit(await app._self_ocr_reply(event, uid), parse_mode="md")
+        return
+
+    group_match = re.fullmatch(r"ساخت\s+گروه\s+(.+)", text, flags=re.S)
+    if group_match:
+        await event.edit(await app._self_create_chat_or_channel(event, uid, "گروه", group_match.group(1)))
+        return
+
+    channel_match = re.fullmatch(r"ساخت\s+چنل\s+(.+)", text, flags=re.S)
+    if channel_match:
+        await event.edit(await app._self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
+        return
+
+    if low in {"تاس 6", "تاس ۶"}:
+        chat_id = event.chat_id
+        with contextlib.suppress(Exception):
+            await event.delete()
+        ok = await app._self_roll_guaranteed_six(event, uid)
+        if not ok:
+            await event.client.send_message(chat_id, "❌ تلگرام اجازه تولید تاس ۶ را نداد.")
+        return
+
     # The user account sends these commands; the bot account sends the actual
     # inline panel because user accounts cannot create bot-style callback UI.
     if low == "پنل":
