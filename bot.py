@@ -1501,7 +1501,7 @@ async def stop_self_worker(user_id: int):
 # ============================================================
 # The separate worker owns the actual Telegram user-session runtime.
 # bot.py remains responsible for UI, billing, DB and callbacks.
-import HusteRIX_self_worker_fixed as _external_self_worker
+import self_worker as _external_self_worker
 
 
 async def start_self_worker(user_id: int, session_string: str, sub_type: int = 0):
