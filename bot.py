@@ -521,6 +521,16 @@ def _font_label(kind: str, key: str) -> str:
     }
     return labels.get(kind, {}).get(key, key)
 
+def _chat_lock_targets(uid):
+    try:
+        import json as _json
+        raw = self_get(uid, "chat_locks", "{}") or "{}"
+        data = _json.loads(raw)
+        return {int(k) for k,v in data.items() if v}
+    except Exception:
+        return set()
+
+
 def self_panel_buttons(uid):
     def toggle_style(key):
         return "success" if self_get(uid, key, "off") == "on" else "danger"
@@ -553,6 +563,7 @@ def self_panel_buttons(uid):
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
+        [btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger")],
         [btn("❌ بستن پنل", _self_cb(uid, "close"), "danger")],
     ]
 
@@ -573,7 +584,8 @@ def self_panel_text(uid):
         f"👁 سین: {st('auto_read')}\n"
         f"⌨️ تایپینگ: {st('typing')}\n"
         f"🎮 بازی: {st('game_mode')}\n"
-        f"🤖 تبچی: {st('auto_reply')}\n\n"
+        f"🤖 تبچی: {st('auto_reply')}\n"
+        f"🔒 قفل چت: <b>{len(_chat_lock_targets(uid))}</b> کاربر\n\n"
         "با دکمه‌های پایین تنظیمات را مستقیم تغییر بده.\n"
         "╰━━━━━━━━HusteRIX━━━━━━━━╯"
     )
@@ -601,6 +613,14 @@ def self_guide_text():
         "🎮 حالت بازی روشن / حالت بازی خاموش\n"
         "🤖 تبچی روشن / تبچی خاموش\n"
         "• تبچی متن متن دلخواه\n\n"
+        "🔒 <b>قفل چت + ریپلای</b>\n"
+        "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست. پیام‌های بعدی دوطرفه پاک می‌شوند.\n"
+        "• برای باز کردن: «باز کردن قفل چت»\n"
+        "🚫 <b>بلاک + ریپلای</b>\n"
+        "• در گروه روی پیام کاربر ریپلای کن و «بلاک» بفرست.\n\n"
+        "🧹 <b>پاکسازی اکانت</b>\n"
+        "• پیوی، گروه، کانال، ربات و مخاطبین پاک می‌شوند.\n"
+        "• Saved Messages دست‌نخورده می‌ماند.\n\n"
         "💎 <b>انتقال</b>\n"
         "• روی پیام کاربر ریپلای کن و بنویس: انتقال 500\n\n"
         "💾 <b>دانلود</b>\n"
@@ -739,6 +759,73 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.answer("پنل بسته شد.")
         return True
+    if action == "cleanup":
+        await event.edit(
+            "⚠️ <b>پاکسازی کامل اکانت</b>\n\n"
+            "این عملیات دائمی است و موارد زیر را پاک/ترک می‌کند:\n"
+            "• تمام پیوی‌ها با حذف دوطرفه\n"
+            "• تمام گروه‌ها\n"
+            "• تمام کانال‌ها\n"
+            "• تمام گفتگوهای ربات‌ها\n"
+            "• تمام مخاطبین\n\n"
+            "🛡 <b>Saved Messages</b> همیشه دست‌نخورده می‌ماند.\n\n"
+            "برای شروع، تأیید نهایی را بزن.",
+            parse_mode="html",
+            buttons=[[\
+                btn("✅ تأیید پاکسازی", _self_cb(uid, "cleanup_confirm"), "danger"),
+                btn("❌ لغو", _self_cb(uid, "panel"), "primary"),
+            ]],
+        )
+        return True
+
+    if action == "cleanup_confirm":
+        # Lazy import keeps the worker as the owner of all account-level operations.
+        import HusteRIX_self_worker_fixed as self_worker_module
+        client = self_clients.get(uid)
+        if not client:
+            await event.edit(
+                "❌ سلف فعال نیست؛ ابتدا سلف را فعال کن.",
+                buttons=[[btn("🔙 برگشت", _self_cb(uid, "panel"), "primary")]],
+            )
+            return True
+
+        async def progress(done, total, stage):
+            percent = int(done * 100 / total) if total else 100
+            with contextlib.suppress(Exception):
+                await bot.edit_message(
+                    event.chat_id,
+                    event.message_id,
+                    "🧹 <b>پاکسازی اکانت</b>\n\n"
+                    f"📊 پیشرفت: <b>{percent}%</b> ({done}/{total})\n"
+                    f"🔄 {stage}\n\n"
+                    "🛡 Saved Messages در امان است.",
+                    parse_mode="html",
+                )
+
+        try:
+            result = await self_worker_module.cleanup_account(client, uid, progress)
+            await event.edit(
+                "✅ <b>پاکسازی اکانت انجام شد.</b>\n\n"
+                f"💬 پیوی‌ها: {result['private']:,}\n"
+                f"👥 گروه‌ها: {result['groups']:,}\n"
+                f"📢 کانال‌ها: {result['channels']:,}\n"
+                f"🤖 ربات‌ها: {result['bots']:,}\n"
+                f"👤 مخاطبین: {result['contacts']:,}\n"
+                f"⚠️ موارد ناموفق: {result['failed']:,}\n\n"
+                "🛡 Saved Messages دست‌نخورده باقی ماند.",
+                parse_mode="html",
+                buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+            )
+        except Exception as exc:
+            print(f"[SELF {uid}] cleanup failed: {exc}")
+            await event.edit(
+                "❌ پاکسازی ناموفق بود.\n"
+                f"<code>{str(exc)[:1500]}</code>",
+                parse_mode="html",
+                buttons=[[btn("🔙 برگشت", _self_cb(uid, "panel"), "primary")]],
+            )
+        return True
+
     if action == "guide":
         await event.edit(
             self_guide_text(),
@@ -1410,6 +1497,22 @@ async def stop_self_worker(user_id: int):
 
 
 # ============================================================
+# EXTERNAL SELF WORKER (authoritative runtime)
+# ============================================================
+# The separate worker owns the actual Telegram user-session runtime.
+# bot.py remains responsible for UI, billing, DB and callbacks.
+import HusteRIX_self_worker_fixed as _external_self_worker
+
+
+async def start_self_worker(user_id: int, session_string: str, sub_type: int = 0):
+    await _external_self_worker.start_self_worker(user_id, session_string, sub_type)
+
+
+async def stop_self_worker(user_id: int):
+    await _external_self_worker.stop_self_worker(user_id)
+
+
+# ============================================================
 # LOGIN FLOW
 # ============================================================
 
@@ -1874,6 +1977,15 @@ async def admin_text_flow(event):
             await event.reply(
                 f"✅ {amount:,} الماس به `{target}` اضافه شد."
             )
+            with contextlib.suppress(Exception):
+                await bot.send_message(
+                    target,
+                    "🎁 <b>الماس دریافت کردید!</b>\n\n"
+                    f"👤 از طرف آیدی <code>{user_id}</code> واریز شد.\n"
+                    f"💎 مقدار: <b>{amount:,}</b> الماس\n"
+                    f"💎 موجودی فعلی: <b>{get_balance(target):,}</b> الماس",
+                    parse_mode="html",
+                )
             pending.pop(user_id, None)
         except ValueError:
             await event.reply("❌ مقدار نامعتبر است.")
@@ -2491,7 +2603,8 @@ async def callbacks(event):
             await bot.send_message(
                 target,
                 f"✅ پرداخت شما تأیید شد.\n"
-                f"💎 {diamonds:,} الماس به حساب شما اضافه شد.\n\n"
+                f"💎 {diamonds:,} الماس به حساب شما اضافه شد.\n"
+                f"👤 از طرف آیدی <code>{user_id}</code> واریز شد.\n\n"
                 "🔄 منوی اصلی شما خودکار بروزرسانی شد."
             )
             # Behave like /start after approval so the user immediately gets
