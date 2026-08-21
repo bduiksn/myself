@@ -619,7 +619,7 @@ def self_guide_text():
         "• ساخت گروه اسم گروه\n"
         "• ساخت چنل اسم چنل\n\n"
         "🎲 <b>تاس</b>\n"
-        "• «تاس 1» تا «تاس 6» (و اعداد فارسی ۱ تا ۶) پذیرفته می‌شوند؛ تاس واقعی تلگرام تا رسیدن به عدد خواسته‌شده رول می‌شود و تاس‌های ناموفق پاک می‌شوند.\n\n"
+        "• «تاس 1» تا «تاس 6» تاس واقعی تلگرام را تا رسیدن به عدد خواسته‌شده رول می‌کند و تاس‌های ناموفق را پاک می‌کند.\n\n"
         "🧹 <b>پاکسازی اکانت</b>\n"
         "• از پنل اجرا می‌شود و هر بخش دکمه مستقل دارد: گپ‌ها، کانال‌ها، چت‌های دوطرفه، مخاطبین، ربات‌ها + بلاک، و پاکسازی همه.\n"
         "• Saved Messages دست‌نخورده می‌ماند.\n\n"
@@ -1205,7 +1205,7 @@ async def _self_sticker_to_photo(event, uid, keep_reply=False):
         if animated:
             out = tmp_dir / "sticker.gif"
             if not _animated_to_gif(src, out):
-                return "❌ تبدیل TGS به GIF انجام نشد. برای TGS، `lottie[GIF]` (python-lottie) را نصب کن و مطمئن شو وابستگی‌های GIF آن نصب شده‌اند."
+                return "❌ استیکر متحرک بود، اما تبدیل آن به GIF انجام نشد. برای TGS نصب python-lottie هم لازم است."
             await event.client.send_file(event.chat_id, str(out), force_document=False, reply_to=reply_to)
         else:
             from PIL import Image
@@ -1272,7 +1272,7 @@ async def _self_transcribe_reply(event, uid):
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد. بعد از نصب برنامه را ری‌استارت کن."
+            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد."
 
         model = getattr(_self_transcribe_reply, "_model", None)
         if model is None:
@@ -1362,12 +1362,16 @@ async def _self_create_chat_or_channel(event, uid, kind, title):
 
 
 async def _self_roll_guaranteed_value(event, uid, target):
-    """Send a real Telegram dice and reroll until the requested value (1..6) appears."""
-    if target not in range(1, 7):
-        return False
-
+    """Send a real Telegram dice and reroll until Telegram returns the requested value."""
     try:
         from telethon.tl import types
+
+        target = int(target)
+        if target < 1 or target > 6:
+            return False
+
+        # A requested face has a 1/6 chance per roll. 60 attempts make
+        # failure extremely unlikely while preventing an accidental endless loop.
         for _ in range(60):
             msg = await _tg_call_with_flood_retry(
                 lambda: event.client.send_file(
@@ -1376,12 +1380,12 @@ async def _self_roll_guaranteed_value(event, uid, target):
                 ),
                 label="dice roll",
             )
-            value = getattr(getattr(msg, "media", None), "value", None)
 
+            value = getattr(getattr(msg, "media", None), "value", None)
             if value == target:
                 return True
 
-            # Keep only the successful roll; failed rolls are removed.
+            # Keep only the successful roll visible in the chat.
             with contextlib.suppress(Exception):
                 await _tg_call_with_flood_retry(
                     lambda: event.client.delete_messages(
@@ -1391,12 +1395,18 @@ async def _self_roll_guaranteed_value(event, uid, target):
                     ),
                     label="delete failed dice",
                 )
+
             await asyncio.sleep(0.2)
 
         return False
     except Exception as exc:
         print(f"[SELF {uid}] forced dice {target} failed: {exc}")
         return False
+
+
+# Backward-compatible alias for any existing internal references.
+async def _self_roll_guaranteed_six(event, uid):
+    return await _self_roll_guaranteed_value(event, uid, 6)
 
 
 async def self_handle_outgoing(event, uid):
@@ -1437,11 +1447,11 @@ async def self_handle_outgoing(event, uid):
         await event.edit(await _self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
         return
 
-    dice_match = re.fullmatch(r"تاس\\s+([1-6۱-۶])", low)
+    dice_match = re.fullmatch(r"تاس\\s+([1-6۱-۶])", text)
     if dice_match:
-        digit = dice_match.group(1)
-        target = int(digit.translate(str.maketrans("۱۲۳۴۵۶", "123456")))
         chat_id = event.chat_id
+        target_raw = dice_match.group(1)
+        target = int(target_raw.translate(str.maketrans("۱۲۳۴۵۶", "123456")))
 
         with contextlib.suppress(Exception):
             await event.delete()
@@ -1450,7 +1460,7 @@ async def self_handle_outgoing(event, uid):
         if not ok:
             await event.client.send_message(
                 chat_id,
-                f"❌ تلگرام اجازه تولید تاس {target} را نداد.",
+                f"❌ تلگرام اجازه تولید تاس {target} را نداد."
             )
         return
 
