@@ -572,7 +572,7 @@ def self_panel_text(uid):
         f"🎮 بازی: {st('game_mode')}\n"
         f"🤖 تبچی: {st('auto_reply')}\n\n"
         "با دکمه‌های پایین تنظیمات را مستقیم تغییر بده.\n"
-        "╰━━━━━━━━━━━━━━━━━━━━━━╯"
+        "╰━━━━━━━━HusteRIX━━━━━━━━╯"
     )
 
 
@@ -920,7 +920,11 @@ async def self_handle_outgoing(event, uid):
         change_balance(uid, -amount)
         change_balance(target, amount)
 
-        sender_label = await _transfer_sender_label(event.client, uid)
+        # Notification must be sent by the bot, not by the logged-in self account.
+        # The self account performs the transfer, while the bot delivers the receipt.
+        bot_me = await bot.get_me()
+        bot_username = getattr(bot_me, "username", None) if bot_me else None
+        sender_label = f"@{bot_username}" if bot_username else "ربات"
         sender_balance = get_balance(uid)
         recipient_balance = get_balance(target)
 
@@ -930,9 +934,9 @@ async def self_handle_outgoing(event, uid):
             f"💰 موجودی باقی‌مانده: {sender_balance:,}"
         )
 
-        # IMPORTANT: this is sent by the logged-in self account, not by the bot.
+        # The notification is deliberately sent by the bot account.
         with contextlib.suppress(Exception):
-            await event.client.send_message(
+            await bot.send_message(
                 target,
                 "🎁 **الماس دریافت کردید!**\n\n"
                 f"👤 از طرف {sender_label} برای شما ارسال شده.\n"
@@ -2145,22 +2149,26 @@ async def callbacks(event):
         with contextlib.suppress(Exception):
             await bot.delete_messages(event.chat_id, event.message_id)
 
+        # Result layout matches the reference UI: label + value in two columns.
         game_result_buttons = [
             [
-                btn(f"🎉 {prize:,} 💎", b"game_noop_prize", "success"),
-                btn(f"💎 {winner_balance:,}", b"game_noop_winner", "primary"),
-                btn(f"💎 {loser_balance:,}", b"game_noop_loser", "danger"),
+                btn("🎉 جایزه برنده", b"game_noop_prize", "success"),
+                btn(f"💎 {prize:,}", b"game_noop_prize_value", "success"),
+            ],
+            [
+                btn("💎 موجودی برنده", b"game_noop_winner", "primary"),
+                btn(f"💎 {winner_balance:,}", b"game_noop_winner_value", "primary"),
+            ],
+            [
+                btn("❌ موجودی بازنده", b"game_noop_loser", "danger"),
+                btn(f"💎 {loser_balance:,}", b"game_noop_loser_value", "danger"),
             ],
         ]
         await bot.send_message(
             event.chat_id,
-            "💎 **نتیجه بازی**\n\n"
-            f"🏆 **برنده:** {winner_name}\n"
-            f"💀 **بازنده:** {loser_name}\n\n"
-            f"🎉 **جایزه برنده:** {prize:,} 💎\n"
-            f"💰 **مالیات:** {tax:,} 💎\n\n"
-            f"💎 **موجودی برنده:** {winner_balance:,}\n"
-            f"💎 **موجودی بازنده:** {loser_balance:,}",
+            "🎉 **نتیجه بازی مشخص شد**\n\n"
+            f"🎉 **برنده:** {winner_name}\n"
+            f"❌ **بازنده:** {loser_name}",
             buttons=game_result_buttons,
         )
 
@@ -2270,14 +2278,20 @@ async def callbacks(event):
         init_user_db(target)
         change_balance(target, diamonds)
 
+        purchase_state.pop(target, None)
+
         with contextlib.suppress(Exception):
             await bot.send_message(
                 target,
                 f"✅ پرداخت شما تأیید شد.\n"
-                f"💎 {diamonds:,} الماس به حساب شما اضافه شد."
+                f"💎 {diamonds:,} الماس به حساب شما اضافه شد.\n\n"
+                "🔄 منوی اصلی شما خودکار بروزرسانی شد."
             )
+            # Behave like /start after approval so the user immediately gets
+            # the normal main buttons without having to send /start manually.
+            await send_main(target, target)
 
-        await safe_answer(event, "✅ پرداخت تأیید شد.")
+        await safe_answer(event, "✅ پرداخت تأیید شد و منوی کاربر بروزرسانی شد.")
         with contextlib.suppress(Exception):
             await event.edit(
                 f"✅ پرداخت کاربر `{target}` تأیید شد.\n"
