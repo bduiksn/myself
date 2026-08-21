@@ -91,7 +91,6 @@ async def _react(client, event, emoji="❤️"):
             reaction=[ReactionEmoji(emoticon=emoji)],
         ))
 
-
 def _clean_clock_name(first_name: str) -> str:
     # The self bot writes only a bare HH:MM suffix, never square brackets.
     return re.sub(r"\s*(?:\d{1,2}:\d{2})\s*$", "", first_name or "").strip()
@@ -125,7 +124,7 @@ async def handle_outgoing(event, uid):
         with contextlib.suppress(Exception):
             await event.delete()
         try:
-            await app.send_self_panel_inline(event.client, event.chat_id, uid, "panel")
+            await app.send_self_panel(event.chat_id, uid)
         except Exception as exc:
             print(f"[SELF {uid}] panel: {exc}")
         return
@@ -134,7 +133,7 @@ async def handle_outgoing(event, uid):
         with contextlib.suppress(Exception):
             await event.delete()
         try:
-            await app.send_self_panel_inline(event.client, event.chat_id, uid, "guide")
+            await app.send_self_guide(event.chat_id, uid)
         except Exception as exc:
             print(f"[SELF {uid}] guide: {exc}")
         return
@@ -186,18 +185,27 @@ async def handle_outgoing(event, uid):
         await event.edit(app.self_font_preview(uid, "english"), parse_mode="html")
         return
 
-    if low in {"ریاکشن ❤️", "ریاکشن ❤", "ریاکشن", "ریاکشن ❤️ + ریپلای", "ریاکشن + ریپلای"}:
+    reaction_match = re.fullmatch(r"ریاکشن(?:\s+(.+?))?", text)
+    if reaction_match:
+        emoji = (reaction_match.group(1) or "❤️").strip()
+        allowed = {"❤️","❤","🧡","💛","💚","💙","💜","🖤","🤍","🤎","🔥","✨","⭐","👍","👎","😂","🤣","😍","🥰","😎","😢","😡","👏","🙏","🎉","💯","⚡","🌹","😈","🕊"}
+        if emoji not in allowed:
+            await event.edit("❌ این ریاکشن پشتیبانی نمی‌شود. مثال: ریاکشن 🔥")
+            return
         if not event.is_reply:
-            await event.edit("❌ روی پیام کاربر ریپلای کن و سپس «ریاکشن ❤️» را بفرست.")
+            await event.edit("❌ روی پیام کاربر ریپلای کن و سپس «ریاکشن 🔥» را بفرست.")
             return
         replied = await event.get_reply_message()
         if not replied or not replied.sender_id:
             await event.edit("❌ کاربر پیدا نشد.")
             return
+        target = int(replied.sender_id)
         targets = _targets(uid)
-        targets.add(int(replied.sender_id))
+        targets.add(target)
         _save_targets(uid, targets)
-        await event.edit(f"✅ ریاکشن ❤️ برای کاربر `{replied.sender_id}` فعال شد.")
+        with contextlib.suppress(Exception):
+            _app().self_set_reaction(uid, target, "❤️" if emoji == "❤" else emoji)
+        await event.edit(f"✅ ریاکشن {emoji} برای کاربر `{target}` فعال شد.")
         return
 
     if low in {"حذف ریاکشن", "ریاکشن خاموش", "حذف ریاکشن ❤️", "حذف ریاکشن + ریپلای"}:
@@ -206,9 +214,12 @@ async def handle_outgoing(event, uid):
             return
         replied = await event.get_reply_message()
         if replied and replied.sender_id:
+            target = int(replied.sender_id)
             targets = _targets(uid)
-            targets.discard(int(replied.sender_id))
+            targets.discard(target)
             _save_targets(uid, targets)
+            with contextlib.suppress(Exception):
+                _app().self_remove_reaction(uid, target)
             await event.edit("✅ ریاکشن خودکار این کاربر حذف شد.")
         return
 
@@ -285,31 +296,29 @@ async def handle_incoming(event, uid):
         with contextlib.suppress(Exception):
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
 
-    if _get(uid, "typing", "off") == "on":
-        await _typing(event.client, event)
-
     sender_id = event.sender_id
     if sender_id and int(sender_id) in _targets(uid):
-        await _react(event.client, event)
+        emoji = "❤️"
+        with contextlib.suppress(Exception):
+            emoji = _app().self_reaction_map(uid).get(int(sender_id), "❤️")
+        await _react(event.client, event, emoji)
 
     if (
         event.is_private
         and _get(uid, "auto_reply", "off") == "on"
         and sender_id
         and sender_id != uid
-        and sender_id not in _reply_cache
+        and (int(uid), int(sender_id)) not in _reply_cache
     ):
-        _reply_cache.add(sender_id)
-        try:
+        key = (int(uid), int(sender_id))
+        _reply_cache.add(key)
+        with contextlib.suppress(Exception):
             await event.respond(_get(uid, "auto_reply_text", "سلام، فعلاً در دسترس نیستم."))
-        except Exception:
-            pass
-        asyncio.create_task(_clear_reply_cache(sender_id))
+        asyncio.create_task(_clear_reply_cache(key))
 
-
-async def _clear_reply_cache(uid):
+async def _clear_reply_cache(key):
     await asyncio.sleep(60)
-    _reply_cache.discard(uid)
+    _reply_cache.discard(key)
 
 
 async def _charge(uid):
@@ -338,6 +347,36 @@ async def _charge(uid):
     return True
 
 
+async def _send_presence(client, entity, game=False):
+    try:
+        from telethon.tl.types import SendMessageGamePlayAction
+        action = SendMessageGamePlayAction() if game else SendMessageTypingAction()
+        await client(SetTypingRequest(peer=entity, action=action))
+        return True
+    except Exception:
+        return False
+
+async def _presence_loop(client, uid):
+    while True:
+        try:
+            typing_on = _get(uid, "typing", "off") == "on"
+            game_on = _get(uid, "game_mode", "off") == "on"
+            if not typing_on and not game_on:
+                await asyncio.sleep(2)
+                continue
+            async for dialog in client.iter_dialogs():
+                entity = getattr(dialog, "entity", None)
+                if not entity or getattr(entity, "bot", False) or getattr(entity, "id", None) == uid:
+                    continue
+                await _send_presence(client, entity, game=game_on)
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[SELF {uid}] presence loop: {exc}")
+            await asyncio.sleep(3)
+
 async def worker(uid: int, session_string: str, sub_type: int = 0):
     app = _app()
     client = TelegramClient(
@@ -351,6 +390,7 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
     )
     _clients[uid] = client
     app.self_clients[uid] = client
+    presence_task = None
 
     @client.on(events.NewMessage(outgoing=True))
     async def outgoing_event(event):
@@ -375,6 +415,7 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
 
         _workers[uid] = asyncio.current_task()
         app.self_workers[uid] = asyncio.current_task()
+        presence_task = asyncio.create_task(_presence_loop(client, uid))
         print(f"[SELF {uid}] started")
 
         last_clock = 0.0
@@ -399,6 +440,10 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
     except Exception as exc:
         print(f"[SELF {uid}] worker error: {exc}")
     finally:
+        if presence_task:
+            presence_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await presence_task
         _workers.pop(uid, None)
         _clients.pop(uid, None)
         app.self_workers.pop(uid, None)
