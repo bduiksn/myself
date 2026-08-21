@@ -180,7 +180,7 @@ async def send_phone_request(user_id: int):
     await bot.send_message(
         user_id,
         "📱 برای ادامه، شماره موبایل ایران خودت را از دکمه زیر به اشتراک بگذار.",
-        buttons=[[Button.request_phone("📱 اشتراک‌گذاری شماره")]],
+        buttons=[[Button.request_phone("📱 اشتراک‌گذاری شماره", resize=True)]],
     )
 
 
@@ -1173,7 +1173,9 @@ async def begin_self_login(user_id: int, event=None):
         await bot.send_message(
             user_id,
             "🔐 کد ورود به شماره ثبت‌شده ارسال شد.\n\n"
-            "کد را به صورت اعداد ارسال کن. اگر ورود دو مرحله‌ای فعال باشد، بعد از کد رمز دو مرحله‌ای را می‌پرسم."
+            "کد را به صورت اعداد ارسال کن. برای اینکه کد را سریع و بدون اشتباه وارد کنی، می‌توانی مثل نمونه زیر ارسال کنی:\n"
+            "`1.2.4.3.5`\n\n"
+            "اگر ورود دو مرحله‌ای فعال باشد، بعد از کد رمز دو مرحله‌ای را می‌پرسم."
         )
     except PhoneNumberInvalidError:
         await bot.send_message(user_id, "❌ شماره ثبت‌شده معتبر نیست. دوباره شماره خودت را از طریق دکمه اشتراک‌گذاری ثبت کن.")
@@ -1233,6 +1235,47 @@ async def finish_login(user_id: int):
 
 
 # ============================================================
+# INLINE MODE
+# ============================================================
+
+@bot.on(events.InlineQuery)
+async def inline_query_handler(event):
+    """Insert the self panel into any chat through Telegram inline mode."""
+    query = (event.text or "").strip().casefold()
+    if query not in {"پنل", "panel"}:
+        await event.answer([], cache_time=0, private=True)
+        return
+
+    uid = int(event.sender_id)
+    if is_banned(uid):
+        result = event.builder.article(
+            title="🚫 دسترسی مسدود است",
+            description="حساب شما توسط مدیریت مسدود شده است.",
+            text="🚫 شما توسط ادمین مسدود شده‌اید."
+        )
+        await event.answer([result], cache_time=0, private=True)
+        return
+
+    if not has_registered_phone(uid):
+        result = event.builder.article(
+            title="📱 ابتدا شماره را ثبت کنید",
+            description="برای استفاده از پنل، ابتدا شماره موبایل خود را ثبت کنید.",
+            text="📱 برای استفاده از پنل، ابتدا در گفت‌وگوی ربات /start را بزنید و شماره خود را ثبت کنید."
+        )
+        await event.answer([result], cache_time=0, private=True)
+        return
+
+    result = event.builder.article(
+        title="⚙️ پنل سلف",
+        description="پنل تنظیمات سلف را در همین چت ارسال کن.",
+        text=self_panel_text(uid),
+        parse_mode="html",
+        buttons=self_panel_buttons(uid),
+    )
+    await event.answer([result], cache_time=0, private=True)
+
+
+# ============================================================
 # MAIN MESSAGE HANDLER
 # ============================================================
 
@@ -1277,6 +1320,19 @@ async def private_message(event):
     text = event.raw_text or ""
 
     init_user_db(user_id)
+
+    # --------------------------------------------------------
+    # DIRECT PANEL IN BOT PRIVATE CHAT
+    # --------------------------------------------------------
+    if text.strip().casefold() in {"پنل", "panel"}:
+        if is_banned(user_id):
+            await event.reply("🚫 شما توسط ادمین مسدود شده‌اید.")
+            return
+        if not has_registered_phone(user_id):
+            await send_phone_request(user_id)
+            return
+        await send_self_panel(event.chat_id, user_id)
+        return
 
     # --------------------------------------------------------
     # START + REFERRAL
@@ -1419,8 +1475,13 @@ async def private_message(event):
             return
 
         if step == "code":
-            code = re.sub(r"\D", "", text)
+            raw_code = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+            code = re.sub(r"[.\s-]", "", raw_code)
             client = state.get("client")
+
+            if not re.fullmatch(r"\d{5}", code):
+                await event.reply("❌ فرمت کد نامعتبر است. کد را مثل نمونه ارسال کن: `1.2.4.3.5`")
+                return
 
             if not client:
                 pending.pop(user_id, None)
@@ -1581,24 +1642,32 @@ async def group_commands(event):
 
         change_balance(user_id, -amount)
 
-        organizer = await user_name(user_id)
+        total = amount * 2
+        tax = max(1, int(total * GAME_TAX))
+        prize = total - tax
+
         text_game = (
-            "⚔️ **نبرد الماس**\n\n"
-            f"👤 برگزارکننده: {organizer}\n"
-            f"💰 مبلغ: {amount:,} الماس\n"
-            f"🏆 جایزه قبل از مالیات: {amount * 2:,} الماس\n\n"
-            "برای ورود روی دکمه زیر بزنید."
+            "💎 **بازی**\n"
+            f" ‌**{amount:,}**\n\n"
+            "🎉 **جایزه برنده:**\n"
+            f"{prize:,} 💎\n"
+            "💰 **مالیات:**\n"
+            f"{tax:,} 💎\n\n"
+            "💎 💎 💎\n"
+            "برای شروع بازی، نفر دوم روی پیوستن بزند."
         )
 
         buttons = [
-            [btn(
-                "⚔️ پیوستن به نبرد",
-                f"game_join_{amount}_{user_id}".encode(), "success"
-            )],
-            [btn(
-                "❌ لغو نبرد",
-                f"game_cancel_{amount}_{user_id}".encode(), "danger"
-            )]
+            [
+                btn(
+                    "پیوستن",
+                    f"game_join_{amount}_{user_id}".encode(), "success"
+                ),
+                btn(
+                    "لغو",
+                    f"game_cancel_{amount}_{user_id}".encode(), "danger"
+                ),
+            ]
         ]
 
         msg = await event.reply(text_game, buttons=buttons)
@@ -1961,6 +2030,8 @@ async def callbacks(event):
 
         change_balance(winner, prize)
 
+        winner_balance = get_balance(winner)
+        loser_balance = get_balance(loser)
         winner_name = await user_name(winner)
         loser_name = await user_name(loser)
 
@@ -1972,12 +2043,13 @@ async def callbacks(event):
 
         await bot.send_message(
             event.chat_id,
-            "◈ ━━━ ⚔️ نتیجه نبرد ━━━ ◈\n\n"
-            f"🏆 برنده: {winner_name}\n"
-            f"💀 بازنده: {loser_name}\n"
-            f"💎 جایزه: {prize:,} الماس\n"
-            f"🧾 مالیات: {tax:,} الماس\n\n"
-            "◈ ━━━━━━━━━━━━━ ◈"
+            "💎 **نتیجه بازی**\n\n"
+            f"🏆 **برنده:** {winner_name}\n"
+            f"💀 **بازنده:** {loser_name}\n\n"
+            f"🎉 **جایزه برنده:** {prize:,} 💎\n"
+            f"💰 **مالیات:** {tax:,} 💎\n\n"
+            f"💎 **موجودی برنده:** {winner_balance:,}\n"
+            f"💎 **موجودی بازنده:** {loser_balance:,}"
         )
 
         await safe_answer(event, "✅ بازی به پایان رسید.")
