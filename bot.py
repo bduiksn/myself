@@ -66,51 +66,6 @@ REFERRAL_REWARD = 25
 MIN_GAME = 20
 MIN_TRANSFER = 10
 
-# Premium/custom digit emojis used ONLY inside game messages.
-# These do not affect any inline keyboard buttons or callback data.
-GAME_DIGIT_EMOJI_IDS = {
-    "1": 6185917568226693330,
-    "2": 6185852241774121019,
-    "3": 6183511274144403903,
-    "4": 6185902394107236241,
-    "5": 6183729286684348618,
-    "6": 6185786941091352767,
-    "7": 6185708523578462344,
-    "8": 6185707329577554721,
-    "9": 6185993486068617358,
-    "0": 6186055840403824292,
-}
-
-# Telegram custom-emoji entities need an actual emoji character as their
-# fallback/alt text. These plain digits are only the required fallback text; Telegram should replace them with the custom emoji entity.
-GAME_DIGIT_FALLBACK = {
-    "0": "▫️",
-    "1": "▫️",
-    "2": "▫️",
-    "3": "▫️",
-    "4": "▫️",
-    "5": "▫️",
-    "6": "▫️",
-    "7": "▫️",
-    "8": "▫️",
-    "9": "▫️",
-}
-
-
-def game_number(value) -> str:
-    """Render a number with Telegram premium/custom digit emojis.
-
-    This helper is intentionally used only by game-related message text.
-    Inline keyboard labels/callback data remain completely untouched.
-    Telethon 1.41+ supports the tg-emoji HTML tag.
-    """
-    formatted = f"{int(value):,}"
-    return "".join(
-        f'<tg-emoji emoji-id="{GAME_DIGIT_EMOJI_IDS[ch]}">{GAME_DIGIT_FALLBACK[ch]}</tg-emoji>'
-        if ch in GAME_DIGIT_EMOJI_IDS else ch
-        for ch in formatted
-    )
-
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "database_users"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1775,8 +1730,7 @@ async def group_commands(event):
 
         if amount < MIN_GAME:
             await event.reply(
-                f"❌ حداقل مبلغ بازی {game_number(MIN_GAME)} الماس است.",
-                parse_mode="html"
+                f"❌ حداقل مبلغ بازی {MIN_GAME:,} الماس است."
             )
             return
 
@@ -1784,8 +1738,7 @@ async def group_commands(event):
         if balance < amount:
             await event.reply(
                 f"❌ موجودی کافی نیست.\n"
-                f"💎 موجودی: {game_number(balance)}",
-                parse_mode="html"
+                f"💎 موجودی: {balance:,}"
             )
             return
 
@@ -1796,12 +1749,12 @@ async def group_commands(event):
         prize = total - tax
 
         text_game = (
-            "💎 <b>بازی</b>\n"
-            f" ‌<b>{game_number(amount)}</b>\n\n"
-            "🎉 <b>جایزه برنده:</b>\n"
-            f"{game_number(prize)} 💎\n"
-            "💰 <b>مالیات:</b>\n"
-            f"{game_number(tax)} 💎\n\n"
+            "💎 **بازی**\n"
+            f" ‌**{amount:,}**\n\n"
+            "🎉 **جایزه برنده:**\n"
+            f"{prize:,} 💎\n"
+            "💰 **مالیات:**\n"
+            f"{tax:,} 💎\n\n"
             "💎 💎 💎\n"
             "برای شروع بازی، نفر دوم روی پیوستن بزند."
         )
@@ -1819,7 +1772,7 @@ async def group_commands(event):
             ]
         ]
 
-        msg = await event.reply(text_game, buttons=buttons, parse_mode="html")
+        msg = await event.reply(text_game, buttons=buttons)
 
         key = (event.chat_id, msg.id)
         task = asyncio.create_task(
@@ -1907,8 +1860,7 @@ async def game_timeout(chat_id, message_id, organizer_id, amount):
         await bot.send_message(
             organizer_id,
             f"❌ نبرد به دلیل عدم حضور حریف لغو شد.\n"
-            f"💎 {game_number(amount)} الماس به حساب شما برگشت.",
-            parse_mode="html"
+            f"💎 {amount:,} الماس به حساب شما برگشت."
         )
 
 
@@ -2256,8 +2208,7 @@ async def callbacks(event):
 
         await bot.send_message(
             organizer,
-            f"❌ بازی لغو شد.\n💎 {game_number(amount)} الماس برگشت داده شد.",
-            parse_mode="html"
+            f"❌ بازی لغو شد.\n💎 {amount:,} الماس برگشت داده شد."
         )
         await safe_answer(event, "✅ بازی لغو شد.")
         return
