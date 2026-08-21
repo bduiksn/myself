@@ -31,7 +31,7 @@ from telethon.tl.functions.messages import (
     GetInlineBotResultsRequest,
     SendInlineBotResultRequest,
 )
-from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities, MessageEntityCustomEmoji
+from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -66,9 +66,9 @@ REFERRAL_REWARD = 25
 MIN_GAME = 20
 MIN_TRANSFER = 10
 
-# Custom emoji digits (Telegram Premium/custom emoji document IDs).
-# These IDs are used for digit rendering in purchase/balance messages.
-CUSTOM_DIGIT_EMOJIS = {
+# Premium/custom digit emojis used ONLY inside game messages.
+# These do not affect any inline keyboard buttons or callback data.
+GAME_DIGIT_EMOJI_IDS = {
     "1": 6185917568226693330,
     "2": 6185852241774121019,
     "3": 6183511274144403903,
@@ -81,37 +81,35 @@ CUSTOM_DIGIT_EMOJIS = {
     "0": 6186055840403824292,
 }
 
-_CUSTOM_DIGIT_FALLBACKS = {
-    "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣", "4": "4️⃣",
-    "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣", "9": "9️⃣",
+# Telegram custom-emoji entities need an actual emoji character as their
+# fallback/alt text. These keycap digits map 1:1 to the custom digit IDs above.
+GAME_DIGIT_FALLBACK = {
+    "0": "0️⃣",
+    "1": "1️⃣",
+    "2": "2️⃣",
+    "3": "3️⃣",
+    "4": "4️⃣",
+    "5": "5️⃣",
+    "6": "6️⃣",
+    "7": "7️⃣",
+    "8": "8️⃣",
+    "9": "9️⃣",
 }
 
-def custom_digit_text(value):
-    """Render decimal digits as Telegram custom emoji entities."""
-    raw = str(value)
-    parts = []
-    entities = []
-    offset = 0  # Telegram entity offsets are UTF-16 code-unit offsets.
 
-    for ch in raw:
-        fallback = _CUSTOM_DIGIT_FALLBACKS.get(ch)
-        if fallback is None:
-            parts.append(ch)
-            offset += len(ch.encode("utf-16-le")) // 2
-            continue
+def game_number(value) -> str:
+    """Render a number with Telegram premium/custom digit emojis.
 
-        units = len(fallback.encode("utf-16-le")) // 2
-        parts.append(fallback)
-        entities.append(
-            MessageEntityCustomEmoji(
-                offset=offset,
-                length=units,
-                document_id=CUSTOM_DIGIT_EMOJIS[ch],
-            )
-        )
-        offset += units
-
-    return "".join(parts), entities
+    This helper is intentionally used only by game-related message text.
+    Inline keyboard labels/callback data remain completely untouched.
+    Telethon 1.41+ supports the tg-emoji HTML tag.
+    """
+    formatted = f"{int(value):,}"
+    return "".join(
+        f'<tg-emoji emoji-id="{GAME_DIGIT_EMOJI_IDS[ch]}">{GAME_DIGIT_FALLBACK[ch]}</tg-emoji>'
+        if ch in GAME_DIGIT_EMOJI_IDS else ch
+        for ch in formatted
+    )
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "database_users"
@@ -1777,7 +1775,7 @@ async def group_commands(event):
 
         if amount < MIN_GAME:
             await event.reply(
-                f"❌ حداقل مبلغ بازی {MIN_GAME:,} الماس است."
+                f"❌ حداقل مبلغ بازی {game_number(MIN_GAME)} الماس است."
             )
             return
 
@@ -1785,7 +1783,7 @@ async def group_commands(event):
         if balance < amount:
             await event.reply(
                 f"❌ موجودی کافی نیست.\n"
-                f"💎 موجودی: {balance:,}"
+                f"💎 موجودی: {game_number(balance)}"
             )
             return
 
@@ -1796,12 +1794,12 @@ async def group_commands(event):
         prize = total - tax
 
         text_game = (
-            "💎 **بازی**\n"
-            f" ‌**{amount:,}**\n\n"
-            "🎉 **جایزه برنده:**\n"
-            f"{prize:,} 💎\n"
-            "💰 **مالیات:**\n"
-            f"{tax:,} 💎\n\n"
+            "💎 <b>بازی</b>\n"
+            f" ‌<b>{game_number(amount)}</b>\n\n"
+            "🎉 <b>جایزه برنده:</b>\n"
+            f"{game_number(prize)} 💎\n"
+            "💰 <b>مالیات:</b>\n"
+            f"{game_number(tax)} 💎\n\n"
             "💎 💎 💎\n"
             "برای شروع بازی، نفر دوم روی پیوستن بزند."
         )
@@ -1819,7 +1817,7 @@ async def group_commands(event):
             ]
         ]
 
-        msg = await event.reply(text_game, buttons=buttons)
+        msg = await event.reply(text_game, buttons=buttons, parse_mode="html")
 
         key = (event.chat_id, msg.id)
         task = asyncio.create_task(
@@ -1907,7 +1905,8 @@ async def game_timeout(chat_id, message_id, organizer_id, amount):
         await bot.send_message(
             organizer_id,
             f"❌ نبرد به دلیل عدم حضور حریف لغو شد.\n"
-            f"💎 {amount:,} الماس به حساب شما برگشت."
+            f"💎 {game_number(amount)} الماس به حساب شما برگشت.",
+            parse_mode="html"
         )
 
 
@@ -2255,7 +2254,8 @@ async def callbacks(event):
 
         await bot.send_message(
             organizer,
-            f"❌ بازی لغو شد.\n💎 {amount:,} الماس برگشت داده شد."
+            f"❌ بازی لغو شد.\n💎 {game_number(amount)} الماس برگشت داده شد.",
+            parse_mode="html"
         )
         await safe_answer(event, "✅ بازی لغو شد.")
         return
@@ -2415,28 +2415,25 @@ async def show_buy_balance(event):
 
     amount = diamonds * DIAMOND_PRICE_TOMAN
 
-    # Telegram callback-button labels do not support MessageEntityCustomEmoji.
-    # The supplied custom-emoji IDs are therefore applied to the numeric values
-    # in the purchase message itself; the clickable keypad uses keycap glyphs.
     buttons = [
         [
-            btn("1️⃣", b"num_1", "primary"),
-            btn("2️⃣", b"num_2", "primary"),
-            btn("3️⃣", b"num_3", "primary"),
+            btn("1", b"num_1", "primary"),
+            btn("2", b"num_2", "primary"),
+            btn("3", b"num_3", "primary"),
         ],
         [
-            btn("4️⃣", b"num_4", "primary"),
-            btn("5️⃣", b"num_5", "primary"),
-            btn("6️⃣", b"num_6", "primary"),
+            btn("4", b"num_4", "primary"),
+            btn("5", b"num_5", "primary"),
+            btn("6", b"num_6", "primary"),
         ],
         [
-            btn("7️⃣", b"num_7", "primary"),
-            btn("8️⃣", b"num_8", "primary"),
-            btn("9️⃣", b"num_9", "primary"),
+            btn("7", b"num_7", "primary"),
+            btn("8", b"num_8", "primary"),
+            btn("9", b"num_9", "primary"),
         ],
         [
-            btn("0️⃣", b"num_0", "primary"),
-            btn("0️⃣0️⃣", b"num_00", "primary"),
+            btn("0", b"num_0", "primary"),
+            btn("00", b"num_00", "primary"),
         ],
         [
             btn("✅ تأیید", b"confirm_amount", "success"),
@@ -2445,59 +2442,16 @@ async def show_buy_balance(event):
         [btn("🔙 برگشت", b"back", "primary")]
     ]
 
-    diamonds_text, diamonds_entities = custom_digit_text(f"{diamonds:,}")
-    amount_text, amount_entities = custom_digit_text(f"{amount:,}")
-    min_text, min_entities = custom_digit_text(f"{MIN_DIAMOND_PURCHASE:,}")
-    min_amount_text, min_amount_entities = custom_digit_text(
-        f"{MIN_DIAMOND_PURCHASE * DIAMOND_PRICE_TOMAN:,}"
-    )
-
     text = (
-        "💳 خرید موجودی\n\n"
-        f"💎 تعداد الماس: {diamonds_text}\n"
-        f"💰 مبلغ: {amount_text} تومان\n\n"
-        f"📌 حداقل خرید: {min_text} الماس\n"
-        f"💵 {min_text} الماس = {min_amount_text} تومان\n\n"
+        "💳 **خرید موجودی**\n\n"
+        f"💎 تعداد الماس: {diamonds:,}\n"
+        f"💰 مبلغ: {amount:,} تومان\n\n"
+        f"📌 حداقل خرید: {MIN_DIAMOND_PURCHASE:,} الماس\n"
+        f"💵 {MIN_DIAMOND_PURCHASE:,} الماس = {MIN_DIAMOND_PURCHASE * DIAMOND_PRICE_TOMAN:,} تومان\n\n"
         "تعداد الماس را انتخاب کنید:"
     )
 
-    # Rebase the custom-emoji entity offsets onto the final message.
-    formatting_entities = []
-    search_from = 0
-    for fragment, entities in (
-        (diamonds_text, diamonds_entities),
-        (amount_text, amount_entities),
-        (min_text, min_entities),
-        (min_text, min_entities),
-        (min_amount_text, min_amount_entities),
-    ):
-        pos = text.find(fragment, search_from)
-        if pos < 0:
-            continue
-        prefix_units = len(text[:pos].encode("utf-16-le")) // 2
-        for entity in entities:
-            formatting_entities.append(
-                MessageEntityCustomEmoji(
-                    offset=prefix_units + entity.offset,
-                    length=entity.length,
-                    document_id=entity.document_id,
-                )
-            )
-        search_from = pos + len(fragment)
-
-    try:
-        await event.edit(
-            text,
-            formatting_entities=formatting_entities,
-            buttons=buttons,
-        )
-    except Exception:
-        await bot.send_message(
-            event.sender_id,
-            text,
-            formatting_entities=formatting_entities,
-            buttons=buttons,
-        )
+    await edit_or_send(event, text, buttons)
 
 
 # ============================================================
