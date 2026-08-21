@@ -82,18 +82,18 @@ GAME_DIGIT_EMOJI_IDS = {
 }
 
 # Telegram custom-emoji entities need an actual emoji character as their
-# fallback/alt text. These keycap digits map 1:1 to the custom digit IDs above.
+# fallback/alt text. These plain digits are only the required fallback text; Telegram should replace them with the custom emoji entity.
 GAME_DIGIT_FALLBACK = {
-    "0": "0️⃣",
-    "1": "1️⃣",
-    "2": "2️⃣",
-    "3": "3️⃣",
-    "4": "4️⃣",
-    "5": "5️⃣",
-    "6": "6️⃣",
-    "7": "7️⃣",
-    "8": "8️⃣",
-    "9": "9️⃣",
+    "0": "0",
+    "1": "1",
+    "2": "2",
+    "3": "3",
+    "4": "4",
+    "5": "5",
+    "6": "6",
+    "7": "7",
+    "8": "8",
+    "9": "9",
 }
 
 
