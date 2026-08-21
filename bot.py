@@ -26,7 +26,7 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events, Button, functions, types
 from telethon.tl.functions.messages import (
     SetTypingRequest,
     SendReactionRequest,
@@ -59,6 +59,7 @@ CARD_NUMBER = "5022291579049451"
 CARD_HOLDER = "علی محمدی پور"
 
 SELF_HOURLY_COST = 2.5
+SELF_CLOCK_UPDATE_INTERVAL = 30
 MIN_SELF_BALANCE = 100
 MIN_DIAMOND_PURCHASE = 500
 DIAMOND_PRICE_TOMAN = 40
@@ -314,6 +315,8 @@ self_workers = {}
 self_clients = {}
 _self_reply_cache = set()
 _inline_bot_cache = {}
+_cleanup_tasks = {}
+_cleanup_panel_messages = {}
 
 
 # ============================================================
@@ -521,16 +524,6 @@ def _font_label(kind: str, key: str) -> str:
     }
     return labels.get(kind, {}).get(key, key)
 
-def _chat_lock_targets(uid):
-    try:
-        import json as _json
-        raw = self_get(uid, "chat_locks", "{}") or "{}"
-        data = _json.loads(raw)
-        return {int(k) for k,v in data.items() if v}
-    except Exception:
-        return set()
-
-
 def self_panel_buttons(uid):
     def toggle_style(key):
         return "success" if self_get(uid, key, "off") == "on" else "danger"
@@ -563,7 +556,13 @@ def self_panel_buttons(uid):
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
-        [btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger")],
+        [
+            btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger"),
+            btn("🔒 قفل چت", _self_cb(uid, "lock_help"), "primary"),
+        ],
+        [
+            btn("🚫 بلاک + ریپلای", _self_cb(uid, "block_help"), "danger"),
+        ],
         [btn("❌ بستن پنل", _self_cb(uid, "close"), "danger")],
     ]
 
@@ -585,7 +584,8 @@ def self_panel_text(uid):
         f"⌨️ تایپینگ: {st('typing')}\n"
         f"🎮 بازی: {st('game_mode')}\n"
         f"🤖 تبچی: {st('auto_reply')}\n"
-        f"🔒 قفل چت: <b>{len(_chat_lock_targets(uid))}</b> کاربر\n\n"
+        f"🔒 قفل چت: <b>{len(self_chat_lock_targets(uid))}</b> کاربر\n"
+        f"🧹 پاکسازی: {self_get(uid, 'cleanup_progress', 'آماده') or 'آماده'}\n\n"
         "با دکمه‌های پایین تنظیمات را مستقیم تغییر بده.\n"
         "╰━━━━━━━━HusteRIX━━━━━━━━╯"
     )
@@ -613,14 +613,6 @@ def self_guide_text():
         "🎮 حالت بازی روشن / حالت بازی خاموش\n"
         "🤖 تبچی روشن / تبچی خاموش\n"
         "• تبچی متن متن دلخواه\n\n"
-        "🔒 <b>قفل چت + ریپلای</b>\n"
-        "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست. پیام‌های بعدی دوطرفه پاک می‌شوند.\n"
-        "• برای باز کردن: «باز کردن قفل چت»\n"
-        "🚫 <b>بلاک + ریپلای</b>\n"
-        "• در گروه روی پیام کاربر ریپلای کن و «بلاک» بفرست.\n\n"
-        "🧹 <b>پاکسازی اکانت</b>\n"
-        "• پیوی، گروه، کانال، ربات و مخاطبین پاک می‌شوند.\n"
-        "• Saved Messages دست‌نخورده می‌ماند.\n\n"
         "💎 <b>انتقال</b>\n"
         "• روی پیام کاربر ریپلای کن و بنویس: انتقال 500\n\n"
         "💾 <b>دانلود</b>\n"
@@ -633,7 +625,14 @@ def self_guide_text():
         "• ساخت گروه اسم گروه\n"
         "• ساخت چنل اسم چنل\n\n"
         "🎲 <b>تاس</b>\n"
-        "• «تاس 6» تاس واقعی تلگرام را تا رسیدن به ۶ رول می‌کند.\n\n"
+        "• «تاس 6» تاس واقعی تلگرام را تا رسیدن به ۶ رول می‌کند و تاس‌های ناموفق را پاک می‌کند.\n\n"
+        "🧹 <b>پاکسازی اکانت</b>\n"
+        "• از پنل اجرا می‌شود و قبل از شروع تأیید نهایی می‌گیرد.\n"
+        "• Saved Messages دست‌نخورده می‌ماند.\n\n"
+        "🔒 <b>قفل چت</b>\n"
+        "• روی پیام کاربر ریپلای کن و «قفل چت» بفرست؛ پیام‌های بعدی دوطرفه پاک می‌شوند.\n"
+        "🚫 <b>بلاک + ریپلای</b>\n"
+        "• داخل گروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» بفرست.\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━━━╯"
     )
 
@@ -735,6 +734,146 @@ async def send_self_guide(chat_id: int, uid: int, reply_to=None):
     )
 
 
+
+def self_chat_lock_targets(uid):
+    try:
+        raw = json.loads(self_get(uid, "chat_lock_targets", "[]"))
+        return {int(x) for x in raw}
+    except Exception:
+        return set()
+
+
+def self_save_chat_lock_targets(uid, targets):
+    self_set(uid, "chat_lock_targets", json.dumps(sorted(int(x) for x in targets)))
+
+
+async def _tg_call_with_flood_retry(call_factory, *, label="telegram", max_retries=20):
+    """Retry Telegram API calls after FloodWait instead of aborting a long operation."""
+    for attempt in range(max_retries):
+        try:
+            return await call_factory()
+        except FloodWaitError as exc:
+            wait = max(1, int(getattr(exc, "seconds", 1)))
+            print(f"[TELEGRAM] FloodWait during {label}: sleeping {wait}s (attempt {attempt + 1})")
+            await asyncio.sleep(wait)
+    raise RuntimeError(f"Telegram kept rate-limiting {label} after {max_retries} retries")
+
+
+async def _cleanup_delete_private(client, entity):
+    # revoke=True performs the two-sided deletion where Telegram permits it.
+    await _tg_call_with_flood_retry(
+        lambda: client(functions.messages.DeleteHistoryRequest(
+            peer=entity, max_id=0, just_clear=False, revoke=True
+        )),
+        label="delete private history",
+    )
+
+
+async def _cleanup_leave_dialog_safe(client, entity, uid):
+    try:
+        if isinstance(entity, types.Channel):
+            await _tg_call_with_flood_retry(
+                lambda: client(functions.channels.LeaveChannelRequest(channel=entity)),
+                label="leave channel/group",
+            )
+        elif isinstance(entity, types.Chat):
+            me = await client.get_me()
+            input_me = await client.get_input_entity(me)
+            await _tg_call_with_flood_retry(
+                lambda: client(functions.messages.DeleteChatUserRequest(
+                    chat_id=entity.id, user_id=input_me
+                )),
+                label="leave basic group",
+            )
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+async def _cleanup_contacts(client):
+    result = await _tg_call_with_flood_retry(
+        lambda: client(functions.contacts.GetContactsRequest(hash=0)),
+        label="get contacts",
+    )
+    users = getattr(result, "users", None) or []
+    input_users = [types.InputUser(u.id, u.access_hash) for u in users if getattr(u, "access_hash", None) is not None]
+    if not input_users:
+        return 0
+    await _tg_call_with_flood_retry(
+        lambda: client(functions.contacts.DeleteContactsRequest(id=input_users)),
+        label="delete contacts",
+    )
+    return len(input_users)
+
+
+async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None):
+    client = self_clients.get(uid)
+    if not client:
+        self_set(uid, "cleanup_running", "off")
+        self_set(uid, "cleanup_progress", "❌ سلف فعال نیست")
+        return
+
+    async def progress(text):
+        self_set(uid, "cleanup_progress", text)
+        if panel_chat_id and panel_message_id:
+            with contextlib.suppress(Exception):
+                await bot.edit_message(panel_chat_id, panel_message_id, self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+
+    try:
+        self_set(uid, "cleanup_running", "on")
+        await progress("⏳ شروع پاکسازی…")
+        dialogs = []
+        async for dialog in client.iter_dialogs():
+            entity = getattr(dialog, "entity", None)
+            if not entity:
+                continue
+            # Never touch Saved Messages / self chat.
+            if getattr(entity, "id", None) == uid:
+                continue
+            dialogs.append(dialog)
+
+        private_dialogs = [d for d in dialogs if getattr(d, "is_user", False) and getattr(d.entity, "id", None) != uid]
+        group_dialogs = [d for d in dialogs if getattr(d, "is_group", False)]
+        channel_dialogs = [d for d in dialogs if getattr(d, "is_channel", False) and not getattr(d, "is_group", False)]
+        total = len(private_dialogs) + len(group_dialogs) + len(channel_dialogs)
+        done = 0
+
+        # Private chats, including bot chats, are cleared with revoke=True.
+        for dialog in private_dialogs:
+            entity = dialog.entity
+            await progress(f"🧹 پاکسازی پیوی‌ها… {done}/{total}")
+            try:
+                await _cleanup_delete_private(client, entity)
+            except Exception as exc:
+                print(f"[CLEANUP {uid}] private {getattr(entity,'id', '?')}: {exc}")
+            done += 1
+
+        # Leave groups/channels.
+        for dialog in group_dialogs + channel_dialogs:
+            entity = dialog.entity
+            await progress(f"🚪 ترک گروه/کانال… {done}/{total}")
+            ok, err = await _cleanup_leave_dialog_safe(client, entity, uid)
+            if not ok:
+                print(f"[CLEANUP {uid}] leave {getattr(entity,'id','?')}: {err}")
+            done += 1
+
+        await progress("👥 در حال حذف مخاطبین…")
+        try:
+            count = await _cleanup_contacts(client)
+        except Exception as exc:
+            print(f"[CLEANUP {uid}] contacts: {exc}")
+            count = 0
+
+        self_set(uid, "cleanup_progress", f"✅ پاکسازی کامل شد • {done} گفتگو • {count} مخاطب")
+        await progress(self_get(uid, "cleanup_progress"))
+    except Exception as exc:
+        print(f"[CLEANUP {uid}] fatal: {exc}")
+        await progress(f"⚠️ پاکسازی با خطا متوقف شد: {exc}")
+    finally:
+        self_set(uid, "cleanup_running", "off")
+        _cleanup_tasks.pop(uid, None)
+
+
 async def handle_self_panel_callback(event):
     data = event.data.decode("utf-8", errors="ignore")
     parts = data.split(":", 2)
@@ -759,73 +898,6 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.answer("پنل بسته شد.")
         return True
-    if action == "cleanup":
-        await event.edit(
-            "⚠️ <b>پاکسازی کامل اکانت</b>\n\n"
-            "این عملیات دائمی است و موارد زیر را پاک/ترک می‌کند:\n"
-            "• تمام پیوی‌ها با حذف دوطرفه\n"
-            "• تمام گروه‌ها\n"
-            "• تمام کانال‌ها\n"
-            "• تمام گفتگوهای ربات‌ها\n"
-            "• تمام مخاطبین\n\n"
-            "🛡 <b>Saved Messages</b> همیشه دست‌نخورده می‌ماند.\n\n"
-            "برای شروع، تأیید نهایی را بزن.",
-            parse_mode="html",
-            buttons=[[\
-                btn("✅ تأیید پاکسازی", _self_cb(uid, "cleanup_confirm"), "danger"),
-                btn("❌ لغو", _self_cb(uid, "panel"), "primary"),
-            ]],
-        )
-        return True
-
-    if action == "cleanup_confirm":
-        # Lazy import keeps the worker as the owner of all account-level operations.
-        import HusteRIX_self_worker_fixed as self_worker_module
-        client = self_clients.get(uid)
-        if not client:
-            await event.edit(
-                "❌ سلف فعال نیست؛ ابتدا سلف را فعال کن.",
-                buttons=[[btn("🔙 برگشت", _self_cb(uid, "panel"), "primary")]],
-            )
-            return True
-
-        async def progress(done, total, stage):
-            percent = int(done * 100 / total) if total else 100
-            with contextlib.suppress(Exception):
-                await bot.edit_message(
-                    event.chat_id,
-                    event.message_id,
-                    "🧹 <b>پاکسازی اکانت</b>\n\n"
-                    f"📊 پیشرفت: <b>{percent}%</b> ({done}/{total})\n"
-                    f"🔄 {stage}\n\n"
-                    "🛡 Saved Messages در امان است.",
-                    parse_mode="html",
-                )
-
-        try:
-            result = await self_worker_module.cleanup_account(client, uid, progress)
-            await event.edit(
-                "✅ <b>پاکسازی اکانت انجام شد.</b>\n\n"
-                f"💬 پیوی‌ها: {result['private']:,}\n"
-                f"👥 گروه‌ها: {result['groups']:,}\n"
-                f"📢 کانال‌ها: {result['channels']:,}\n"
-                f"🤖 ربات‌ها: {result['bots']:,}\n"
-                f"👤 مخاطبین: {result['contacts']:,}\n"
-                f"⚠️ موارد ناموفق: {result['failed']:,}\n\n"
-                "🛡 Saved Messages دست‌نخورده باقی ماند.",
-                parse_mode="html",
-                buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
-            )
-        except Exception as exc:
-            print(f"[SELF {uid}] cleanup failed: {exc}")
-            await event.edit(
-                "❌ پاکسازی ناموفق بود.\n"
-                f"<code>{str(exc)[:1500]}</code>",
-                parse_mode="html",
-                buttons=[[btn("🔙 برگشت", _self_cb(uid, "panel"), "primary")]],
-            )
-        return True
-
     if action == "guide":
         await event.edit(
             self_guide_text(),
@@ -835,6 +907,48 @@ async def handle_self_panel_callback(event):
         return True
     if action == "panel":
         await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+        return True
+
+    if action == "cleanup":
+        await event.edit(
+            "⚠️ <b>تأیید نهایی پاکسازی اکانت</b>\n\n"
+            "این عملیات پیوی‌ها و گفتگو با ربات‌ها را دوطرفه پاک می‌کند، از گروه‌ها و کانال‌ها خارج می‌شود و همه مخاطبین را حذف می‌کند.\n\n"
+            "💾 <b>Saved Messages دست‌نخورده می‌ماند.</b>\n\n"
+            "برای ادامه روی «تأیید پاکسازی» بزن.",
+            parse_mode="html",
+            buttons=[
+                [btn("⚠️ تأیید پاکسازی", _self_cb(uid, "cleanup_confirm"), "danger")],
+                [btn("↩️ لغو", _self_cb(uid, "panel"), "primary")],
+            ],
+        )
+        return True
+
+    if action == "cleanup_confirm":
+        if self_get(uid, "cleanup_running", "off") == "on":
+            await event.edit("⏳ پاکسازی همین الان در حال اجراست.", parse_mode="html", buttons=self_panel_buttons(uid))
+            return True
+        client = self_clients.get(uid)
+        if not client:
+            await event.edit("❌ سلف فعال نیست.", buttons=self_panel_buttons(uid))
+            return True
+        _cleanup_panel_messages[uid] = (event.chat_id, event.message_id)
+        task = asyncio.create_task(_cleanup_account(uid, event.chat_id, event.message_id))
+        _cleanup_tasks[uid] = task
+        await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
+        return True
+
+    if action == "lock_help":
+        await event.edit(
+            self_panel_text(uid) + "\n\n🔒 روی پیام کاربر در پیوی ریپلای کن و بنویس: <b>قفل چت</b>\nبرای خاموش‌کردن: <b>بازکردن قفل چت</b>",
+            parse_mode="html", buttons=self_panel_buttons(uid)
+        )
+        return True
+
+    if action == "block_help":
+        await event.edit(
+            self_panel_text(uid) + "\n\n🚫 داخل گروه روی پیام کاربر ریپلای کن و بنویس: <b>بلاک + ریپلای</b>",
+            parse_mode="html", buttons=self_panel_buttons(uid)
+        )
         return True
 
     toggles = {
@@ -1028,16 +1142,19 @@ async def _self_roll_guaranteed_six(event, uid):
     try:
         from telethon.tl import types
         for _ in range(60):
-            msg = await event.client.send_file(
-                event.chat_id,
-                types.InputMediaDice("🎲"),
+            msg = await _tg_call_with_flood_retry(
+                lambda: event.client.send_file(event.chat_id, types.InputMediaDice("🎲")),
+                label="dice roll",
             )
             value = getattr(getattr(msg, "media", None), "value", None)
             if value == 6:
                 return True
             with contextlib.suppress(Exception):
-                await event.client.delete_messages(event.chat_id, msg.id)
-            await asyncio.sleep(0.05)
+                await _tg_call_with_flood_retry(
+                    lambda: event.client.delete_messages(event.chat_id, msg.id, revoke=True),
+                    label="delete failed dice",
+                )
+            await asyncio.sleep(0.2)
         return False
     except Exception as exc:
         print(f"[SELF {uid}] forced dice failed: {exc}")
@@ -1049,6 +1166,16 @@ async def self_handle_outgoing(event, uid):
     low = text.casefold()
     if not text:
         return
+
+    if event.is_private:
+        peer_id = int(event.chat_id or 0)
+        if peer_id in self_chat_lock_targets(uid) and low not in {"بازکردن قفل چت", "باز کردن قفل چت", "قفل چت خاموش"}:
+            with contextlib.suppress(Exception):
+                await _tg_call_with_flood_retry(
+                    lambda: event.client.delete_messages(event.chat_id, event.id, revoke=True),
+                    label="chat lock outgoing delete",
+                )
+            return
 
     if low in {"دانلود", "download"}:
         await event.edit(await _self_save_replied_message(event, uid))
@@ -1186,6 +1313,52 @@ async def self_handle_outgoing(event, uid):
             await event.edit("✅ ریاکشن خودکار این کاربر حذف شد.")
         return
 
+    if low in {"قفل چت", "قفل چت + ریپلای"}:
+        if not event.is_private or not event.is_reply:
+            await event.edit("❌ در پیوی، روی پیام همان کاربر ریپلای کن و «قفل چت» را بفرست.")
+            return
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        if not target or target == uid:
+            await event.edit("❌ کاربر هدف پیدا نشد.")
+            return
+        targets = self_chat_lock_targets(uid)
+        targets.add(target)
+        self_save_chat_lock_targets(uid, targets)
+        await event.edit(f"🔒 قفل چت برای `{target}` فعال شد. پیام‌های بعدی این کاربر دوطرفه پاک می‌شوند.")
+        return
+
+    if low in {"بازکردن قفل چت", "باز کردن قفل چت", "قفل چت خاموش"}:
+        if not event.is_private or not event.is_reply:
+            await event.edit("❌ در پیوی روی پیام همان کاربر ریپلای کن.")
+            return
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        targets = self_chat_lock_targets(uid)
+        targets.discard(target)
+        self_save_chat_lock_targets(uid, targets)
+        await event.edit(f"🔓 قفل چت برای `{target}` خاموش شد.")
+        return
+
+    if low in {"بلاک + ریپلای", "بلاک ریپلای", "بلاک"} and event.is_reply:
+        if not (event.is_group or event.is_channel):
+            await event.edit("❌ این دستور برای گروه/سوپرگروه است.")
+            return
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        if not target or target == uid:
+            await event.edit("❌ کاربر هدف پیدا نشد.")
+            return
+        try:
+            await _tg_call_with_flood_retry(
+                lambda: event.client(functions.contacts.BlockRequest(id=target)),
+                label="block user",
+            )
+            await event.edit(f"🚫 کاربر `{target}` بلاک شد.")
+        except Exception as exc:
+            await event.edit(f"❌ بلاک انجام نشد: {exc}")
+        return
+
     transfer = re.fullmatch(r"انتقال\s+(\d+)", text)
     if transfer:
         amount = int(transfer.group(1))
@@ -1216,9 +1389,7 @@ async def self_handle_outgoing(event, uid):
 
         # Notification must be sent by the bot, not by the logged-in self account.
         # The self account performs the transfer, while the bot delivers the receipt.
-        bot_me = await bot.get_me()
-        bot_username = getattr(bot_me, "username", None) if bot_me else None
-        sender_label = f"@{bot_username}" if bot_username else "ربات"
+        sender_label = await _transfer_sender_label(event.client, uid)
         sender_balance = get_balance(uid)
         recipient_balance = get_balance(target)
 
@@ -1233,7 +1404,7 @@ async def self_handle_outgoing(event, uid):
             await bot.send_message(
                 target,
                 "🎁 **الماس دریافت کردید!**\n\n"
-                f"👤 از طرف {sender_label} برای شما ارسال شده.\n"
+                f"👤 از طرف {sender_label} برای شما واریز شد.\n"
                 f"💎 مقدار: {amount:,} الماس\n"
                 f"💎 موجودی فعلی: {recipient_balance:,} الماس"
             )
@@ -1268,6 +1439,16 @@ async def self_handle_outgoing(event, uid):
 
 async def self_handle_incoming(event, uid):
     client = event.client
+
+    sender_id = int(event.sender_id) if event.sender_id else 0
+    if event.is_private and sender_id in self_chat_lock_targets(uid) and sender_id != int(uid):
+        # Delete this incoming message for both sides when Telegram allows revoke.
+        with contextlib.suppress(Exception):
+            await _tg_call_with_flood_retry(
+                lambda: client.delete_messages(event.chat_id, event.id, revoke=True),
+                label="chat lock incoming delete",
+            )
+        return
 
     if self_get(uid, "auto_read", "off") == "on":
         with contextlib.suppress(Exception):
@@ -1407,7 +1588,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
                 break
 
             now = time.time()
-            if now - last_name_update >= 60:
+            if now - last_name_update >= SELF_CLOCK_UPDATE_INTERVAL:
                 if time_name_enabled(user_id):
                     try:
                         from telethon.tl.functions.account import UpdateProfileRequest
@@ -1494,22 +1675,6 @@ async def stop_self_worker(user_id: int):
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
     deactivate_session(user_id)
-
-
-# ============================================================
-# EXTERNAL SELF WORKER (authoritative runtime)
-# ============================================================
-# The separate worker owns the actual Telegram user-session runtime.
-# bot.py remains responsible for UI, billing, DB and callbacks.
-import self_worker as _external_self_worker
-
-
-async def start_self_worker(user_id: int, session_string: str, sub_type: int = 0):
-    await _external_self_worker.start_self_worker(user_id, session_string, sub_type)
-
-
-async def stop_self_worker(user_id: int):
-    await _external_self_worker.stop_self_worker(user_id)
 
 
 # ============================================================
@@ -1977,15 +2142,6 @@ async def admin_text_flow(event):
             await event.reply(
                 f"✅ {amount:,} الماس به `{target}` اضافه شد."
             )
-            with contextlib.suppress(Exception):
-                await bot.send_message(
-                    target,
-                    "🎁 <b>الماس دریافت کردید!</b>\n\n"
-                    f"👤 از طرف آیدی <code>{user_id}</code> واریز شد.\n"
-                    f"💎 مقدار: <b>{amount:,}</b> الماس\n"
-                    f"💎 موجودی فعلی: <b>{get_balance(target):,}</b> الماس",
-                    parse_mode="html",
-                )
             pending.pop(user_id, None)
         except ValueError:
             await event.reply("❌ مقدار نامعتبر است.")
@@ -2603,8 +2759,7 @@ async def callbacks(event):
             await bot.send_message(
                 target,
                 f"✅ پرداخت شما تأیید شد.\n"
-                f"💎 {diamonds:,} الماس به حساب شما اضافه شد.\n"
-                f"👤 از طرف آیدی <code>{user_id}</code> واریز شد.\n\n"
+                f"💎 {diamonds:,} الماس به حساب شما اضافه شد.\n\n"
                 "🔄 منوی اصلی شما خودکار بروزرسانی شد."
             )
             # Behave like /start after approval so the user immediately gets
