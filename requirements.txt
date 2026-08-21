@@ -1,1 +1,3 @@
 Telethon==1.44.0
+pytesseract
+Pillow
