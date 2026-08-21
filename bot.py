@@ -619,7 +619,7 @@ def self_guide_text():
         "• ساخت گروه اسم گروه\n"
         "• ساخت چنل اسم چنل\n\n"
         "🎲 <b>تاس</b>\n"
-        "• «تاس 6» تاس واقعی تلگرام را تا رسیدن به ۶ رول می‌کند و تاس‌های ناموفق را پاک می‌کند.\n\n"
+        "• «تاس 1» تا «تاس 6» (و اعداد فارسی ۱ تا ۶) پذیرفته می‌شوند؛ تاس واقعی تلگرام تا رسیدن به عدد خواسته‌شده رول می‌شود و تاس‌های ناموفق پاک می‌شوند.\n\n"
         "🧹 <b>پاکسازی اکانت</b>\n"
         "• از پنل اجرا می‌شود و هر بخش دکمه مستقل دارد: گپ‌ها، کانال‌ها، چت‌های دوطرفه، مخاطبین، ربات‌ها + بلاک، و پاکسازی همه.\n"
         "• Saved Messages دست‌نخورده می‌ماند.\n\n"
@@ -1205,7 +1205,7 @@ async def _self_sticker_to_photo(event, uid, keep_reply=False):
         if animated:
             out = tmp_dir / "sticker.gif"
             if not _animated_to_gif(src, out):
-                return "❌ استیکر متحرک بود، اما تبدیل آن به GIF انجام نشد. برای TGS نصب python-lottie هم لازم است."
+                return "❌ تبدیل TGS به GIF انجام نشد. برای TGS، `lottie[GIF]` (python-lottie) را نصب کن و مطمئن شو وابستگی‌های GIF آن نصب شده‌اند."
             await event.client.send_file(event.chat_id, str(out), force_document=False, reply_to=reply_to)
         else:
             from PIL import Image
@@ -1272,7 +1272,7 @@ async def _self_transcribe_reply(event, uid):
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد."
+            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد. بعد از نصب برنامه را ری‌استارت کن."
 
         model = getattr(_self_transcribe_reply, "_model", None)
         if model is None:
@@ -1361,27 +1361,41 @@ async def _self_create_chat_or_channel(event, uid, kind, title):
         return f"❌ ساخت {kind} ناموفق بود.\n{exc}"
 
 
-async def _self_roll_guaranteed_six(event, uid):
-    """Send a real Telegram dice and reroll until Telegram returns 6."""
+async def _self_roll_guaranteed_value(event, uid, target):
+    """Send a real Telegram dice and reroll until the requested value (1..6) appears."""
+    if target not in range(1, 7):
+        return False
+
     try:
         from telethon.tl import types
         for _ in range(60):
             msg = await _tg_call_with_flood_retry(
-                lambda: event.client.send_file(event.chat_id, types.InputMediaDice("🎲")),
+                lambda: event.client.send_file(
+                    event.chat_id,
+                    types.InputMediaDice("🎲"),
+                ),
                 label="dice roll",
             )
             value = getattr(getattr(msg, "media", None), "value", None)
-            if value == 6:
+
+            if value == target:
                 return True
+
+            # Keep only the successful roll; failed rolls are removed.
             with contextlib.suppress(Exception):
                 await _tg_call_with_flood_retry(
-                    lambda: event.client.delete_messages(event.chat_id, msg.id, revoke=True),
+                    lambda: event.client.delete_messages(
+                        event.chat_id,
+                        msg.id,
+                        revoke=True,
+                    ),
                     label="delete failed dice",
                 )
             await asyncio.sleep(0.2)
+
         return False
     except Exception as exc:
-        print(f"[SELF {uid}] forced dice failed: {exc}")
+        print(f"[SELF {uid}] forced dice {target} failed: {exc}")
         return False
 
 
@@ -1423,13 +1437,21 @@ async def self_handle_outgoing(event, uid):
         await event.edit(await _self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
         return
 
-    if low in {"تاس 6", "تاس ۶"}:
+    dice_match = re.fullmatch(r"تاس\\s+([1-6۱-۶])", low)
+    if dice_match:
+        digit = dice_match.group(1)
+        target = int(digit.translate(str.maketrans("۱۲۳۴۵۶", "123456")))
         chat_id = event.chat_id
+
         with contextlib.suppress(Exception):
             await event.delete()
-        ok = await _self_roll_guaranteed_six(event, uid)
+
+        ok = await _self_roll_guaranteed_value(event, uid, target)
         if not ok:
-            await event.client.send_message(chat_id, "❌ تلگرام اجازه تولید تاس ۶ را نداد.")
+            await event.client.send_message(
+                chat_id,
+                f"❌ تلگرام اجازه تولید تاس {target} را نداد.",
+            )
         return
 
     if low in {"پنل", "panel"}:
