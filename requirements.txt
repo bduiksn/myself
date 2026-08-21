@@ -1,4 +1,6 @@
-Telethon==1.44.0
-pytesseract==0.3.13
-Pillow==12.3.0
+telethon
+Pillow
+pytesseract
+argostranslate
 faster-whisper
+lottie[GIF]
