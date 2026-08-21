@@ -59,7 +59,7 @@ CARD_NUMBER = "5022291579049451"
 CARD_HOLDER = "علی محمدی پور"
 
 SELF_HOURLY_COST = 2.5
-SELF_CLOCK_UPDATE_INTERVAL = 30
+SELF_CLOCK_UPDATE_INTERVAL = 1
 MIN_SELF_BALANCE = 100
 MIN_DIAMOND_PURCHASE = 500
 DIAMOND_PRICE_TOMAN = 40
@@ -556,13 +556,7 @@ def self_panel_buttons(uid):
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
-        [
-            btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger"),
-            btn("🔒 قفل چت", _self_cb(uid, "lock_help"), "primary"),
-        ],
-        [
-            btn("🚫 بلاک + ریپلای", _self_cb(uid, "block_help"), "danger"),
-        ],
+        [btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger")],
         [btn("❌ بستن پنل", _self_cb(uid, "close"), "danger")],
     ]
 
@@ -627,10 +621,14 @@ def self_guide_text():
         "🎲 <b>تاس</b>\n"
         "• «تاس 6» تاس واقعی تلگرام را تا رسیدن به ۶ رول می‌کند و تاس‌های ناموفق را پاک می‌کند.\n\n"
         "🧹 <b>پاکسازی اکانت</b>\n"
-        "• از پنل اجرا می‌شود و قبل از شروع تأیید نهایی می‌گیرد.\n"
+        "• از پنل اجرا می‌شود و هر بخش دکمه مستقل دارد: گپ‌ها، کانال‌ها، چت‌های دوطرفه، مخاطبین، ربات‌ها + بلاک، و پاکسازی همه.\n"
         "• Saved Messages دست‌نخورده می‌ماند.\n\n"
         "🔒 <b>قفل چت</b>\n"
         "• روی پیام کاربر ریپلای کن و «قفل چت» بفرست؛ پیام‌های بعدی دوطرفه پاک می‌شوند.\n"
+        "🖼️ <b>تبدیل رسانه</b>\n"
+        "• روی عکس ریپلای کن: «استیکر» یا «استیکر + ریپلای».\n"
+        "• روی استیکر ریپلای کن: «عکس» یا «عکس + ریپلای».\n"
+        "• استیکر متحرک در صورت امکان به GIF تبدیل می‌شود.\n\n"
         "🚫 <b>بلاک + ریپلای</b>\n"
         "• داخل گروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» بفرست.\n\n"
         "╰━━━━━━━━━━━━━━━━━━━━━━╯"
@@ -806,10 +804,70 @@ async def _cleanup_contacts(client):
     return len(input_users)
 
 
-async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None):
+async def _cleanup_dialog_snapshot(client, uid):
+    dialogs = []
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", None)
+        if not entity or getattr(entity, "id", None) == uid:
+            continue
+        dialogs.append(dialog)
+    return dialogs
+
+
+def _cleanup_categories(dialogs):
+    chats = []
+    bots = []
+    groups = []
+    channels = []
+    for dialog in dialogs:
+        entity = getattr(dialog, "entity", None)
+        if getattr(dialog, "is_group", False):
+            groups.append(dialog)
+        elif getattr(dialog, "is_channel", False):
+            channels.append(dialog)
+        elif getattr(dialog, "is_user", False):
+            if getattr(entity, "bot", False):
+                bots.append(dialog)
+            else:
+                chats.append(dialog)
+    return chats, bots, groups, channels
+
+
+async def _cleanup_private_dialogs(client, dialogs, uid, label, block_bots=False, progress_cb=None):
+    done = 0
+    for dialog in dialogs:
+        entity = dialog.entity
+        if progress_cb:
+            await progress_cb(f"🧹 {label}… {done}/{len(dialogs)}")
+        try:
+            await _cleanup_delete_private(client, entity)
+            if block_bots and getattr(entity, "bot", False):
+                await _tg_call_with_flood_retry(
+                    lambda e=entity: client(functions.contacts.BlockRequest(id=e)),
+                    label="block bot",
+                )
+        except Exception as exc:
+            print(f"[CLEANUP {uid}] private {getattr(entity,'id','?')}: {exc}")
+        done += 1
+    return done
+
+
+async def _cleanup_leave_dialogs(client, dialogs, uid, label, progress_cb=None):
+    done = 0
+    for dialog in dialogs:
+        entity = dialog.entity
+        if progress_cb:
+            await progress_cb(f"🚪 {label}… {done}/{len(dialogs)}")
+        ok, err = await _cleanup_leave_dialog_safe(client, entity, uid)
+        if not ok:
+            print(f"[CLEANUP {uid}] leave {getattr(entity,'id','?')}: {err}")
+        done += 1
+    return done
+
+
+async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
     client = self_clients.get(uid)
     if not client:
-        self_set(uid, "cleanup_running", "off")
         self_set(uid, "cleanup_progress", "❌ سلف فعال نیست")
         return
 
@@ -817,61 +875,56 @@ async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None):
         self_set(uid, "cleanup_progress", text)
         if panel_chat_id and panel_message_id:
             with contextlib.suppress(Exception):
-                await bot.edit_message(panel_chat_id, panel_message_id, self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+                await bot.edit_message(
+                    panel_chat_id, panel_message_id, self_panel_text(uid),
+                    parse_mode="html", buttons=self_panel_buttons(uid)
+                )
 
     try:
         self_set(uid, "cleanup_running", "on")
-        await progress("⏳ شروع پاکسازی…")
-        dialogs = []
-        async for dialog in client.iter_dialogs():
-            entity = getattr(dialog, "entity", None)
-            if not entity:
-                continue
-            # Never touch Saved Messages / self chat.
-            if getattr(entity, "id", None) == uid:
-                continue
-            dialogs.append(dialog)
+        await progress("⏳ در حال آماده‌سازی پاکسازی…")
+        dialogs = await _cleanup_dialog_snapshot(client, uid)
+        chats, bots, groups, channels = _cleanup_categories(dialogs)
+        total = 0
 
-        private_dialogs = [d for d in dialogs if getattr(d, "is_user", False) and getattr(d.entity, "id", None) != uid]
-        group_dialogs = [d for d in dialogs if getattr(d, "is_group", False)]
-        channel_dialogs = [d for d in dialogs if getattr(d, "is_channel", False) and not getattr(d, "is_group", False)]
-        total = len(private_dialogs) + len(group_dialogs) + len(channel_dialogs)
-        done = 0
+        if target in {"chats", "all"}:
+            total += await _cleanup_private_dialogs(client, chats, uid, "پاکسازی چت‌ها به‌صورت دوطرفه", progress_cb=progress)
 
-        # Private chats, including bot chats, are cleared with revoke=True.
-        for dialog in private_dialogs:
-            entity = dialog.entity
-            await progress(f"🧹 پاکسازی پیوی‌ها… {done}/{total}")
+        if target in {"bots", "all"}:
+            total += await _cleanup_private_dialogs(client, bots, uid, "پاکسازی و بلاک ربات‌ها", block_bots=True, progress_cb=progress)
+
+        if target in {"groups", "all"}:
+            total += await _cleanup_leave_dialogs(client, groups, uid, "ترک گپ‌ها", progress_cb=progress)
+
+        if target in {"channels", "all"}:
+            total += await _cleanup_leave_dialogs(client, channels, uid, "ترک کانال‌ها", progress_cb=progress)
+
+        contact_count = 0
+        if target in {"contacts", "all"}:
+            await progress("👥 در حال حذف مخاطبین…")
             try:
-                await _cleanup_delete_private(client, entity)
+                contact_count = await _cleanup_contacts(client)
             except Exception as exc:
-                print(f"[CLEANUP {uid}] private {getattr(entity,'id', '?')}: {exc}")
-            done += 1
+                print(f"[CLEANUP {uid}] contacts: {exc}")
 
-        # Leave groups/channels.
-        for dialog in group_dialogs + channel_dialogs:
-            entity = dialog.entity
-            await progress(f"🚪 ترک گروه/کانال… {done}/{total}")
-            ok, err = await _cleanup_leave_dialog_safe(client, entity, uid)
-            if not ok:
-                print(f"[CLEANUP {uid}] leave {getattr(entity,'id','?')}: {err}")
-            done += 1
-
-        await progress("👥 در حال حذف مخاطبین…")
-        try:
-            count = await _cleanup_contacts(client)
-        except Exception as exc:
-            print(f"[CLEANUP {uid}] contacts: {exc}")
-            count = 0
-
-        self_set(uid, "cleanup_progress", f"✅ پاکسازی کامل شد • {done} گفتگو • {count} مخاطب")
-        await progress(self_get(uid, "cleanup_progress"))
+        labels = {
+            "chats": "چت‌ها", "bots": "ربات‌ها", "groups": "گپ‌ها",
+            "channels": "کانال‌ها", "contacts": "مخاطبین", "all": "همه"
+        }
+        await progress(f"✅ {labels.get(target, 'پاکسازی')} انجام شد • {total} گفتگو • {contact_count} مخاطب")
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         print(f"[CLEANUP {uid}] fatal: {exc}")
         await progress(f"⚠️ پاکسازی با خطا متوقف شد: {exc}")
     finally:
         self_set(uid, "cleanup_running", "off")
         _cleanup_tasks.pop(uid, None)
+
+
+async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None):
+    # Backward-compatible entry point: "all" is the old full-cleanup behavior.
+    await _cleanup_run(uid, "all", panel_chat_id, panel_message_id)
 
 
 async def handle_self_panel_callback(event):
@@ -893,10 +946,12 @@ async def handle_self_panel_callback(event):
     await safe_answer(event)
 
     if action == "close":
-        with contextlib.suppress(Exception):
-            await bot.delete_messages(event.chat_id, event.message_id)
+        # Delete the exact bot message that owns this callback. Calling event.delete()
+        # avoids message-id/peer resolution issues seen with bot.delete_messages().
         with contextlib.suppress(Exception):
             await event.answer("پنل بسته شد.")
+        with contextlib.suppress(Exception):
+            await event.delete()
         return True
     if action == "guide":
         await event.edit(
@@ -911,28 +966,60 @@ async def handle_self_panel_callback(event):
 
     if action == "cleanup":
         await event.edit(
-            "⚠️ <b>تأیید نهایی پاکسازی اکانت</b>\n\n"
-            "این عملیات پیوی‌ها و گفتگو با ربات‌ها را دوطرفه پاک می‌کند، از گروه‌ها و کانال‌ها خارج می‌شود و همه مخاطبین را حذف می‌کند.\n\n"
-            "💾 <b>Saved Messages دست‌نخورده می‌ماند.</b>\n\n"
-            "برای ادامه روی «تأیید پاکسازی» بزن.",
+            "🧹 <b>پاکسازی اکانت</b>\n\n"
+            "هر بخش مستقل است و فقط همان بخش را پاک می‌کند.\n"
+            "💾 Saved Messages دست‌نخورده می‌ماند.",
             parse_mode="html",
             buttons=[
-                [btn("⚠️ تأیید پاکسازی", _self_cb(uid, "cleanup_confirm"), "danger")],
-                [btn("↩️ لغو", _self_cb(uid, "panel"), "primary")],
+                [btn("💬 پاکسازی چت‌ها (دوطرفه)", _self_cb(uid, "cleanup_choose:chats"), "danger")],
+                [btn("👥 پاکسازی گپ‌ها", _self_cb(uid, "cleanup_choose:groups"), "danger")],
+                [btn("📢 پاکسازی کانال‌ها", _self_cb(uid, "cleanup_choose:channels"), "danger")],
+                [btn("👤 پاکسازی مخاطبین", _self_cb(uid, "cleanup_choose:contacts"), "danger")],
+                [btn("🤖 پاکسازی و بلاک ربات‌ها", _self_cb(uid, "cleanup_choose:bots"), "danger")],
+                [btn("🧹 پاکسازی همه", _self_cb(uid, "cleanup_choose:all"), "danger")],
+                [btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")],
             ],
         )
         return True
 
-    if action == "cleanup_confirm":
+    if action.startswith("cleanup_choose:"):
+        target = action.split(":", 1)[1]
+        labels = {
+            "chats": "💬 پاکسازی چت‌ها به‌صورت دوطرفه",
+            "groups": "👥 پاکسازی گپ‌ها",
+            "channels": "📢 پاکسازی کانال‌ها",
+            "contacts": "👤 پاکسازی مخاطبین",
+            "bots": "🤖 پاکسازی و بلاک ربات‌ها",
+            "all": "🧹 پاکسازی همه",
+        }
+        if target not in labels:
+            return True
+        await event.edit(
+            f"⚠️ <b>{labels[target]}</b>\n\n"
+            "این عملیات قابل برگشت نیست.\n"
+            "Saved Messages دست‌نخورده می‌ماند.\n\n"
+            "برای شروع تأیید کن:",
+            parse_mode="html",
+            buttons=[
+                [btn("⚠️ تأیید و اجرا", _self_cb(uid, f"cleanup_confirm:{target}"), "danger")],
+                [btn("↩️ برگشت به پاکسازی", _self_cb(uid, "cleanup"), "primary")],
+            ],
+        )
+        return True
+
+    if action.startswith("cleanup_confirm:"):
+        target = action.split(":", 1)[1]
+        if target not in {"chats", "groups", "channels", "contacts", "bots", "all"}:
+            return True
         if self_get(uid, "cleanup_running", "off") == "on":
-            await event.edit("⏳ پاکسازی همین الان در حال اجراست.", parse_mode="html", buttons=self_panel_buttons(uid))
+            await event.edit("⏳ یک پاکسازی همین الان در حال اجراست.", parse_mode="html", buttons=self_panel_buttons(uid))
             return True
         client = self_clients.get(uid)
         if not client:
             await event.edit("❌ سلف فعال نیست.", buttons=self_panel_buttons(uid))
             return True
         _cleanup_panel_messages[uid] = (event.chat_id, event.message_id)
-        task = asyncio.create_task(_cleanup_account(uid, event.chat_id, event.message_id))
+        task = asyncio.create_task(_cleanup_run(uid, target, event.chat_id, event.message_id))
         _cleanup_tasks[uid] = task
         await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
         return True
@@ -997,6 +1084,143 @@ async def handle_self_panel_callback(event):
 
     return True
 
+
+
+async def _media_reply_message(event):
+    if not event.is_reply:
+        return None, "❌ روی عکس یا استیکر ریپلای کن."
+    replied = await event.get_reply_message()
+    if not replied:
+        return None, "❌ پیام ریپلای‌شده پیدا نشد."
+    return replied, None
+
+
+def _is_animated_image(path):
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return bool(getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1)
+    except Exception:
+        return False
+
+
+def _image_to_webp(path, out_path):
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im).convert("RGBA")
+        # Telegram sticker canvas: max 512x512, transparent background preserved.
+        im.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        x = (512 - im.width) // 2
+        y = (512 - im.height) // 2
+        canvas.alpha_composite(im, (x, y))
+        canvas.save(out_path, "WEBP", lossless=True, quality=95, method=6)
+
+
+def _animated_to_gif(path, out_path):
+    # Pillow handles GIF and animated WebP. TGS (Telegram animated sticker)
+    # is decoded with python-lottie when available; WebM falls back to ffmpeg.
+    if str(path).lower().endswith(".tgs"):
+        try:
+            from lottie.parsers.tgs import parse_tgs
+            from lottie.exporters.gif import export_gif
+            animation = parse_tgs(str(path))
+            export_gif(animation, str(out_path))
+            return out_path.exists()
+        except Exception:
+            pass
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            if getattr(im, "is_animated", False):
+                frames = []
+                durations = []
+                for i in range(getattr(im, "n_frames", 1)):
+                    im.seek(i)
+                    frame = im.convert("RGBA")
+                    frames.append(frame.copy())
+                    durations.append(int(im.info.get("duration", 100) or 100))
+                if frames:
+                    frames[0].save(
+                        out_path, "GIF", save_all=True, append_images=frames[1:],
+                        duration=durations, loop=0, disposal=2
+                    )
+                    return True
+    except Exception:
+        pass
+
+    import subprocess
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(path), "-vf", "fps=15,scale='min(512,iw)':-1:flags=lanczos",
+             "-loop", "0", str(out_path)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+        )
+        return out_path.exists()
+    except Exception:
+        return False
+
+
+async def _self_image_to_sticker(event, uid, keep_reply=False):
+    replied, error = await _media_reply_message(event)
+    if error:
+        return error
+    if not getattr(replied, "photo", False):
+        return "❌ پیام ریپلای‌شده عکس نیست."
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_sticker_{uid}_"))
+    try:
+        src = await replied.download_media(file=str(tmp_dir))
+        if not src:
+            return "❌ دانلود عکس ناموفق بود."
+        out = tmp_dir / "sticker.webp"
+        _image_to_webp(src, out)
+        await event.client.send_file(
+            event.chat_id, str(out), force_document=False,
+            caption=None, reply_to=(replied.id if keep_reply else None),
+            attributes=[types.DocumentAttributeSticker(alt="🙂", stickerset=types.InputStickerSetEmpty(), mask=False)]
+        )
+        return "✅ عکس به استیکر تبدیل شد."
+    except ImportError:
+        return "❌ برای تبدیل عکس به استیکر نصب Pillow لازم است."
+    except Exception as exc:
+        print(f"[SELF {uid}] image->sticker failed: {exc}")
+        return "❌ تبدیل عکس به استیکر انجام نشد."
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _self_sticker_to_photo(event, uid, keep_reply=False):
+    replied, error = await _media_reply_message(event)
+    if error:
+        return error
+    if not getattr(replied, "sticker", False):
+        return "❌ پیام ریپلای‌شده استیکر نیست."
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_photo_{uid}_"))
+    try:
+        src = await replied.download_media(file=str(tmp_dir))
+        if not src:
+            return "❌ دانلود استیکر ناموفق بود."
+        animated = bool(getattr(replied, "gif", False) or _is_animated_image(src) or str(src).lower().endswith((".tgs", ".webm")))
+        reply_to = replied.id if keep_reply else None
+        if animated:
+            out = tmp_dir / "sticker.gif"
+            if not _animated_to_gif(src, out):
+                return "❌ استیکر متحرک بود، اما تبدیل آن به GIF انجام نشد. برای TGS نصب python-lottie هم لازم است."
+            await event.client.send_file(event.chat_id, str(out), force_document=False, reply_to=reply_to)
+        else:
+            from PIL import Image
+            out = tmp_dir / "photo.png"
+            with Image.open(src) as im:
+                im.convert("RGBA").save(out, "PNG")
+            await event.client.send_file(event.chat_id, str(out), force_document=False, reply_to=reply_to)
+        return "✅ استیکر به تصویر تبدیل شد."
+    except ImportError:
+        return "❌ برای تبدیل استیکر به تصویر نصب Pillow لازم است."
+    except Exception as exc:
+        print(f"[SELF {uid}] sticker->photo failed: {exc}")
+        return "❌ تبدیل استیکر به تصویر انجام نشد."
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def _self_save_replied_message(event, uid):
@@ -1230,6 +1454,38 @@ async def self_handle_outgoing(event, uid):
             print(f"[SELF {uid}] inline guide failed: {exc}")
             with contextlib.suppress(Exception):
                 await event.edit("❌ راهنما ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
+        return
+
+    if low in {"استیکر", "تبدیل عکس به استیکر", "عکس به استیکر"}:
+        result = await _self_image_to_sticker(event, uid, keep_reply=False)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"استیکر + ریپلای", "استیکر ریپلای"}:
+        result = await _self_image_to_sticker(event, uid, keep_reply=True)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"عکس", "تبدیل استیکر به عکس", "استیکر به عکس"}:
+        result = await _self_sticker_to_photo(event, uid, keep_reply=False)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
+        return
+
+    if low in {"عکس + ریپلای", "عکس ریپلای", "استیکر به عکس + ریپلای"}:
+        result = await _self_sticker_to_photo(event, uid, keep_reply=True)
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if result.startswith("❌"):
+            await event.client.send_message(event.chat_id, result)
         return
 
     switches = {
@@ -1575,7 +1831,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
         presence_task = asyncio.create_task(_presence_loop(client, user_id))
         print(f"[SELF {user_id}] started")
 
-        last_name_update = 0
+        last_clock_value = None
 
         while True:
             if not get_active_session(user_id):
@@ -1587,30 +1843,12 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
                 deactivate_session(user_id)
                 break
 
-            now = time.time()
-            if now - last_name_update >= SELF_CLOCK_UPDATE_INTERVAL:
-                if time_name_enabled(user_id):
-                    try:
-                        from telethon.tl.functions.account import UpdateProfileRequest
-                        me = await client.get_me()
-                        if me:
-                            current = me.first_name or "کاربر"
-                            clean = re.sub(
-                                r"\s*(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*$",
-                                "",
-                                current
-                            ).strip()
-                            clock = self_clock(user_id)
-                            new_name = f"{clean[:55]} {clock}"
-                            if current != new_name:
-                                await client(
-                                    UpdateProfileRequest(
-                                        first_name=new_name
-                                    )
-                                )
-                    except Exception as exc:
-                        print(f"[SELF {user_id}] profile update: {exc}")
-                last_name_update = now
+            clock_value = self_clock(user_id) if time_name_enabled(user_id) else None
+            # Check every second but call Telegram only when the displayed minute changes.
+            # This removes the old 15s loop + 30s polling drift while avoiding API spam.
+            if clock_value and clock_value != last_clock_value:
+                await update_time_name(user_id, client)
+                last_clock_value = clock_value
 
             # Billing: 2.5 diamonds/hour, accumulated safely using whole-diamond balance.
             # We charge floor(total_elapsed * 2.5), so the average rate is exactly 2.5/hour.
@@ -1637,7 +1875,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
                     deactivate_session(user_id)
                     break
 
-            await asyncio.sleep(15)
+            await asyncio.sleep(1)
 
     except asyncio.CancelledError:
         raise
