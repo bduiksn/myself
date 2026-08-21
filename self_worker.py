@@ -14,15 +14,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, functions
-from telethon.errors import FloodWaitError
-from telethon.tl.types import InputPeerSelf
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest, TranslateTextRequest
 from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities
 
 
 TZ = ZoneInfo("Asia/Tehran")
-CLOCK_UPDATE_INTERVAL = 30  # seconds; keeps the displayed clock fresher without aggressive profile updates
+SELF_CLOCK_UPDATE_INTERVAL = 30
 _workers = {}
 _clients = {}
 _reply_cache = set()
@@ -114,228 +112,11 @@ async def _update_profile_clock(client, uid):
         print(f"[SELF {uid}] clock update: {exc}")
 
 
-
-# ============================================================
-# ACCOUNT CLEANUP / CHAT LOCK / BLOCK / DICE
-# ============================================================
-
-async def _retry_flood(operation, max_retries=50):
-    """Retry Telegram operations after FloodWait without killing the worker."""
-    for _ in range(max_retries):
-        try:
-            return await operation()
-        except FloodWaitError as exc:
-            seconds = max(1, int(getattr(exc, "seconds", 1)))
-            print(f"[SELF] FloodWait: waiting {seconds}s")
-            await asyncio.sleep(seconds)
-    raise RuntimeError("FloodWait retry limit reached")
-
-
-def _locked_targets(uid):
-    try:
-        import json
-        raw = _get(uid, "chat_locks", "{}") or "{}"
-        data = json.loads(raw)
-        return {int(k) for k, v in data.items() if v}
-    except Exception:
-        return set()
-
-
-def _save_locked_targets(uid, targets):
-    import json
-    _set(uid, "chat_locks", json.dumps({str(int(x)): True for x in targets}, ensure_ascii=False))
-
-
-def _is_locked(uid, target_id):
-    return int(target_id) in _locked_targets(uid)
-
-
-async def lock_chat(uid, target_id):
-    targets = _locked_targets(uid)
-    targets.add(int(target_id))
-    _save_locked_targets(uid, targets)
-
-
-async def unlock_chat(uid, target_id):
-    targets = _locked_targets(uid)
-    targets.discard(int(target_id))
-    _save_locked_targets(uid, targets)
-
-
-async def block_user(client, target_id):
-    entity = await client.get_input_entity(int(target_id))
-    return await _retry_flood(lambda: client(functions.contacts.BlockRequest(id=entity)))
-
-
-async def roll_until_six(client, chat_id):
-    """Use real Telegram dice values (1..6), deleting every failed roll."""
-    from telethon.tl.types import InputMediaDice
-    while True:
-        msg = await _retry_flood(
-            lambda: client.send_file(chat_id, InputMediaDice("🎲"))
-        )
-        value = getattr(getattr(msg, "media", None), "value", None)
-        if value == 6:
-            return True
-        with contextlib.suppress(Exception):
-            await _retry_flood(lambda: client.delete_messages(chat_id, msg.id))
-        await asyncio.sleep(0.15)
-
-
-async def _delete_history(client, entity):
-    return await _retry_flood(
-        lambda: client(functions.messages.DeleteHistoryRequest(
-            peer=entity,
-            max_id=0,
-            just_clear=False,
-            revoke=True,
-        ))
-    )
-
-
-async def _leave_dialog(client, entity):
-    if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-        return await _retry_flood(
-            lambda: client(functions.channels.LeaveChannelRequest(channel=entity))
-        )
-    me = await client.get_input_entity("me")
-    return await _retry_flood(
-        lambda: client(functions.messages.DeleteChatUserRequest(
-            chat_id=int(entity.id), user_id=me
-        ))
-    )
-
-
-async def cleanup_account(client, uid, progress_callback=None):
-    """Destructive account cleanup. Saved Messages / self dialog is never touched."""
-    dialogs=[]
-    async for dialog in client.iter_dialogs():
-        entity=getattr(dialog, "entity", None)
-        if not entity:
-            continue
-        # Never touch Saved Messages / self chat.
-        if getattr(entity, "id", None) == int(uid):
-            continue
-        dialogs.append(dialog)
-
-    total=len(dialogs)
-    done=0
-    result={"private":0,"groups":0,"channels":0,"bots":0,"contacts":0,"failed":0}
-
-    async def progress(stage):
-        if progress_callback:
-            await progress_callback(done, total, stage)
-
-    await progress("در حال شروع پاکسازی…")
-
-    for dialog in dialogs:
-        entity=dialog.entity
-        name=(getattr(entity,"title",None) or getattr(entity,"first_name",None)
-              or getattr(entity,"username",None) or str(getattr(entity,"id","?")))
-        try:
-            if getattr(entity,"bot",False):
-                await _delete_history(client, entity)
-                result["bots"] += 1
-            elif getattr(entity,"is_user",False):
-                await _delete_history(client, entity)
-                result["private"] += 1
-            elif getattr(entity,"broadcast",False):
-                await _leave_dialog(client, entity)
-                with contextlib.suppress(Exception):
-                    await _delete_history(client, entity)
-                result["channels"] += 1
-            else:
-                await _leave_dialog(client, entity)
-                with contextlib.suppress(Exception):
-                    await _delete_history(client, entity)
-                result["groups"] += 1
-        except Exception as exc:
-            result["failed"] += 1
-            print(f"[SELF {uid}] cleanup {name}: {exc}")
-        done += 1
-        await progress(f"در حال پاکسازی: {name}")
-
-    # Contacts are handled separately and in batches.
-    try:
-        contacts=[]
-        async for contact in client.iter_contacts():
-            if getattr(contact,"id",None) == int(uid):
-                continue
-            with contextlib.suppress(Exception):
-                contacts.append(await client.get_input_entity(contact.id))
-        for i in range(0,len(contacts),100):
-            batch=contacts[i:i+100]
-            if not batch:
-                continue
-            await _retry_flood(
-                lambda batch=batch: client(functions.contacts.DeleteContactsRequest(id=batch))
-            )
-            result["contacts"] += len(batch)
-            await progress(f"در حال حذف مخاطبین: {result['contacts']}")
-    except Exception as exc:
-        result["failed"] += 1
-        print(f"[SELF {uid}] contacts cleanup: {exc}")
-
-    return result
-
-
 async def handle_outgoing(event, uid):
     app = _app()
     text = (event.raw_text or "").strip()
     low = text.casefold()
     if not text:
-        return
-
-    # Lock/unlock/block/dice commands must be processed before the lock filter.
-    if low in {"قفل چت", "قفل چت + ریپلای"}:
-        if not event.is_private or not event.is_reply:
-            await event.edit("❌ در پیوی روی پیام کاربر ریپلای کن و «قفل چت» را بفرست.")
-            return
-        replied=await event.get_reply_message()
-        target=int(replied.sender_id) if replied and replied.sender_id else 0
-        if not target or target == uid:
-            await event.edit("❌ کاربر هدف پیدا نشد.")
-            return
-        await lock_chat(uid,target)
-        with contextlib.suppress(Exception): await event.delete()
-        return
-
-    if low in {"باز کردن قفل چت", "قفل چت خاموش"}:
-        if not event.is_private:
-            await event.edit("❌ این دستور فقط داخل پیوی قابل استفاده است.")
-            return
-        await unlock_chat(uid,int(event.chat_id))
-        with contextlib.suppress(Exception): await event.delete()
-        return
-
-    if low == "بلاک":
-        if not event.is_reply:
-            await event.edit("❌ روی پیام کاربر ریپلای کن و «بلاک» بفرست.")
-            return
-        replied=await event.get_reply_message()
-        target=int(replied.sender_id) if replied and replied.sender_id else 0
-        if not target or target == uid:
-            await event.edit("❌ کاربر هدف پیدا نشد.")
-            return
-        try:
-            await block_user(event.client,target)
-            await event.edit(f"🚫 کاربر `{target}` بلاک شد.")
-        except Exception as exc:
-            await event.edit(f"❌ بلاک ناموفق بود: {exc}")
-        return
-
-    if low in {"تاس 6", "تاس ۶"}:
-        chat_id=event.chat_id
-        with contextlib.suppress(Exception): await event.delete()
-        try:
-            await roll_until_six(event.client,chat_id)
-        except Exception as exc:
-            await event.client.send_message(chat_id,f"❌ اجرای تاس متوقف شد: {exc}")
-        return
-
-    # Once a private chat is locked, every later outgoing message is removed too.
-    if event.is_private and event.chat_id and _is_locked(uid,int(event.chat_id)):
-        with contextlib.suppress(Exception): await event.delete()
         return
 
     if low in {"دانلود", "download"}:
@@ -501,6 +282,7 @@ async def handle_outgoing(event, uid):
         app.change_balance(uid, -amount)
         app.init_user_db(target)
         app.change_balance(target, amount)
+        sender_label = await app._transfer_sender_label(event.client, uid)
         await event.edit(
             f"✅ انتقال انجام شد.\n💎 {amount:,} الماس به کاربر `{target}` منتقل شد.\n"
             f"💰 موجودی باقی‌مانده: {app.get_balance(uid):,}"
@@ -508,11 +290,10 @@ async def handle_outgoing(event, uid):
         with contextlib.suppress(Exception):
             await app.bot.send_message(
                 target,
-                "🎁 <b>الماس دریافت کردید!</b>\n\n"
-                f"👤 از طرف آیدی <code>{uid}</code> واریز شد.\n"
-                f"💎 مقدار: <b>{amount:,}</b> الماس\n"
-                f"💎 موجودی فعلی: <b>{app.get_balance(target):,}</b> الماس",
-                parse_mode="html",
+                "🎁 **الماس دریافت کردید!**\n\n"
+                f"👤 از طرف {sender_label} برای شما واریز شد.\n"
+                f"💎 مقدار: {amount:,} الماس\n"
+                f"💎 موجودی فعلی: {app.get_balance(target):,} الماس"
             )
         return
 
@@ -550,12 +331,6 @@ async def handle_outgoing(event, uid):
 
 
 async def handle_incoming(event, uid):
-    # Two-way locked chat: delete every incoming message immediately.
-    if event.is_private and event.sender_id and _is_locked(uid, int(event.sender_id)):
-        with contextlib.suppress(Exception):
-            await event.delete()
-        return
-
     if _get(uid, "auto_read", "off") == "on":
         with contextlib.suppress(Exception):
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
@@ -691,7 +466,7 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
                 break
 
             now = time.time()
-            if now - last_clock >= 60:
+            if now - last_clock >= SELF_CLOCK_UPDATE_INTERVAL:
                 await _update_profile_clock(client, uid)
                 last_clock = now
 
