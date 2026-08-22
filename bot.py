@@ -13,6 +13,7 @@ Required:
 
 import asyncio
 import contextlib
+import html
 import json
 import os
 import random
@@ -321,6 +322,10 @@ _cleanup_panel_messages = {}
 # deletion snapshot so a user-cleared chat can be archived without scanning
 # the whole conversation.
 _deleted_message_cache = {}
+# MessageDeleted updates for private chats do not reliably carry the peer/chat id.
+# Keep a tiny message-id -> chat index so an immediately deleted message can
+# still be mapped back to the correct private conversation.
+_deleted_message_index = {}
 
 
 
@@ -797,13 +802,17 @@ async def _private_channel_entries(client, limit=None):
             continue
         if not getattr(dialog, "is_channel", False):
             continue
-        # Exclude groups/supergroups and every channel with a public username.
+        # Only Telegram broadcast channels are eligible.
+        # Supergroups/megagroups must never appear here.
         if getattr(entity, "megagroup", False):
             continue
-        username = getattr(entity, "username", None)
-        if username:
+        if not getattr(entity, "broadcast", False):
             continue
-        # Broadcast/private channel only.
+        # A channel with a public username is public. Private channels do not
+        # have a public username, so reject every channel that exposes one.
+        if bool(getattr(entity, "username", None)):
+            continue
+        # Broadcast + no username => private channel.
         title = (getattr(entity, "title", None) or getattr(dialog, "name", None) or "بدون نام").strip()
         display_id = getattr(dialog, "id", None)
         if display_id is None:
@@ -938,6 +947,14 @@ async def _cleanup_private_dialogs(client, dialogs, uid, label, block_bots=False
         entity = dialog.entity
         async with semaphore:
             try:
+                # Snapshot/archive the latest five messages BEFORE the two-sided
+                # DeleteHistoryRequest.  After revoke=True Telegram may remove
+                # the messages from history, so doing this after deletion is too late.
+                archived = await _archive_last_five_before_delete(
+                    client, uid, getattr(entity, "id", 0), []
+                )
+                if archived:
+                    print(f"[CLEANUP {uid}] archived {archived} messages before deleting private chat {getattr(entity,'id','?')}")
                 await _cleanup_delete_private(client, entity)
                 if block_bots and getattr(entity, "bot", False):
                     await _tg_call_with_flood_retry(
@@ -2086,45 +2103,81 @@ async def self_handle_outgoing(event, uid):
 # SELF INCOMING / PRESENCE
 # ============================================================
 
-async def _archive_last_five_before_delete(client, uid, chat_id, deleted_ids=None):
-    """Archive only the latest five private-chat messages; never scan the whole chat."""
-    try:
-        deleted_ids = set(int(x) for x in (deleted_ids or []))
-        cached = list(_deleted_message_cache.get((int(uid), int(chat_id)), []))
-        # Prefer the local five-message snapshot, then refresh only a tiny window
-        # from Telegram.  This deliberately never iterates the complete history.
-        messages = [m for m in cached if getattr(m, "id", 0) not in deleted_ids]
-        if len(messages) < 5:
-            async for m in client.iter_messages(chat_id, limit=5):
-                if getattr(m, "id", 0) not in deleted_ids and m not in messages:
-                    messages.append(m)
-                if len(messages) >= 5:
-                    break
-        messages = sorted(messages, key=lambda m: getattr(m, "id", 0))[-5:]
-        if not messages:
-            return 0
-        saved = 0
-        for msg in messages:
-            try:
-                await client.forward_messages("me", msg)
+def _cache_private_message(uid, message):
+    """Keep a rolling five-message snapshot and an id -> chat lookup."""
+    chat_id = getattr(message, "chat_id", None)
+    message_id = getattr(message, "id", None)
+    if not chat_id or not message_id:
+        return
+    key = (int(uid), int(chat_id))
+    bucket = _deleted_message_cache.setdefault(key, [])
+    bucket.append(message)
+    _deleted_message_index[(int(uid), int(message_id))] = int(chat_id)
+    if len(bucket) > 5:
+        stale = bucket[:-5]
+        del bucket[:-5]
+        for old in stale:
+            old_id = getattr(old, "id", None)
+            if old_id is not None:
+                _deleted_message_index.pop((int(uid), int(old_id)), None)
+
+
+async def _archive_messages_to_saved(client, uid, messages):
+    """Forward the supplied message objects to Saved Messages, with copy fallback."""
+    saved = 0
+    seen = set()
+    for msg in sorted(messages, key=lambda m: getattr(m, "id", 0)):
+        msg_id = getattr(msg, "id", None)
+        if msg_id in seen:
+            continue
+        seen.add(msg_id)
+        try:
+            await client.forward_messages("me", msg)
+            saved += 1
+            continue
+        except Exception:
+            pass
+        try:
+            if getattr(msg, "media", None):
+                path = await msg.download_media()
+                if path:
+                    await client.send_file("me", path, caption=msg.raw_text or None)
+                    with contextlib.suppress(Exception):
+                        os.remove(path)
+                    saved += 1
+            elif (msg.raw_text or "").strip():
+                await client.send_message("me", msg.raw_text)
                 saved += 1
-            except Exception:
-                # If a message is protected or forwarding is refused, copy its
-                # visible content instead of touching any older chat history.
-                try:
-                    if getattr(msg, "media", None):
-                        path = await msg.download_media()
-                        if path:
-                            await client.send_file("me", path, caption=msg.raw_text or None)
-                            with contextlib.suppress(Exception):
-                                os.remove(path)
-                            saved += 1
-                    elif (msg.raw_text or "").strip():
-                        await client.send_message("me", msg.raw_text)
-                        saved += 1
-                except Exception as exc:
-                    print(f"[SELF {uid}] deleted-chat archive {getattr(msg,'id','?')}: {exc}")
-        return saved
+        except Exception as exc:
+            print(f"[SELF {uid}] deleted-chat archive {msg_id or '?'}: {exc}")
+    return saved
+
+
+async def _archive_last_five_before_delete(client, uid, chat_id, deleted_ids=None):
+    """Archive the deleted message(s) plus the five newest surviving messages."""
+    try:
+        deleted_ids = {int(x) for x in (deleted_ids or [])}
+        cached = list(_deleted_message_cache.get((int(uid), int(chat_id)), []))
+
+        # The deleted message object is valuable: Telegram may remove it from
+        # history before iter_messages() runs.  Therefore archive cached deleted
+        # objects first instead of filtering them out.
+        deleted_messages = [m for m in cached if getattr(m, "id", 0) in deleted_ids]
+
+        # Then take the newest five messages that are still available.
+        survivors = [m for m in cached if getattr(m, "id", 0) not in deleted_ids]
+        if len(survivors) < 5:
+            async for m in client.iter_messages(chat_id, limit=5):
+                if getattr(m, "id", 0) not in deleted_ids and all(getattr(m, "id", 0) != getattr(x, "id", 0) for x in survivors):
+                    survivors.append(m)
+                if len(survivors) >= 5:
+                    break
+        survivors = sorted(survivors, key=lambda m: getattr(m, "id", 0))[-5:]
+
+        # If one message was deleted, this archives that exact message.  For a
+        # bulk deletion it archives all cached deleted messages plus the latest
+        # five remaining messages, without scanning the whole chat.
+        return await _archive_messages_to_saved(client, uid, deleted_messages + survivors)
     except Exception as exc:
         print(f"[SELF {uid}] deleted-chat archive failed: {exc}")
         return 0
@@ -2135,11 +2188,7 @@ async def self_handle_incoming(event, uid):
 
     sender_id = int(event.sender_id) if event.sender_id else 0
     if event.is_private and sender_id and sender_id != int(uid):
-        key = (int(uid), int(event.chat_id))
-        bucket = _deleted_message_cache.setdefault(key, [])
-        bucket.append(event.message)
-        if len(bucket) > 5:
-            del bucket[:-5]
+        _cache_private_message(uid, event.message)
     if event.is_private and sender_id in self_chat_lock_targets(uid) and sender_id != int(uid):
         # Delete this incoming message for both sides when Telegram allows revoke.
         with contextlib.suppress(Exception):
@@ -2250,6 +2299,8 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     @client.on(events.NewMessage(outgoing=True))
     async def _self_outgoing(event):
         try:
+            if event.is_private:
+                _cache_private_message(user_id, event.message)
             await self_handle_outgoing(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] outgoing handler error: {exc}")
@@ -2264,20 +2315,25 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     @client.on(events.MessageDeleted)
     async def _self_deleted(event):
         try:
-            if not getattr(event, "is_private", False):
+            deleted_ids = [int(x) for x in (getattr(event, "deleted_ids", None) or [])]
+            if not deleted_ids:
                 return
-            chat_id = getattr(event, "chat_id", None)
-            if not chat_id:
-                return
-            # Chat-lock intentionally deletes the other user's messages and
-            # must not archive them into Saved Messages.
-            if int(chat_id) in self_chat_lock_targets(user_id):
-                return
-            # A deletion update is the trigger; archive exactly five recent
-            # messages and never perform a full-chat scan.
-            await _archive_last_five_before_delete(
-                client, user_id, chat_id, getattr(event, "deleted_ids", None)
-            )
+
+            # MessageDeleted is not a reliable source of peer/chat_id for normal
+            # private chats. Resolve the chat from the short-lived message index
+            # populated when NewMessage arrived.
+            chats = {}
+            for message_id in deleted_ids:
+                chat_id = _deleted_message_index.get((int(user_id), message_id))
+                if chat_id is not None:
+                    chats.setdefault(int(chat_id), []).append(message_id)
+
+            for chat_id, ids in chats.items():
+                # Chat-lock intentionally deletes incoming messages and must not
+                # archive those messages into Saved Messages.
+                if chat_id in self_chat_lock_targets(user_id):
+                    continue
+                await _archive_last_five_before_delete(client, user_id, chat_id, ids)
         except Exception as exc:
             print(f"[SELF {user_id}] deleted-message handler error: {exc}")
 
