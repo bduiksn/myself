@@ -946,12 +946,15 @@ async def handle_self_panel_callback(event):
     await safe_answer(event)
 
     if action == "close":
-        # Delete the exact bot message that owns this callback. Calling event.delete()
-        # avoids message-id/peer resolution issues seen with bot.delete_messages().
+        # Answer the callback first, then delete the exact bot message that owns it.
         with contextlib.suppress(Exception):
-            await event.answer("پنل بسته شد.")
-        with contextlib.suppress(Exception):
+            await event.answer("پنل بسته شد.", alert=False)
+        try:
             await event.delete()
+        except Exception as exc:
+            print(f"[SELF {uid}] close panel failed: {exc}")
+            with contextlib.suppress(Exception):
+                await bot.delete_messages(event.chat_id, event.message_id)
         return True
     if action == "guide":
         await event.edit(
@@ -1447,7 +1450,7 @@ async def self_handle_outgoing(event, uid):
         await event.edit(await _self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
         return
 
-    dice_match = re.fullmatch(r"تاس\\s+([1-6۱-۶])", text)
+    dice_match = re.fullmatch(r"تاس\s+([1-6۱-۶])", text)
     if dice_match:
         chat_id = event.chat_id
         target_raw = dice_match.group(1)
