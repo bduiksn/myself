@@ -617,80 +617,88 @@ def self_panel_text(uid):
 def self_guide_text(page=1):
     pages = [
         (
-            "📚 <b>راهنمای سلف — صفحه ۱ از ۴</b>\n\n"
-            "🚀 <b>شروع و پنل</b>\n"
-            "• برای شروع، شماره خودت را با /start ثبت کن و از «خرید سلف» وارد فرایند ورود شو.\n"
-            "• کد ورود و در صورت نیاز رمز دو مرحله‌ای را وارد کن؛ پس از ورود، سلف فعال می‌شود و هزینه استفاده ساعتی محاسبه می‌شود.\n"
-            "• «پنل» یا «panel»: پنل شیشه‌ای سلف را در همان چت باز می‌کند.\n"
-            "• «راهنما»: همین راهنمای چندصفحه‌ای را باز می‌کند.\n\n"
-            "🕐 <b>ساعت روی نام</b>\n"
-            "• «ساعت روشن / خاموش» برای نمایش ساعت ایران روی نام.\n"
-            "• «فونت ساعت ...» برای انتخاب فونت ساعت؛ با دکمه فونت ساعت هم می‌توانی بین فونت‌ها جابه‌جا شوی.\n\n"
-            "🅱 <b>قالب متن</b>\n"
-            "• «بولد روشن / خاموش» برای بولد کردن پیام‌های ارسالی.\n"
-            "• «فونت فارسی روشن / خاموش» برای کشیده‌سازی ظاهری متن فارسی.\n"
-            "• «فونت انگلیسی ...» برای تغییر فونت حروف انگلیسی."
+            "📚 <b>راهنمای سلف — صفحه ۱ از ۵</b>\n\n"
+            "🧊 <b>پنل و تنظیمات پروفایل</b>\n"
+            "• «پنل» پنل شیشه‌ای سلف را در همان گفتگو باز می‌کند.\n"
+            "• 🕐 ساعت روی نام: نمایش ساعت ایران روی نام پروفایل و روشن/خاموش‌کردن آن.\n"
+            "• «فونت ساعت» برای انتخاب ظاهر اعداد ساعت؛ فونت‌های مختلف از پنل قابل تغییر هستند.\n"
+            "• 🅱 «بولد روشن / خاموش» برای بولدکردن متن‌های ارسالی.\n"
+            "• 🅵 «فونت فارسی روشن / خاموش» برای کشیده‌سازی ظاهری متن فارسی.\n"
+            "• 🔤 «فونت انگلیسی» برای تغییر ظاهر حروف انگلیسی.\n\n"
+            "💎 <b>مدیریت سلف</b>\n"
+            "• فعال/غیرفعال‌کردن قابلیت‌های سلف از طریق دکمه‌های پنل.\n"
+            "• نمایش وضعیت قابلیت‌ها، ساعت، ریاکشن، قفل چت و وضعیت پاکسازی در پنل.\n"
+            "• حساب کاربری، خرید سلف، مدیریت سلف و زیرمجموعه‌گیری از منوی اصلی در دسترس هستند."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۲ از ۴</b>\n\n"
-            "🌐 <b>ترجمه و حضور</b>\n"
+            "📚 <b>راهنمای سلف — صفحه ۲ از ۵</b>\n\n"
+            "🌐 <b>ترجمه و وضعیت گفتگو</b>\n"
             "• «ترنسلیت روشن / خاموش»: ترجمه خودکار متن‌های ارسالی به انگلیسی.\n"
             "• «سین روشن / خاموش»: خوانده‌شدن پیام‌های دریافتی.\n"
-            "• «تایپینگ روشن / خاموش»: نمایش وضعیت تایپینگ در گفتگوها.\n"
+            "• «تایپینگ روشن / خاموش»: نمایش وضعیت تایپ‌کردن در گفتگوها.\n"
             "• «حالت بازی روشن / خاموش»: نمایش وضعیت بازی به‌جای تایپینگ.\n\n"
             "🤖 <b>تبچی</b>\n"
-            "• «تبچی روشن / خاموش» برای پاسخ خودکار.\n"
-            "• «تبچی متن متن دلخواه» متن پاسخ خودکار را تعیین و فعال می‌کند.\n\n"
+            "• «تبچی روشن / خاموش» برای فعال یا غیرفعال‌کردن پاسخ خودکار.\n"
+            "• «تبچی متن متن دلخواه» متن پاسخ خودکار را ذخیره و فعال می‌کند.\n\n"
             "❤️ <b>ریاکشن خودکار</b>\n"
             "• روی پیام کاربر ریپلای کن و «ریاکشن 🔥» یا یکی از ایموجی‌های پشتیبانی‌شده را بفرست.\n"
-            "• «حذف ریاکشن» یا «ریاکشن خاموش» برای حذف ریاکشن آن کاربر.\n"
-            "• ریاکشن‌ها به‌صورت خودکار روی پیام‌های همان کاربر اعمال می‌شوند."
+            "• «حذف ریاکشن» یا «ریاکشن خاموش» ریاکشن خودکار آن کاربر را حذف می‌کند.\n"
+            "• ریاکشن انتخاب‌شده روی پیام‌های بعدی همان کاربر اعمال می‌شود."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۳ از ۴</b>\n\n"
-            "💾 <b>ذخیره پیام و مدیا</b>\n"
-            "• «دانلود» را روی یک پیام ریپلای‌شده بفرست تا در Saved Messages ذخیره شود.\n"
-            "• «متن» روی ویس/فایل صوتی ریپلای‌شده: تبدیل ویس به متن.\n"
-            "• 🎵 «ویس → MP3»: روی ویس ریپلای کن و بنویس «ویس به mp3».\n"
-            "• 🎙️ «MP3 → ویس»: روی MP3 ریپلای کن و بنویس «mp3 به ویس».\n"
-            "• 🎬 «ویدیو → ویس»: روی ویدیو ریپلای کن و بنویس «ویدیو به ویس».\n"
-            "• 🎬 «ویدیو → MP3»: روی ویدیو ریپلای کن و بنویس «ویدیو به mp3».\n"
-            "• «OCR» روی تصویر ریپلای‌شده: استخراج متن تصویر.\n"
+            "📚 <b>راهنمای سلف — صفحه ۳ از ۵</b>\n\n"
+            "🎵 <b>تبدیل رسانه</b>\n"
+            "• 🎵 روی ویس ریپلای کن → «ویس به mp3» → تبدیل ویس به MP3.\n"
+            "• 🎙️ روی MP3 ریپلای کن → «mp3 به ویس» → تبدیل MP3 به ویس تلگرام.\n"
+            "• 🎬 روی ویدیو ریپلای کن → «ویدیو به ویس» → استخراج صدا و ارسال به‌صورت ویس.\n"
+            "• 🎬 روی ویدیو ریپلای کن → «ویدیو به mp3» → استخراج صدا و ارسال به‌صورت MP3.\n"
+            "• تبدیل‌ها با FFmpeg انجام می‌شوند و پیام عملیات با درصد پیشرفت به‌روزرسانی می‌شود.\n\n"
+            "📝 <b>ابزارهای پیام</b>\n"
+            "• «متن» روی ویس یا فایل صوتی ریپلای‌شده: تبدیل صدا به متن.\n"
+            "• «OCR» یا «او سی آر» روی تصویر: استخراج متن تصویر.\n"
+            "• «دانلود» روی پیام ریپلای‌شده: انتقال پیام/رسانه به پیام‌های ذخیره‌شده.\n"
             "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
-            "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ استیکر متحرک در صورت امکان به GIF تبدیل می‌شود.\n\n"
-            "📢 <b>ذخیره از چنل خصوصی</b>\n"
-            "• از پنل «ذخیره چنل» را بزن؛ فقط چنل‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
-            "• نوع را انتخاب کن: تصاویر، ویدیوها، موسیقی، ویس‌ها، متن‌ها یا کل مدیاها.\n"
-            "• تعداد را بین ۱ تا ۱۰۰۰ وارد کن. هنگام ذخیره، دکمه‌های پنل حذف و یک نوار پیشرفت حدوداً ۳ ثانیه‌ای نمایش داده می‌شود.\n"
-            "• در پایان پیام «مدیا مورد نظر با موفقیت ذخیره شد!» نمایش داده می‌شود.\n\n"
-            "🗑️ <b>ذخیره پیام‌های حذف‌شده</b>\n"
-            "• پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند. در پاک‌کردن کامل/گروهی چت، پنج پیام آخرِ باقی‌مانده نیز برای Snapshot آرشیو می‌شوند.\n"
-            "• برای اینکه مشخص باشد پیام متعلق به چه کسی است، در نسخه آرشیوشده شناسه/نام نویسنده زیر پیام درج می‌شود."
+            "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ برای استیکر متحرک در صورت امکان GIF ساخته می‌شود."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۴ از ۴</b>\n\n"
+            "📚 <b>راهنمای سلف — صفحه ۴ از ۵</b>\n\n"
+            "📢 <b>ذخیره از چنل خصوصی</b>\n"
+            "• از پنل «ذخیره چنل» را انتخاب کن؛ فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
+            "• نوع ذخیره را انتخاب کن: تصاویر، ویدیوها، موسیقی، ویس‌ها، متن‌ها یا کل مدیاها.\n"
+            "• تعداد موردنظر را از ۱ تا ۱۰۰۰ ارسال کن.\n"
+            "• پس از شروع، همان پیام پنل به پیام پردازش تبدیل می‌شود و همه دکمه‌ها حذف می‌شوند.\n"
+            "• نوار پیشرفت بر اساس موارد واقعاً پردازش‌شده به‌روزرسانی می‌شود و در صورت کوتاه‌بودن عملیات، صفحه پردازش حداقل حدود ۳ ثانیه باقی می‌ماند.\n"
+            "• در پایان همان پیام به نتیجه عملیات و دکمه بازگشت تبدیل می‌شود.\n\n"
+            "🗑️ <b>آرشیو پیام‌های حذف‌شده</b>\n"
+            "• پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند.\n"
+            "• هنگام پاکسازی کامل/گروهی چت، پنج پیام آخرِ باقی‌مانده برای Snapshot آرشیو می‌شوند.\n"
+            "• در نسخه آرشیوشده، شناسه/نام نویسنده برای تشخیص صاحب پیام درج می‌شود."
+        ),
+        (
+            "📚 <b>راهنمای سلف — صفحه ۵ از ۵</b>\n\n"
             "🧹 <b>پاکسازی اکانت</b>\n"
-            "• از پنل می‌توانی چت‌های خصوصی، گپ‌ها، کانال‌ها، مخاطبین، ربات‌ها یا همه را جداگانه پاکسازی کنی.\n"
-            "• پاکسازی چت خصوصی دوطرفه انجام می‌شود هرجا Telegram اجازه دهد؛ Saved Messages دست‌نخورده می‌ماند.\n\n"
+            "• پاکسازی چت‌های خصوصی، گپ‌ها، کانال‌ها، مخاطبین و ربات‌ها به‌صورت جداگانه.\n"
+            "• گزینه «پاکسازی همه» همه بخش‌های قابل انتخاب را اجرا می‌کند.\n"
+            "• پاکسازی چت خصوصی تا جایی که Telegram اجازه دهد دوطرفه انجام می‌شود و پیام‌های ذخیره‌شده دست‌نخورده می‌مانند.\n\n"
             "🔒 <b>قفل چت</b>\n"
-            "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست. پیام‌های بعدی آن کاربر دوطرفه حذف می‌شوند.\n"
-            "• «بازکردن قفل چت» برای خاموش‌کردن.\n\n"
+            "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست.\n"
+            "• برای غیرفعال‌کردن: «بازکردن قفل چت».\n\n"
             "🚫 <b>بلاک</b>\n"
-            "• داخل گروه/سوپرگروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» یا «بلاک» بفرست.\n\n"
+            "• در گروه/سوپرگروه روی پیام کاربر ریپلای کن و «بلاک» یا «بلاک + ریپلای» بفرست.\n\n"
             "💎 <b>انتقال الماس</b>\n"
-            "• داخل گپ روی پیام کاربر ریپلای کن و «انتقال 500» یا هر مقدار دلخواه بفرست.\n\n"
-            "👥 <b>ساخت گروه و چنل</b>\n"
+            "• داخل گپ روی پیام کاربر ریپلای کن و «انتقال ۵۰۰» یا مقدار دلخواه را بفرست.\n\n"
+            "👥 <b>ساخت گروه و کانال</b>\n"
             "• «ساخت گروه نام گروه» برای ساخت سوپرگروه.\n"
             "• «ساخت چنل نام چنل» برای ساخت کانال.\n\n"
             "🎲 <b>تاس</b>\n"
-            "• «تاس 1» تا «تاس 6»؛ تاس واقعی تلگرام تا نتیجه درخواستی بیاید دوباره اجرا می‌شود و فقط نتیجه موفق باقی می‌ماند."
-        )
+            "• «تاس ۱» تا «تاس ۶»؛ تاس واقعی Telegram تا رسیدن به نتیجه درخواستی تکرار می‌شود و فقط نتیجه موفق باقی می‌ماند."
+        ),
     ]
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
 
 def self_guide_buttons(uid, page=1):
-    total_pages = 4
+    total_pages = 5
     page = max(1, min(int(page), total_pages))
     nav = []
     if page > 1:
@@ -1145,7 +1153,7 @@ async def handle_self_panel_callback(event):
             page = int(action.split(":", 1)[1])
         except ValueError:
             page = 1
-        page = max(1, min(page, 4))
+        page = max(1, min(page, 5))
         try:
             await event.edit(
                 self_guide_text(page),
@@ -1735,14 +1743,35 @@ def _channel_progress_text(percent, label="در حال ذخیره مدیا…"):
 
 
 class _ChannelProgressController:
-    """Single, throttled UI owner for the private-channel save progress message."""
+    """Single UI owner for the private-channel save progress message."""
 
-    def __init__(self, state, *, min_interval=0.4):
+    def __init__(self, state, *, min_interval=0.25):
         self.chat_id = state.get("panel_chat_id")
         self.message_id = state.get("panel_message_id")
         self.min_interval = float(min_interval)
         self.last_edit = 0.0
         self.last_percent = None
+        self._back_data = _self_cb(int(state.get("uid", 0)), "panel") if state.get("uid") else b""
+
+    async def _edit(self, text, buttons=None):
+        if not self.chat_id or not self.message_id:
+            return False
+        for attempt in range(2):
+            try:
+                await bot.edit_message(
+                    int(self.chat_id),
+                    int(self.message_id),
+                    text,
+                    parse_mode="html",
+                    buttons=buttons,
+                )
+                return True
+            except Exception as exc:
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+                else:
+                    print(f"[CHANNEL_SAVE UI] message edit failed: {exc}")
+        return False
 
     async def update(self, processed, total, *, successful=0, failed=0, force=False):
         if not self.chat_id or not self.message_id:
@@ -1754,8 +1783,6 @@ class _ChannelProgressController:
         percent = max(0, min(100, percent))
         now = time.monotonic()
 
-        # Keep the real progress calculation tied to every processed item, but
-        # throttle Telegram edits so fast operations do not flood the bot API.
         if not force:
             if percent == self.last_percent:
                 return
@@ -1763,25 +1790,15 @@ class _ChannelProgressController:
                 return
 
         text = _channel_progress_text(percent)
-        try:
-            await bot.edit_message(
-                int(self.chat_id),
-                int(self.message_id),
-                text,
-                parse_mode="html",
-                buttons=None,
-            )
+        if await self._edit(text, buttons=None):
             self.last_edit = time.monotonic()
             self.last_percent = percent
-        except Exception as exc:
-            # A UI edit failure must never abort the real storage operation.
-            print(f"[CHANNEL_SAVE UI] progress edit failed: {exc}")
 
     async def finish(self, *, successful, failed, requested, available):
-        """Force the real operation's final 100% state, then replace it with the result."""
         if not self.chat_id or not self.message_id:
             return
 
+        # Always show a real 100% state first, with no buttons.
         await self.update(
             max(available, 1) if available else 0,
             max(available, 1) if available else 0,
@@ -1803,21 +1820,12 @@ class _ChannelProgressController:
             if available < requested:
                 text += f"\n📦 پیدا/پردازش‌شده: {available} از {requested}"
 
-        try:
-            await bot.edit_message(
-                int(self.chat_id),
-                int(self.message_id),
-                text,
-                parse_mode="html",
-                buttons=[[btn("↩️ برگشت", self._back_callback(), "primary")]],
-            )
-        except Exception as exc:
-            # Result UI is best-effort and must not change the storage result.
-            print(f"[CHANNEL_SAVE UI] final edit failed: {exc}")
+        await self._edit(
+            text,
+            buttons=[[btn("↩️ برگشت", self._back_callback(), "primary")]],
+        )
 
     def _back_callback(self):
-        # The callback is already scoped to the same user in _self_cb.
-        # panel_chat_id is the private chat, so the UID is stored in state by caller.
         return self._back_data
 
     def set_back_callback(self, callback_data):
@@ -1978,11 +1986,12 @@ MEDIA_CONVERT_PROGRESS_INTERVAL = float(os.getenv("MEDIA_CONVERT_PROGRESS_INTERV
 
 
 def _media_conversion_commands():
+    # کاربر فقط از دستورات فارسی استفاده می‌کند.
     return {
-        "voice_to_mp3": {"ویس به mp3", "voice to mp3"},
-        "mp3_to_voice": {"mp3 به ویس", "mp3 to voice"},
-        "video_to_voice": {"ویدیو به ویس", "ویدیو به voice", "video to voice"},
-        "video_to_mp3": {"ویدیو به mp3", "video to mp3"},
+        "voice_to_mp3": {"ویس به mp3"},
+        "mp3_to_voice": {"mp3 به ویس"},
+        "video_to_voice": {"ویدیو به ویس"},
+        "video_to_mp3": {"ویدیو به mp3"},
     }
 
 
@@ -2356,6 +2365,7 @@ async def self_handle_outgoing(event, uid):
                 "step": "processing",
                 "uid": int(uid),
                 "requested": int(count),
+                "processing_started": time.monotonic(),
             })
             self_set_channel_save_state(uid, channel_state)
 
@@ -2394,6 +2404,9 @@ async def self_handle_outgoing(event, uid):
                         except Exception as ui_exc:
                             print(f"[CHANNEL_SAVE UI] fatal-error edit failed: {ui_exc}")
                     else:
+                        elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
+                        if elapsed < 3.0:
+                            await asyncio.sleep(3.0 - elapsed)
                         await _channel_progress_done(
                             channel_state,
                             successful=result["saved"],
@@ -2402,6 +2415,13 @@ async def self_handle_outgoing(event, uid):
                             available=result["available"],
                         )
                 else:
+                    # Keep the processing/progress message visible for at least
+                    # three seconds, even when Telegram returns the selected
+                    # messages very quickly. This makes the progress UI visible
+                    # instead of flashing past instantly.
+                    elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
+                    if elapsed < 3.0:
+                        await asyncio.sleep(3.0 - elapsed)
                     await _channel_progress_done(
                         channel_state,
                         successful=result["saved"],
@@ -2427,7 +2447,7 @@ async def self_handle_outgoing(event, uid):
                 self_clear_channel_save_state(uid)
             return
 
-    if low in {"دانلود", "download"}:
+    if low == "دانلود":
         await event.edit(await _self_save_replied_message(event, uid))
         return
 
@@ -2446,7 +2466,7 @@ async def self_handle_outgoing(event, uid):
                 await event.edit(result)
         return
 
-    if low in {"متن", "text"} and event.is_reply:
+    if low == "متن" and event.is_reply:
         await event.edit(await _self_transcribe_reply(event, uid), parse_mode="md")
         return
 
@@ -2481,7 +2501,7 @@ async def self_handle_outgoing(event, uid):
             )
         return
 
-    if low in {"پنل", "panel"}:
+    if low == "پنل":
         try:
             # The self account invokes the bot's inline mode and inserts the
             # result into this chat. The bot does NOT need to be a member here.
@@ -2494,7 +2514,7 @@ async def self_handle_outgoing(event, uid):
                 await event.edit("❌ پنل شیشه‌ای ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
 
-    if low in {"راهنما", "guide"}:
+    if low == "راهنما":
         try:
             await send_self_inline_result(event, "راهنما")
             with contextlib.suppress(Exception):
@@ -3221,7 +3241,7 @@ async def finish_login(user_id: int):
 async def inline_query_handler(event):
     """Insert the self panel into any chat through Telegram inline mode."""
     query = (event.text or "").strip().casefold()
-    if query not in {"پنل", "panel", "راهنما", "guide"}:
+    if query not in {"پنل", "راهنما"}:
         await event.answer([], cache_time=0, private=True)
         return
 
@@ -3244,10 +3264,10 @@ async def inline_query_handler(event):
         await event.answer([result], cache_time=0, private=True)
         return
 
-    if query in {"راهنما", "guide"}:
+    if query == "راهنما":
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای چهارصفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
+            description="راهنمای پنج‌صفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
@@ -3312,7 +3332,7 @@ async def private_message(event):
     # --------------------------------------------------------
     # DIRECT PANEL IN BOT PRIVATE CHAT
     # --------------------------------------------------------
-    if text.strip().casefold() in {"پنل", "panel"}:
+    if text.strip().casefold() == "پنل":
         if is_banned(user_id):
             await event.reply("🚫 شما توسط ادمین مسدود شده‌اید.")
             return
