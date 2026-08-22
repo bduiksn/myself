@@ -317,6 +317,11 @@ _self_reply_cache = set()
 _inline_bot_cache = {}
 _cleanup_tasks = {}
 _cleanup_panel_messages = {}
+# Last five incoming private messages per chat.  Used only as a short-lived
+# deletion snapshot so a user-cleared chat can be archived without scanning
+# the whole conversation.
+_deleted_message_cache = {}
+
 
 
 # ============================================================
@@ -571,6 +576,7 @@ def self_panel_buttons(uid):
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
         [btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger")],
+        [btn("💾 ذخیره از چنل خصوصی", _self_cb(uid, "channel_save"), "primary")],
         [btn("❌ بستن پنل", _self_cb(uid, "close"), "danger")],
     ]
 
@@ -757,6 +763,23 @@ def self_chat_lock_targets(uid):
 
 def self_save_chat_lock_targets(uid, targets):
     self_set(uid, "chat_lock_targets", json.dumps(sorted(int(x) for x in targets)))
+
+
+def self_channel_save_state(uid):
+    try:
+        raw = self_get(uid, "channel_save_state", "{}")
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def self_set_channel_save_state(uid, state):
+    self_set(uid, "channel_save_state", json.dumps(state or {}, ensure_ascii=False))
+
+
+def self_clear_channel_save_state(uid):
+    self_set_channel_save_state(uid, {})
 
 
 async def _tg_call_with_flood_retry(call_factory, *, label="telegram", max_retries=20):
@@ -1000,31 +1023,12 @@ async def handle_self_panel_callback(event):
     await safe_answer(event)
 
     if action == "close":
-        # Inline-mode results are attached to the callback message.  For these
-        # messages event.delete() is the most reliable first attempt; the bot
-        # client is used only as a fallback.
-        await safe_answer(event, "پنل بسته شد.")
-        deleted = False
-
+        # The panel is a bot-owned inline-result message.  Do not delete it:
+        # edit it and remove every button, so the user gets a visible
+        # confirmation instead of a dead/unchanged inline panel.
+        await safe_answer(event, "پنل با موفقیت بسته شد.")
         with contextlib.suppress(Exception):
-            await event.delete()
-            deleted = True
-
-        if not deleted:
-            with contextlib.suppress(Exception):
-                message = await event.get_message()
-                if message is not None:
-                    await bot.delete_messages(message)
-                    deleted = True
-
-        if not deleted:
-            with contextlib.suppress(Exception):
-                if event.chat_id is not None and event.message_id:
-                    await bot.delete_messages(event.chat_id, event.message_id)
-                    deleted = True
-
-        if not deleted:
-            print(f"[SELF {uid}] close panel failed: chat={event.chat_id} msg={event.message_id}")
+            await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
     if action == "guide":
         await event.edit(
@@ -1095,6 +1099,45 @@ async def handle_self_panel_callback(event):
         task = asyncio.create_task(_cleanup_run(uid, target, event.chat_id, event.message_id))
         _cleanup_tasks[uid] = task
         await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
+        return True
+
+    if action == "channel_save":
+        self_set_channel_save_state(uid, {"step": "channel"})
+        await event.edit(
+            "💾 <b>ذخیره از چنل خصوصی</b>\n\n"
+            "آیدی یا لینک چنل موردنظر را بفرست.\n"
+            "مثال: <code>-1001234567890</code> یا <code>@channel</code>",
+            parse_mode="html",
+            buttons=[[btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
+                     [btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+
+    if action == "channel_cancel":
+        self_clear_channel_save_state(uid)
+        await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+        return True
+
+    if action.startswith("channel_media:"):
+        media_kind = action.split(":", 1)[1]
+        if media_kind not in {"photos", "videos", "music", "voice", "text", "all"}:
+            return True
+        state = self_channel_save_state(uid)
+        if not state.get("channel"):
+            await event.edit("❌ ابتدا آیدی چنل را وارد کن.", buttons=self_panel_buttons(uid))
+            return True
+        labels = {
+            "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
+            "voice": "ویس", "text": "متن", "all": "کل مدیاها"
+        }
+        state.update({"step": "count", "media": media_kind})
+        self_set_channel_save_state(uid, state)
+        await event.edit(
+            f"💾 <b>{labels[media_kind]}</b>\n\nچند مورد آخر را ذخیره کنم؟\nمثال: <code>10</code>",
+            parse_mode="html",
+            buttons=[[btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
+                     [btn("↩️ برگشت", _self_cb(uid, "channel_save"), "primary")]],
+        )
         return True
 
     if action == "lock_help":
@@ -1466,17 +1509,15 @@ async def _self_roll_guaranteed_value(event, uid, target):
             if value == target:
                 return True
 
-            # Remove every unsuccessful roll and request revoke so Telegram
-            # removes it from both sides where the API permits it.
+            # Keep only the successful roll visible in the chat.
             with contextlib.suppress(Exception):
                 await _tg_call_with_flood_retry(
-                    lambda: event.client(
-                        functions.messages.DeleteMessagesRequest(
-                            id=[msg.id],
-                            revoke=True,
-                        )
+                    lambda: event.client.delete_messages(
+                        event.chat_id,
+                        msg.id,
+                        revoke=True,
                     ),
-                    label="delete failed dice two-sided",
+                    label="delete failed dice",
                 )
 
             await asyncio.sleep(0.2)
@@ -1492,20 +1533,114 @@ async def _self_roll_guaranteed_six(event, uid):
     return await _self_roll_guaranteed_value(event, uid, 6)
 
 
+async def _self_save_channel_media(client, uid, state, count):
+    """Save only the requested number/type from a private channel to Saved Messages."""
+    kind = state.get("media", "all")
+    channel = state.get("channel")
+    labels = {"photos":"تصویر", "videos":"ویدیو", "music":"موسیقی", "voice":"ویس", "text":"متن", "all":"مدیا"}
+    if not channel:
+        return "❌ چنل انتخاب نشده است."
+    try:
+        entity = await client.get_entity(channel)
+        selected = []
+        async for msg in client.iter_messages(entity, limit=max(count * 5, count + 20)):
+            if not msg:
+                continue
+            media = getattr(msg, "media", None)
+            matched = False
+            if kind == "photos": matched = bool(getattr(msg, "photo", False))
+            elif kind == "videos": matched = bool(getattr(msg, "video", False))
+            elif kind == "music": matched = bool(getattr(msg, "audio", False))
+            elif kind == "voice": matched = bool(getattr(msg, "voice", False))
+            elif kind == "text": matched = bool((msg.raw_text or "").strip()) and not media
+            elif kind == "all": matched = bool(media or (msg.raw_text or "").strip())
+            if matched:
+                selected.append(msg)
+                if len(selected) >= count:
+                    break
+        if not selected:
+            return f"❌ هیچ موردی از نوع «{labels.get(kind, kind)}» در چنل پیدا نشد."
+
+        saved = 0
+        # Keep chronological order in Saved Messages.
+        for msg in reversed(selected):
+            try:
+                await client.forward_messages("me", msg)
+                saved += 1
+            except Exception:
+                # Protected content cannot be forwarded; copy it when possible.
+                try:
+                    if getattr(msg, "media", None):
+                        path = await msg.download_media()
+                        if path:
+                            await client.send_file("me", path, caption=msg.raw_text or None)
+                            with contextlib.suppress(Exception):
+                                os.remove(path)
+                            saved += 1
+                    elif (msg.raw_text or "").strip():
+                        await client.send_message("me", msg.raw_text)
+                        saved += 1
+                except Exception as exc:
+                    print(f"[SELF {uid}] channel save message {getattr(msg,'id','?')}: {exc}")
+        return f"✅ {saved} {labels.get(kind, 'مورد')} آخر چنل در پیام‌های ذخیره‌شده ذخیره شد."
+    except Exception as exc:
+        print(f"[SELF {uid}] channel save failed: {exc}")
+        return f"❌ ذخیره از چنل انجام نشد.\n<code>{html.escape(str(exc))}</code>"
+
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
     if not text:
         return
 
-    if event.is_private:
-        peer_id = int(event.chat_id or 0)
-        if peer_id in self_chat_lock_targets(uid) and low not in {"بازکردن قفل چت", "باز کردن قفل چت", "قفل چت خاموش"}:
-            with contextlib.suppress(Exception):
-                await _tg_call_with_flood_retry(
-                    lambda: event.client.delete_messages(event.chat_id, event.id, revoke=True),
-                    label="chat lock outgoing delete",
+    # Interactive private-channel saver.  The bot panel stores only the
+    # current user's short state; the self account performs the actual fetch.
+    channel_state = self_channel_save_state(uid)
+    if channel_state:
+        step = channel_state.get("step")
+        if step == "channel":
+            try:
+                raw_channel = text.strip()
+                if raw_channel.startswith("https://t.me/"):
+                    raw_channel = "@" + raw_channel.rstrip("/").split("/")[-1].split("?")[0]
+                entity = await event.client.get_entity(raw_channel)
+                if not (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
+                    raise ValueError("این آیدی متعلق به کانال نیست")
+                channel_state.update({"step": "media", "channel": raw_channel, "channel_id": int(entity.id)})
+                self_set_channel_save_state(uid, channel_state)
+                await event.edit(
+                    "📢 چنل پیدا شد. حالا نوع مورد ذخیره‌شدن را انتخاب کن.",
+                    buttons=None,
                 )
+                await bot.send_message(
+                    event.chat_id,
+                    "💾 نوع ذخیره را از پنل انتخاب کن:",
+                    buttons=[
+                        [btn("🖼 تصاویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیوها", _self_cb(uid, "channel_media:videos"))],
+                        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس ها", _self_cb(uid, "channel_media:voice"))],
+                        [btn("📝 متن ها", _self_cb(uid, "channel_media:text")), btn("📦 کل مدیا ها", _self_cb(uid, "channel_media:all"))],
+                        [btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
+                    ],
+                )
+            except Exception as exc:
+                await event.edit(f"❌ چنل پیدا نشد یا دسترسی وجود ندارد.\n<code>{html.escape(str(exc))}</code>", parse_mode="html")
+                self_clear_channel_save_state(uid)
+            return
+
+        if step == "count":
+            try:
+                count = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")))
+                if count < 1 or count > 1000:
+                    raise ValueError("تعداد باید بین 1 تا 1000 باشد")
+            except Exception as exc:
+                await event.edit(f"❌ تعداد نامعتبر است: {exc}")
+                return
+            try:
+                result_text = await _self_save_channel_media(event.client, uid, channel_state, count)
+                await event.edit(result_text, parse_mode="html")
+            finally:
+                self_clear_channel_save_state(uid)
             return
 
     if low in {"دانلود", "download"}:
@@ -1699,7 +1834,7 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"🔒 قفل چت برای `{target}` فعال شد. پیام‌های بعدی این کاربر دوطرفه پاک می‌شوند.")
         return
 
-    if low in {"بازکردن قفل چت", "باز کردن قفل چت", "قفل چت خاموش"}:
+    if low in {"بازکردن قفل چت", "باز کردن قفل چت", "قفل چت خاموش", "قفل چت خاموش + ریپلای"}:
         if not event.is_private or not event.is_reply:
             await event.edit("❌ در پیوی روی پیام همان کاربر ریپلای کن.")
             return
@@ -1808,10 +1943,60 @@ async def self_handle_outgoing(event, uid):
 # SELF INCOMING / PRESENCE
 # ============================================================
 
+async def _archive_last_five_before_delete(client, uid, chat_id, deleted_ids=None):
+    """Archive only the latest five private-chat messages; never scan the whole chat."""
+    try:
+        deleted_ids = set(int(x) for x in (deleted_ids or []))
+        cached = list(_deleted_message_cache.get((int(uid), int(chat_id)), []))
+        # Prefer the local five-message snapshot, then refresh only a tiny window
+        # from Telegram.  This deliberately never iterates the complete history.
+        messages = [m for m in cached if getattr(m, "id", 0) not in deleted_ids]
+        if len(messages) < 5:
+            async for m in client.iter_messages(chat_id, limit=5):
+                if getattr(m, "id", 0) not in deleted_ids and m not in messages:
+                    messages.append(m)
+                if len(messages) >= 5:
+                    break
+        messages = sorted(messages, key=lambda m: getattr(m, "id", 0))[-5:]
+        if not messages:
+            return 0
+        saved = 0
+        for msg in messages:
+            try:
+                await client.forward_messages("me", msg)
+                saved += 1
+            except Exception:
+                # If a message is protected or forwarding is refused, copy its
+                # visible content instead of touching any older chat history.
+                try:
+                    if getattr(msg, "media", None):
+                        path = await msg.download_media()
+                        if path:
+                            await client.send_file("me", path, caption=msg.raw_text or None)
+                            with contextlib.suppress(Exception):
+                                os.remove(path)
+                            saved += 1
+                    elif (msg.raw_text or "").strip():
+                        await client.send_message("me", msg.raw_text)
+                        saved += 1
+                except Exception as exc:
+                    print(f"[SELF {uid}] deleted-chat archive {getattr(msg,'id','?')}: {exc}")
+        return saved
+    except Exception as exc:
+        print(f"[SELF {uid}] deleted-chat archive failed: {exc}")
+        return 0
+
+
 async def self_handle_incoming(event, uid):
     client = event.client
 
     sender_id = int(event.sender_id) if event.sender_id else 0
+    if event.is_private and sender_id and sender_id != int(uid):
+        key = (int(uid), int(event.chat_id))
+        bucket = _deleted_message_cache.setdefault(key, [])
+        bucket.append(event.message)
+        if len(bucket) > 5:
+            del bucket[:-5]
     if event.is_private and sender_id in self_chat_lock_targets(uid) and sender_id != int(uid):
         # Delete this incoming message for both sides when Telegram allows revoke.
         with contextlib.suppress(Exception):
@@ -1932,6 +2117,26 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             await self_handle_incoming(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] incoming handler error: {exc}")
+
+    @client.on(events.MessageDeleted)
+    async def _self_deleted(event):
+        try:
+            if not getattr(event, "is_private", False):
+                return
+            chat_id = getattr(event, "chat_id", None)
+            if not chat_id:
+                return
+            # Chat-lock intentionally deletes the other user's messages and
+            # must not archive them into Saved Messages.
+            if int(chat_id) in self_chat_lock_targets(user_id):
+                return
+            # A deletion update is the trigger; archive exactly five recent
+            # messages and never perform a full-chat scan.
+            await _archive_last_five_before_delete(
+                client, user_id, chat_id, getattr(event, "deleted_ids", None)
+            )
+        except Exception as exc:
+            print(f"[SELF {user_id}] deleted-message handler error: {exc}")
 
     try:
         await client.connect()
