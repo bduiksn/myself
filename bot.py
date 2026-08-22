@@ -784,20 +784,30 @@ def self_save_chat_lock_targets(uid, targets):
 
 
 async def _private_channel_entries(client, limit=None):
-    """Return joined private broadcast channels as (display_id, title, entity)."""
+    """Return ONLY joined private broadcast channels.
+
+    A Telegram channel is public when it has a public username.
+    Megagroups/supergroups are deliberately excluded even though Telethon
+    exposes them through the channel dialog type as well.
+    """
     items = []
     async for dialog in client.iter_dialogs():
         entity = getattr(dialog, "entity", None)
-        if not entity or not getattr(dialog, "is_channel", False):
+        if not isinstance(entity, types.Channel):
             continue
-        # Private channel = no public username.  Megagroups are not treated as channels here.
-        if getattr(entity, "megagroup", False) or getattr(entity, "username", None):
+        if not getattr(dialog, "is_channel", False):
             continue
+        # Exclude groups/supergroups and every channel with a public username.
+        if getattr(entity, "megagroup", False):
+            continue
+        username = getattr(entity, "username", None)
+        if username:
+            continue
+        # Broadcast/private channel only.
         title = (getattr(entity, "title", None) or getattr(dialog, "name", None) or "بدون نام").strip()
         display_id = getattr(dialog, "id", None)
         if display_id is None:
-            display_id = -100 * 0 + int(entity.id)
-            display_id = -1000000000000 - int(entity.id) if int(entity.id) > 0 else int(entity.id)
+            display_id = -1000000000000 - int(entity.id)
         items.append((int(display_id), title, entity))
     items.sort(key=lambda x: x[1].casefold())
     return items[:limit] if limit else items
@@ -1073,14 +1083,31 @@ async def handle_self_panel_callback(event):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
     if action == "guide":
-        await event.edit(self_guide_text(1), parse_mode="html", buttons=self_guide_buttons(uid, 1))
+        try:
+            await event.edit(
+                self_guide_text(1),
+                parse_mode="html",
+                buttons=self_guide_buttons(uid, 1),
+            )
+        except Exception as exc:
+            print(f"[SELF {uid}] guide callback failed: {exc}")
+            await safe_answer(event, "❌ راهنما باز نشد؛ دوباره تلاش کن.", True)
         return True
     if action.startswith("guide_page:"):
         try:
             page = int(action.split(":", 1)[1])
         except ValueError:
             page = 1
-        await event.edit(self_guide_text(page), parse_mode="html", buttons=self_guide_buttons(uid, page))
+        page = max(1, min(page, 3))
+        try:
+            await event.edit(
+                self_guide_text(page),
+                parse_mode="html",
+                buttons=self_guide_buttons(uid, page),
+            )
+        except Exception as exc:
+            print(f"[SELF {uid}] guide page {page} callback failed: {exc}")
+            await safe_answer(event, "❌ صفحه راهنما باز نشد؛ دوباره تلاش کن.", True)
         return True
     if action == "panel":
         await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
@@ -1175,24 +1202,47 @@ async def handle_self_panel_callback(event):
         try:
             entity_id = int(action.split(":", 1)[1])
             client = self_clients.get(uid)
+            if not client:
+                raise ValueError("سلف فعال نیست")
+
+            # Resolve from the account's actual dialogs, not from an arbitrary
+            # numeric ID, so a stale/forged callback cannot select another chat.
             entity = None
-            if client:
-                async for dialog in client.iter_dialogs():
-                    candidate = getattr(dialog, "entity", None)
-                    if candidate and getattr(candidate, "id", None) == entity_id:
-                        entity = candidate
-                        break
-            if not entity or getattr(entity, "megagroup", False) or getattr(entity, "username", None):
+            async for dialog in client.iter_dialogs():
+                candidate = getattr(dialog, "entity", None)
+                if not isinstance(candidate, types.Channel):
+                    continue
+                if getattr(candidate, "id", None) != entity_id:
+                    continue
+                if getattr(candidate, "megagroup", False):
+                    continue
+                if getattr(candidate, "username", None):
+                    continue
+                entity = candidate
+                break
+
+            if entity is None:
                 raise ValueError("چنل خصوصی معتبر پیدا نشد")
+
             title = getattr(entity, "title", None) or "بدون نام"
             state = {"step": "media", "channel_id": int(entity.id), "channel_title": title}
             self_set_channel_save_state(uid, state)
             await event.edit(
-                f"📢 <b>{html.escape(title)}</b>\n<code>{html.escape(str(getattr(event, 'chat_id', '')))}</code>\n\nنوع مدیا را انتخاب کن:",
-                parse_mode="html", buttons=self_channel_media_buttons(uid),
+                f"📢 <b>{html.escape(title)}</b>\n\nنوع مدیا را انتخاب کن:",
+                parse_mode="html",
+                buttons=self_channel_media_buttons(uid),
             )
         except Exception as exc:
-            await event.edit(f"❌ انتخاب چنل ناموفق بود.\n<code>{html.escape(str(exc))}</code>", parse_mode="html", buttons=self_panel_buttons(uid))
+            print(f"[SELF {uid}] private channel pick failed: {exc}")
+            with contextlib.suppress(Exception):
+                await event.edit(
+                    f"❌ انتخاب چنل ناموفق بود.\n<code>{html.escape(str(exc))}</code>",
+                    parse_mode="html",
+                    buttons=[
+                        [btn("🔙 بازگشت به چنل‌ها", _self_cb(uid, "channel_save"), "primary")],
+                        [btn("🏠 پنل", _self_cb(uid, "panel"), "primary")],
+                    ],
+                )
         return True
 
     if action == "channel_cancel":
@@ -2484,10 +2534,10 @@ async def inline_query_handler(event):
     if query in {"راهنما", "guide"}:
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای سلف را در همین چت ارسال کن.",
-            text=self_guide_text(),
+            description="راهنمای سه‌صفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
+            text=self_guide_text(1),
             parse_mode="html",
-            buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+            buttons=self_guide_buttons(uid, 1),
         )
     else:
         result = event.builder.article(
