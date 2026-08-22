@@ -978,14 +978,9 @@ async def _cleanup_private_dialogs(client, dialogs, uid, label, block_bots=False
         entity = dialog.entity
         async with semaphore:
             try:
-                # Snapshot/archive the latest five messages BEFORE the two-sided
-                # DeleteHistoryRequest.  After revoke=True Telegram may remove
-                # the messages from history, so doing this after deletion is too late.
-                archived = await _archive_last_five_before_delete(
-                    client, uid, getattr(entity, "id", 0), []
-                )
-                if archived:
-                    print(f"[CLEANUP {uid}] archived {archived} messages before deleting private chat {getattr(entity,'id','?')}")
+                # This cleanup action is explicitly initiated by the account owner.
+                # Never archive from this path. Automatic archiving is handled by
+                # MessageDeleted for incoming messages only.
                 await _cleanup_delete_private(client, entity)
                 if block_bots and getattr(entity, "bot", False):
                     await _tg_call_with_flood_retry(
@@ -1734,12 +1729,15 @@ def self_channel_media_buttons(uid):
     ]
 
 
-def _channel_progress_text(percent, label="در حال ذخیره مدیا…"):
+def _channel_progress_text(percent, label="در حال ذخیره مدیا…", processed=None, total=None):
     percent = max(0, min(100, int(percent)))
     slots = 20
     filled = round(slots * percent / 100)
     bar = "▰" * filled + "▱" * (slots - filled)
-    return f"💾 <b>{html.escape(label)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>"
+    counter = ""
+    if processed is not None and total is not None:
+        counter = f"\n📦 پردازش: <b>{int(processed)}</b> از <b>{int(total)}</b>"
+    return f"💾 <b>{html.escape(label)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>{counter}"
 
 
 class _ChannelProgressController:
@@ -1789,7 +1787,7 @@ class _ChannelProgressController:
             if (now - self.last_edit) < self.min_interval:
                 return
 
-        text = _channel_progress_text(percent)
+        text = _channel_progress_text(percent, processed=processed, total=total)
         if await self._edit(text, buttons=None):
             self.last_edit = time.monotonic()
             self.last_percent = percent
@@ -2373,12 +2371,12 @@ async def self_handle_outgoing(event, uid):
                 _self_cb(uid, "panel")
             )
 
+            # Convert the original panel prompt into the progress message first.
+            # Only then remove the numeric reply so the prompt never remains stuck.
+            await controller.update(0, count, force=True)
+
             with contextlib.suppress(Exception):
                 await event.delete()
-
-            # This edit is intentionally awaited before storage starts: from this
-            # point onward the user sees exactly one button-less processing message.
-            await controller.update(0, count, force=True)
 
             try:
                 result = await _self_save_channel_media(
@@ -2763,10 +2761,13 @@ async def self_handle_outgoing(event, uid):
 # ============================================================
 
 def _cache_private_message(uid, message):
-    """Keep a rolling five-message snapshot and an id -> chat lookup."""
+    """Keep only incoming private messages for deleted-message archiving."""
     chat_id = getattr(message, "chat_id", None)
     message_id = getattr(message, "id", None)
-    if not chat_id or not message_id:
+    sender_id = getattr(message, "sender_id", None)
+    # Never cache the owner's own messages. This prevents self-deletions from
+    # ever becoming archive candidates.
+    if not chat_id or not message_id or not sender_id or int(sender_id) == int(uid):
         return
     key = (int(uid), int(chat_id))
     bucket = _deleted_message_cache.setdefault(key, [])
@@ -2792,6 +2793,9 @@ async def _archive_messages_to_saved(client, uid, messages):
         seen.add(msg_id)
 
         sender_id = getattr(msg, "sender_id", None)
+        # Only the other participant's messages may be archived.
+        if not sender_id or int(sender_id) == int(uid):
+            continue
         if sender_id:
             try:
                 sender = await client.get_entity(int(sender_id))
@@ -2976,8 +2980,8 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     @client.on(events.NewMessage(outgoing=True))
     async def _self_outgoing(event):
         try:
-            if event.is_private:
-                _cache_private_message(user_id, event.message)
+            # Outgoing messages belong to the account owner and must never be
+            # placed in the deleted-message archive cache.
             await self_handle_outgoing(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] outgoing handler error: {exc}")
