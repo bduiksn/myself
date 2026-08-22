@@ -575,9 +575,11 @@ def self_panel_buttons(uid):
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
-        [btn("🧹 پاکسازی اکانت", _self_cb(uid, "cleanup"), "danger")],
-        [btn("💾 ذخیره از چنل خصوصی", _self_cb(uid, "channel_save"), "primary")],
-        [btn("❌ بستن پنل", _self_cb(uid, "close"), "danger")],
+        [
+            btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
+            btn("💾 ذخیره چنل", _self_cb(uid, "channel_save"), "primary"),
+        ],
+        [btn("❌ بستن", _self_cb(uid, "close"), "danger")],
     ]
 
 
@@ -1173,7 +1175,13 @@ async def handle_self_panel_callback(event):
         try:
             entity_id = int(action.split(":", 1)[1])
             client = self_clients.get(uid)
-            entity = await client.get_entity(entity_id) if client else None
+            entity = None
+            if client:
+                async for dialog in client.iter_dialogs():
+                    candidate = getattr(dialog, "entity", None)
+                    if candidate and getattr(candidate, "id", None) == entity_id:
+                        entity = candidate
+                        break
             if not entity or getattr(entity, "megagroup", False) or getattr(entity, "username", None):
                 raise ValueError("چنل خصوصی معتبر پیدا نشد")
             title = getattr(entity, "title", None) or "بدون نام"
@@ -2832,7 +2840,7 @@ async def group_commands(event):
         buttons = [[btn(f"💎 {balance:,}", f"balance_{target}".encode(), "primary")]]
         await event.reply(
             f"🎖️ **موجودی الماس**\n\n"
-            f"👤 آیدی: `{identity}`",
+            f"👤 آیدی: **{identity}**",
             buttons=buttons
         )
         return
