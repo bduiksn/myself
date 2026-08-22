@@ -141,13 +141,19 @@ async def handle_outgoing(event, uid):
         await event.edit(await app._self_create_chat_or_channel(event, uid, "چنل", channel_match.group(1)))
         return
 
-    if low in {"تاس 6", "تاس ۶"}:
+    dice_match = re.fullmatch(r"تاس\s+([1-6۱-۶])", text)
+    if dice_match:
         chat_id = event.chat_id
+        target_raw = dice_match.group(1)
+        target = int(target_raw.translate(str.maketrans("۱۲۳۴۵۶", "123456")))
         with contextlib.suppress(Exception):
             await event.delete()
-        ok = await app._self_roll_guaranteed_six(event, uid)
+        ok = await app._self_roll_guaranteed_value(event, uid, target)
         if not ok:
-            await event.client.send_message(chat_id, "❌ تلگرام اجازه تولید تاس ۶ را نداد.")
+            await event.client.send_message(
+                chat_id,
+                f"❌ تلگرام اجازه تولید تاس {target} را نداد."
+            )
         return
 
     # The user account sends these commands; the bot account sends the actual
@@ -490,6 +496,7 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
         print(f"[SELF {uid}] started")
 
         last_clock_value = None
+        last_clock_font = None
         while True:
             if not app.get_active_session(uid):
                 break
@@ -497,10 +504,13 @@ async def worker(uid: int, session_string: str, sub_type: int = 0):
                 app.deactivate_session(uid)
                 break
 
-            clock_value = _clock(uid) if _get(uid, "time_name", "on") == "on" else None
-            if clock_value and clock_value != last_clock_value:
+            clock_enabled = _get(uid, "time_name", "on") == "on"
+            clock_value = _clock(uid) if clock_enabled else None
+            clock_font = _get(uid, "clock_font", "normal") if clock_enabled else None
+            if clock_value and (clock_value != last_clock_value or clock_font != last_clock_font):
                 await _update_profile_clock(client, uid)
                 last_clock_value = clock_value
+                last_clock_font = clock_font
 
             if not await _charge(uid):
                 break
