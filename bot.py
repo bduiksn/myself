@@ -615,68 +615,85 @@ def self_panel_text(uid):
 def self_guide_text(page=1):
     pages = [
         (
-            "📚 <b>راهنمای سلف — صفحه ۱ از ۳</b>\n\n"
-            "⚙️ <b>پنل و تنظیمات</b>\n"
-            "• «پنل» پنل سلف را در همان چتی که دستور را فرستادی باز می‌کند.\n"
-            "• ساعت، بولد، فونت فارسی/انگلیسی، ترجمه، سین، تایپینگ و حالت بازی از پنل قابل کنترل‌اند.\n\n"
-            "❤️ <b>ریاکشن</b>\n"
-            "• روی پیام کاربر ریپلای کن و «ریاکشن ❤️» را بفرست.\n"
-            "• برای حذف: «حذف ریاکشن».\n\n"
+            "📚 <b>راهنمای سلف — صفحه ۱ از ۴</b>\n\n"
+            "🚀 <b>شروع و پنل</b>\n"
+            "• برای شروع، شماره خودت را با /start ثبت کن و از «خرید سلف» وارد فرایند ورود شو.\n"
+            "• کد ورود و در صورت نیاز رمز دو مرحله‌ای را وارد کن؛ پس از ورود، سلف فعال می‌شود و هزینه استفاده ساعتی محاسبه می‌شود.\n"
+            "• «پنل» یا «panel»: پنل شیشه‌ای سلف را در همان چت باز می‌کند.\n"
+            "• «راهنما»: همین راهنمای چندصفحه‌ای را باز می‌کند.\n\n"
+            "🕐 <b>ساعت روی نام</b>\n"
+            "• «ساعت روشن / خاموش» برای نمایش ساعت ایران روی نام.\n"
+            "• «فونت ساعت ...» برای انتخاب فونت ساعت؛ با دکمه فونت ساعت هم می‌توانی بین فونت‌ها جابه‌جا شوی.\n\n"
+            "🅱 <b>قالب متن</b>\n"
+            "• «بولد روشن / خاموش» برای بولد کردن پیام‌های ارسالی.\n"
+            "• «فونت فارسی روشن / خاموش» برای کشیده‌سازی ظاهری متن فارسی.\n"
+            "• «فونت انگلیسی ...» برای تغییر فونت حروف انگلیسی."
+        ),
+        (
+            "📚 <b>راهنمای سلف — صفحه ۲ از ۴</b>\n\n"
+            "🌐 <b>ترجمه و حضور</b>\n"
+            "• «ترنسلیت روشن / خاموش»: ترجمه خودکار متن‌های ارسالی به انگلیسی.\n"
+            "• «سین روشن / خاموش»: خوانده‌شدن پیام‌های دریافتی.\n"
+            "• «تایپینگ روشن / خاموش»: نمایش وضعیت تایپینگ در گفتگوها.\n"
+            "• «حالت بازی روشن / خاموش»: نمایش وضعیت بازی به‌جای تایپینگ.\n\n"
             "🤖 <b>تبچی</b>\n"
-            "• «تبچی روشن / خاموش»\n"
-            "• «تبچی متن متن دلخواه» برای تعیین پاسخ خودکار.\n\n"
-            "👁 <b>سین</b> و ⌨️ <b>تایپینگ</b>\n"
-            "• هرکدام را از پنل روشن یا خاموش کن."
+            "• «تبچی روشن / خاموش» برای پاسخ خودکار.\n"
+            "• «تبچی متن متن دلخواه» متن پاسخ خودکار را تعیین و فعال می‌کند.\n\n"
+            "❤️ <b>ریاکشن خودکار</b>\n"
+            "• روی پیام کاربر ریپلای کن و «ریاکشن 🔥» یا یکی از ایموجی‌های پشتیبانی‌شده را بفرست.\n"
+            "• «حذف ریاکشن» یا «ریاکشن خاموش» برای حذف ریاکشن آن کاربر.\n"
+            "• ریاکشن‌ها به‌صورت خودکار روی پیام‌های همان کاربر اعمال می‌شوند."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۲ از ۳</b>\n\n"
-            "💾 <b>ذخیره از چنل خصوصی</b>\n"
-            "• از پنل، «ذخیره از چنل خصوصی» را بزن.\n"
-            "• به‌جای وارد کردن آیدی، همه چنل‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
-            "• فرمت هر مورد: <code>-ID</code> | <b>Channel Name</b>\n"
-            "• بعد از انتخاب چنل، نوع مدیا و تعداد را انتخاب کن.\n"
-            "• ذخیره‌سازی با کپی انجام می‌شود و پیام فوروارد نمی‌شود.\n"
-            "• برای عکس، فقط پیام‌هایی که واقعاً <b>Photo</b> دارند شمرده می‌شوند؛ اگر عکسی نباشد لاگ ثبت می‌شود و نتیجه هم صریح اعلام می‌شود.\n\n"
-            "💎 <b>انتقال الماس</b>\n"
-            "• روی پیام کاربر ریپلای کن و «انتقال 500» بفرست.\n\n"
-            "📝 <b>ویس / OCR</b>\n"
-            "• روی ویس ریپلای + «متن».\n"
-            "• روی تصویر ریپلای + «OCR».\n\n"
-            "🖼️ <b>تبدیل رسانه</b>\n"
-            "• عکس → «استیکر»\n"
-            "• استیکر → «عکس»"
+            "📚 <b>راهنمای سلف — صفحه ۳ از ۴</b>\n\n"
+            "💾 <b>ذخیره پیام و مدیا</b>\n"
+            "• «دانلود» را روی یک پیام ریپلای‌شده بفرست تا در Saved Messages ذخیره شود.\n"
+            "• «متن» روی ویس/فایل صوتی ریپلای‌شده: تبدیل ویس به متن.\n"
+            "• «OCR» روی تصویر ریپلای‌شده: استخراج متن تصویر.\n"
+            "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
+            "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ استیکر متحرک در صورت امکان به GIF تبدیل می‌شود.\n\n"
+            "📢 <b>ذخیره از چنل خصوصی</b>\n"
+            "• از پنل «ذخیره چنل» را بزن؛ فقط چنل‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
+            "• نوع را انتخاب کن: تصاویر، ویدیوها، موسیقی، ویس‌ها، متن‌ها یا کل مدیاها.\n"
+            "• تعداد را بین ۱ تا ۱۰۰۰ وارد کن. هنگام ذخیره، دکمه‌های پنل حذف و یک نوار پیشرفت حدوداً ۳ ثانیه‌ای نمایش داده می‌شود.\n"
+            "• در پایان پیام «مدیا مورد نظر با موفقیت ذخیره شد!» نمایش داده می‌شود.\n\n"
+            "🗑️ <b>ذخیره پیام‌های حذف‌شده</b>\n"
+            "• پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند. در پاک‌کردن کامل/گروهی چت، پنج پیام آخرِ باقی‌مانده نیز برای Snapshot آرشیو می‌شوند.\n"
+            "• برای اینکه مشخص باشد پیام متعلق به چه کسی است، در نسخه آرشیوشده شناسه/نام نویسنده زیر پیام درج می‌شود."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۳ از ۳</b>\n\n"
+            "📚 <b>راهنمای سلف — صفحه ۴ از ۴</b>\n\n"
             "🧹 <b>پاکسازی اکانت</b>\n"
-            "• چت‌ها، گپ‌ها، کانال‌ها، مخاطبین، ربات‌ها یا همه را جداگانه پاکسازی کن.\n"
-            "• Saved Messages دست‌نخورده می‌ماند.\n\n"
+            "• از پنل می‌توانی چت‌های خصوصی، گپ‌ها، کانال‌ها، مخاطبین، ربات‌ها یا همه را جداگانه پاکسازی کنی.\n"
+            "• پاکسازی چت خصوصی دوطرفه انجام می‌شود هرجا Telegram اجازه دهد؛ Saved Messages دست‌نخورده می‌ماند.\n\n"
             "🔒 <b>قفل چت</b>\n"
-            "• روی پیام کاربر در پیوی ریپلای کن و «قفل چت» بفرست.\n"
-            "• برای خاموش کردن: «بازکردن قفل چت».\n\n"
-            "🚫 <b>بلاک + ریپلای</b>\n"
-            "• داخل گروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» بفرست.\n\n"
+            "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست. پیام‌های بعدی آن کاربر دوطرفه حذف می‌شوند.\n"
+            "• «بازکردن قفل چت» برای خاموش‌کردن.\n\n"
+            "🚫 <b>بلاک</b>\n"
+            "• داخل گروه/سوپرگروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» یا «بلاک» بفرست.\n\n"
+            "💎 <b>انتقال الماس</b>\n"
+            "• داخل گپ روی پیام کاربر ریپلای کن و «انتقال 500» یا هر مقدار دلخواه بفرست.\n\n"
+            "👥 <b>ساخت گروه و چنل</b>\n"
+            "• «ساخت گروه نام گروه» برای ساخت سوپرگروه.\n"
+            "• «ساخت چنل نام چنل» برای ساخت کانال.\n\n"
             "🎲 <b>تاس</b>\n"
-            "• «تاس 1» تا «تاس 6»؛ فقط نتیجه موفق باقی می‌ماند.\n\n"
-            "🕐 <b>فونت ساعت</b>\n"
-            "• از دکمه فونت ساعت، فونت‌ها را یکی‌یکی تغییر بده."
+            "• «تاس 1» تا «تاس 6»؛ تاس واقعی تلگرام تا نتیجه درخواستی بیاید دوباره اجرا می‌شود و فقط نتیجه موفق باقی می‌ماند."
         )
     ]
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
 
-
 def self_guide_buttons(uid, page=1):
-    page = max(1, min(int(page), 3))
+    total_pages = 4
+    page = max(1, min(int(page), total_pages))
     nav = []
     if page > 1:
         nav.append(btn("◀️ قبلی", _self_cb(uid, f"guide_page:{page-1}"), "danger"))
-    if page < 3:
+    if page < total_pages:
         nav.append(btn("بعدی ▶️", _self_cb(uid, f"guide_page:{page+1}"), "success"))
     rows = [nav] if nav else []
     rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
     return rows
-
 
 def self_font_preview(uid, kind):
     if kind == "clock":
@@ -1115,7 +1132,7 @@ async def handle_self_panel_callback(event):
             page = int(action.split(":", 1)[1])
         except ValueError:
             page = 1
-        page = max(1, min(page, 3))
+        page = max(1, min(page, 4))
         try:
             await event.edit(
                 self_guide_text(page),
@@ -1279,7 +1296,12 @@ async def handle_self_panel_callback(event):
             "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
             "voice": "ویس", "text": "متن", "all": "کل مدیاها"
         }
-        state.update({"step": "count", "media": media_kind})
+        state.update({
+            "step": "count",
+            "media": media_kind,
+            "panel_chat_id": int(event.chat_id),
+            "panel_message_id": int(event.message_id),
+        })
         self_set_channel_save_state(uid, state)
         await event.edit(
             f"💾 <b>{labels[media_kind]}</b>\n\nچند مورد آخر را ذخیره کنم؟\nمثال: <code>10</code>",
@@ -1691,6 +1713,55 @@ def self_channel_media_buttons(uid):
     ]
 
 
+def _channel_progress_text(percent, label="در حال ذخیره مدیا…"):
+    percent = max(0, min(100, int(percent)))
+    slots = 20
+    filled = round(slots * percent / 100)
+    bar = "▰" * filled + "▱" * (slots - filled)
+    return f"💾 <b>{html.escape(label)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>"
+
+
+async def _channel_progress_animation(state, duration=3.0):
+    chat_id = state.get("panel_chat_id")
+    message_id = state.get("panel_message_id")
+    if not chat_id or not message_id:
+        return
+    steps = 15
+    interval = duration / steps
+    for step in range(steps + 1):
+        percent = min(90, round(step * 90 / steps))
+        with contextlib.suppress(Exception):
+            await bot.edit_message(
+                int(chat_id), int(message_id),
+                _channel_progress_text(percent),
+                parse_mode="html", buttons=None,
+            )
+        if step < steps:
+            await asyncio.sleep(interval)
+
+
+async def _channel_progress_done(state, success=True, result_text=None):
+    chat_id = state.get("panel_chat_id")
+    message_id = state.get("panel_message_id")
+    if not chat_id or not message_id:
+        return
+    if success:
+        with contextlib.suppress(Exception):
+            await bot.edit_message(
+                int(chat_id), int(message_id),
+                _channel_progress_text(100, "ذخیره‌سازی کامل شد"),
+                parse_mode="html", buttons=None,
+            )
+            await asyncio.sleep(0.15)
+        text = "✅ <b>مدیا مورد نظر با موفقیت ذخیره شد!</b>"
+        if result_text and not result_text.startswith("❌"):
+            text += f"\n\n{html.escape(result_text)}"
+    else:
+        text = result_text or "❌ ذخیره مدیا انجام نشد."
+    with contextlib.suppress(Exception):
+        await bot.edit_message(int(chat_id), int(message_id), text, parse_mode="html", buttons=None)
+
+
 async def _self_save_channel_media(client, uid, state, count):
     """Copy requested items from a private channel to Saved Messages; never forward."""
     kind = state.get("media", "all")
@@ -1796,9 +1867,22 @@ async def self_handle_outgoing(event, uid):
             except Exception as exc:
                 await event.edit(f"❌ تعداد نامعتبر است: {exc}")
                 return
+            with contextlib.suppress(Exception):
+                await event.delete()
+            animation = asyncio.create_task(_channel_progress_animation(channel_state, 3.0))
             try:
                 result_text = await _self_save_channel_media(event.client, uid, channel_state, count)
-                await event.edit(result_text, parse_mode="html")
+                await animation
+                success = not result_text.startswith("❌")
+                await _channel_progress_done(channel_state, success=success, result_text=result_text)
+            except Exception as exc:
+                animation.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await animation
+                await _channel_progress_done(
+                    channel_state, success=False,
+                    result_text=f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                )
             finally:
                 self_clear_channel_save_state(uid)
             return
@@ -2123,7 +2207,7 @@ def _cache_private_message(uid, message):
 
 
 async def _archive_messages_to_saved(client, uid, messages):
-    """Forward the supplied message objects to Saved Messages, with copy fallback."""
+    """Copy archived messages to Saved Messages and always keep author identity visible."""
     saved = 0
     seen = set()
     for msg in sorted(messages, key=lambda m: getattr(m, "id", 0)):
@@ -2131,22 +2215,37 @@ async def _archive_messages_to_saved(client, uid, messages):
         if msg_id in seen:
             continue
         seen.add(msg_id)
+
+        sender_id = getattr(msg, "sender_id", None)
+        if sender_id:
+            try:
+                sender = await client.get_entity(int(sender_id))
+                username = getattr(sender, "username", None)
+                first_name = getattr(sender, "first_name", None) or "کاربر"
+                sender_label = f"@{username}" if username else f"{first_name} | ID: {int(sender_id)}"
+            except Exception:
+                sender_label = f"ID: {int(sender_id)}"
+        else:
+            sender_label = "نامشخص"
+        author_footer = f"👤 نویسنده: {sender_label}"
+
+        # Deliberately copy instead of forwarding.  This keeps Saved Messages
+        # clean while the explicit author footer guarantees attribution even
+        # when Telegram cannot create a forward for a deleted message.
         try:
-            await client.forward_messages("me", msg)
-            saved += 1
-            continue
-        except Exception:
-            pass
-        try:
+            body = (msg.raw_text or "").strip()
+            caption = f"{body}\n\n{author_footer}" if body else author_footer
             if getattr(msg, "media", None):
                 path = await msg.download_media()
                 if path:
-                    await client.send_file("me", path, caption=msg.raw_text or None)
-                    with contextlib.suppress(Exception):
-                        os.remove(path)
+                    try:
+                        await client.send_file("me", path, caption=caption)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            os.remove(path)
                     saved += 1
-            elif (msg.raw_text or "").strip():
-                await client.send_message("me", msg.raw_text)
+            elif body:
+                await client.send_message("me", caption)
                 saved += 1
         except Exception as exc:
             print(f"[SELF {uid}] deleted-chat archive {msg_id or '?'}: {exc}")
@@ -2154,34 +2253,37 @@ async def _archive_messages_to_saved(client, uid, messages):
 
 
 async def _archive_last_five_before_delete(client, uid, chat_id, deleted_ids=None):
-    """Archive the deleted message(s) plus the five newest surviving messages."""
+    """Archive deleted messages; snapshot five only when the whole private history is gone."""
     try:
         deleted_ids = {int(x) for x in (deleted_ids or [])}
         cached = list(_deleted_message_cache.get((int(uid), int(chat_id)), []))
-
-        # The deleted message object is valuable: Telegram may remove it from
-        # history before iter_messages() runs.  Therefore archive cached deleted
-        # objects first instead of filtering them out.
         deleted_messages = [m for m in cached if getattr(m, "id", 0) in deleted_ids]
 
-        # Then take the newest five messages that are still available.
-        survivors = [m for m in cached if getattr(m, "id", 0) not in deleted_ids]
-        if len(survivors) < 5:
-            async for m in client.iter_messages(chat_id, limit=5):
-                if getattr(m, "id", 0) not in deleted_ids and all(getattr(m, "id", 0) != getattr(x, "id", 0) for x in survivors):
-                    survivors.append(m)
-                if len(survivors) >= 5:
-                    break
-        survivors = sorted(survivors, key=lambda m: getattr(m, "id", 0))[-5:]
+        # MessageDeleted does not reliably expose whether the user chose
+        # "delete entire chat".  The most reliable post-delete signal is that
+        # no message remains in the private dialog.  Only in that case do we
+        # take the five-message snapshot. A normal message deletion archives
+        # only the message(s) actually deleted and never unrelated messages.
+        remaining = None
+        query_ok = False
+        try:
+            query_ok = True
+            async for _ in client.iter_messages(chat_id, limit=1):
+                remaining = True
+                break
+        except Exception as exc:
+            query_ok = False
+            print(f"[SELF {uid}] deleted-chat remaining-message check failed: {exc}")
+        whole_chat_cleared = query_ok and remaining is not True
 
-        # If one message was deleted, this archives that exact message.  For a
-        # bulk deletion it archives all cached deleted messages plus the latest
-        # five remaining messages, without scanning the whole chat.
-        return await _archive_messages_to_saved(client, uid, deleted_messages + survivors)
+        if whole_chat_cleared and cached:
+            snapshot = sorted(cached, key=lambda m: getattr(m, "id", 0))[-5:]
+            return await _archive_messages_to_saved(client, uid, snapshot)
+
+        return await _archive_messages_to_saved(client, uid, deleted_messages)
     except Exception as exc:
         print(f"[SELF {uid}] deleted-chat archive failed: {exc}")
         return 0
-
 
 async def self_handle_incoming(event, uid):
     client = event.client
@@ -2590,7 +2692,7 @@ async def inline_query_handler(event):
     if query in {"راهنما", "guide"}:
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای سه‌صفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
+            description="راهنمای چهارصفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
