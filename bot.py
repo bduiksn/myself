@@ -1000,19 +1000,29 @@ async def handle_self_panel_callback(event):
     await safe_answer(event)
 
     if action == "close":
-        # Inline-mode results are bot messages.  Delete the concrete message
-        # through the bot client first; CallbackQuery.delete() is unreliable
-        # for some inline-result message types.
+        # Inline-mode results are attached to the callback message.  For these
+        # messages event.delete() is the most reliable first attempt; the bot
+        # client is used only as a fallback.
         await safe_answer(event, "پنل بسته شد.")
         deleted = False
+
         with contextlib.suppress(Exception):
-            if event.chat_id and event.message_id:
-                await bot.delete_messages(event.chat_id, event.message_id)
-                deleted = True
+            await event.delete()
+            deleted = True
+
         if not deleted:
             with contextlib.suppress(Exception):
-                await event.delete()
-                deleted = True
+                message = await event.get_message()
+                if message is not None:
+                    await bot.delete_messages(message)
+                    deleted = True
+
+        if not deleted:
+            with contextlib.suppress(Exception):
+                if event.chat_id is not None and event.message_id:
+                    await bot.delete_messages(event.chat_id, event.message_id)
+                    deleted = True
+
         if not deleted:
             print(f"[SELF {uid}] close panel failed: chat={event.chat_id} msg={event.message_id}")
         return True
@@ -1456,15 +1466,17 @@ async def _self_roll_guaranteed_value(event, uid, target):
             if value == target:
                 return True
 
-            # Keep only the successful roll visible in the chat.
+            # Remove every unsuccessful roll and request revoke so Telegram
+            # removes it from both sides where the API permits it.
             with contextlib.suppress(Exception):
                 await _tg_call_with_flood_retry(
-                    lambda: event.client.delete_messages(
-                        event.chat_id,
-                        msg.id,
-                        revoke=True,
+                    lambda: event.client(
+                        functions.messages.DeleteMessagesRequest(
+                            id=[msg.id],
+                            revoke=True,
+                        )
                     ),
-                    label="delete failed dice",
+                    label="delete failed dice two-sided",
                 )
 
             await asyncio.sleep(0.2)
