@@ -318,6 +318,8 @@ _self_reply_cache = set()
 _inline_bot_cache = {}
 _cleanup_tasks = {}
 _cleanup_panel_messages = {}
+# Independent state for media conversions; never shares channel-save state.
+media_convert_state = {}
 # Last five incoming private messages per chat.  Used only as a short-lived
 # deletion snapshot so a user-cleared chat can be archived without scanning
 # the whole conversation.
@@ -649,6 +651,10 @@ def self_guide_text(page=1):
             "💾 <b>ذخیره پیام و مدیا</b>\n"
             "• «دانلود» را روی یک پیام ریپلای‌شده بفرست تا در Saved Messages ذخیره شود.\n"
             "• «متن» روی ویس/فایل صوتی ریپلای‌شده: تبدیل ویس به متن.\n"
+            "• 🎵 «ویس → MP3»: روی ویس ریپلای کن و بنویس «ویس به mp3».\n"
+            "• 🎙️ «MP3 → ویس»: روی MP3 ریپلای کن و بنویس «mp3 به ویس».\n"
+            "• 🎬 «ویدیو → ویس»: روی ویدیو ریپلای کن و بنویس «ویدیو به ویس».\n"
+            "• 🎬 «ویدیو → MP3»: روی ویدیو ریپلای کن و بنویس «ویدیو به mp3».\n"
             "• «OCR» روی تصویر ریپلای‌شده: استخراج متن تصویر.\n"
             "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
             "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ استیکر متحرک در صورت امکان به GIF تبدیل می‌شود.\n\n"
@@ -1962,6 +1968,346 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
         }
 
 
+
+# ============================================================
+# MEDIA CONVERSION (SELF)
+# ============================================================
+
+MEDIA_CONVERT_MAX_MB = int(os.getenv("MEDIA_CONVERT_MAX_MB", "2048"))
+MEDIA_CONVERT_PROGRESS_INTERVAL = float(os.getenv("MEDIA_CONVERT_PROGRESS_INTERVAL", "0.8"))
+
+
+def _media_conversion_commands():
+    return {
+        "voice_to_mp3": {"ویس به mp3", "voice to mp3"},
+        "mp3_to_voice": {"mp3 به ویس", "mp3 to voice"},
+        "video_to_voice": {"ویدیو به ویس", "ویدیو به voice", "video to voice"},
+        "video_to_mp3": {"ویدیو به mp3", "video to mp3"},
+    }
+
+
+def _media_conversion_command(text: str):
+    low = (text or "").strip().casefold()
+    for operation, aliases in _media_conversion_commands().items():
+        if low in {x.casefold() for x in aliases}:
+            return operation
+    return None
+
+
+def _message_media_kind(message):
+    """Detect Telegram media using Message fields, MIME type and document attributes."""
+    if not message:
+        return None
+    if getattr(message, "voice", None):
+        return "voice"
+    if getattr(message, "video", None):
+        return "video"
+    if getattr(message, "audio", None):
+        return "audio"
+
+    document = getattr(message, "document", None)
+    if not document:
+        return None
+
+    mime = (getattr(document, "mime_type", None) or "").casefold()
+    attrs = getattr(document, "attributes", None) or []
+    has_video_attr = False
+    has_audio_attr = False
+    audio_is_voice = False
+    for attr in attrs:
+        name = type(attr).__name__.casefold()
+        if "video" in name:
+            has_video_attr = True
+        if "audio" in name:
+            has_audio_attr = True
+            audio_is_voice = bool(getattr(attr, "voice", False))
+
+    if audio_is_voice:
+        return "voice"
+    if has_video_attr or mime.startswith("video/"):
+        return "video"
+    if has_audio_attr or mime.startswith("audio/"):
+        return "audio"
+    return None
+
+
+def _message_is_mp3(message):
+    """Accept real MP3 audio even when Telegram did not preserve a filename."""
+    if _message_media_kind(message) != "audio":
+        return False
+    document = getattr(message, "document", None)
+    mime = (getattr(document, "mime_type", None) or "").casefold()
+    if mime in {"audio/mpeg", "audio/mp3", "audio/x-mp3"}:
+        return True
+    names = []
+    file_obj = getattr(message, "file", None)
+    if file_obj is not None:
+        names.append(getattr(file_obj, "name", None))
+    for attr in getattr(document, "attributes", None) or []:
+        if type(attr).__name__.casefold().endswith("filename"):
+            names.append(getattr(attr, "file_name", None))
+    return any(str(name or "").casefold().endswith(".mp3") for name in names)
+
+
+def _message_media_size(message):
+    media = getattr(message, "media", None)
+    document = getattr(message, "document", None) or getattr(media, "document", None)
+    try:
+        return int(getattr(document, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _media_progress_text(percent, operation):
+    labels = {
+        "voice_to_mp3": "🎵 تبدیل ویس به MP3",
+        "mp3_to_voice": "🎵 تبدیل MP3 به ویس",
+        "video_to_voice": "🎬 ➜ 🎙️ تبدیل ویدیو به ویس",
+        "video_to_mp3": "🎬 ➜ 🎵 تبدیل ویدیو به MP3",
+    }
+    percent = max(0, min(100, int(percent)))
+    slots = 10
+    filled = round(slots * percent / 100)
+    bar = "▰" * filled + "▱" * (slots - filled)
+    return f"{labels.get(operation, '🎵 در حال تبدیل فایل')}\n\n🔄 در حال پردازش...\n\n<code>{bar}</code> {percent}%"
+
+
+def _media_error_message(exc):
+    text = str(exc or "").casefold()
+    if "ffmpeg_not_found" in text or "ffprobe_not_found" in text:
+        return "❌ موتور تبدیل رسانه روی سرور فعال نیست."
+    if "download_failed" in text:
+        return "❌ دانلود فایل شکست خورد."
+    if "timeout" in text:
+        return "❌ زمان پردازش فایل به پایان رسید."
+    if "no_audio_track" in text:
+        return "❌ فایل صوتی قابل استخراج از این ویدیو پیدا نشد."
+    if "invalid_media" in text or "invalid data" in text or "could not find codec" in text:
+        return "❌ فایل خراب است یا فرمت آن معتبر نیست."
+    if "floodwait" in text:
+        return "❌ ارسال فایل به‌دلیل محدودیت تلگرام موقتاً متوقف شد."
+    if "file_too_large" in text:
+        return f"❌ فایل بیش از حد بزرگ است. حداکثر حجم مجاز تبدیل: {MEDIA_CONVERT_MAX_MB:,} مگابایت."
+    if "send_failed" in text:
+        return "❌ خطای ارسال فایل رخ داد."
+    if "ffmpeg_failed" in text:
+        return "❌ تبدیل ناموفق بود."
+    return "❌ تبدیل انجام نشد.\nدلیل: خطای پردازش فایل رسانه‌ای."
+
+
+async def _media_binary_exists(binary):
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary, "-version",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.communicate()
+        return proc.returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
+
+
+async def _ffprobe_duration(path):
+    if not await _media_binary_exists("ffprobe"):
+        raise RuntimeError("ffprobe_not_found")
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="ignore")
+        if "Invalid data" in err or "could not find codec" in err:
+            raise RuntimeError("invalid_media")
+        raise RuntimeError("ffprobe_failed")
+    try:
+        duration = float(stdout.decode().strip())
+        if duration <= 0:
+            raise ValueError
+        return duration
+    except Exception:
+        raise RuntimeError("invalid_media")
+
+
+async def _ffprobe_has_audio(path):
+    if not await _media_binary_exists("ffprobe"):
+        raise RuntimeError("ffprobe_not_found")
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return proc.returncode == 0 and bool(stdout.decode("utf-8", errors="ignore").strip())
+
+
+async def _ffmpeg_convert_with_progress(input_path, output_path, operation, duration, progress_cb):
+    if not await _media_binary_exists("ffmpeg"):
+        raise RuntimeError("ffmpeg_not_found")
+
+    if operation in {"voice_to_mp3", "video_to_mp3"}:
+        args = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(input_path), "-vn", "-map", "0:a:0?",
+            "-c:a", "libmp3lame", "-b:a", "192k", "-map_metadata", "-1",
+            "-progress", "pipe:1", "-nostats", str(output_path),
+        ]
+    else:
+        # Telegram voice notes are Opus in an OGG container. Strip metadata
+        # and video completely; -map 0:a:0? makes missing audio a hard error below.
+        args = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(input_path), "-vn", "-map", "0:a:0?",
+            "-c:a", "libopus", "-b:a", "48k", "-vbr", "on",
+            "-application", "voip", "-map_metadata", "-1",
+            "-progress", "pipe:1", "-nostats", str(output_path),
+        ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    last_ui = 0.0
+    last_percent = -1
+    stderr_task = asyncio.create_task(proc.stderr.read())
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            raw = line.decode("utf-8", errors="ignore").strip()
+            if not raw.startswith("out_time_ms="):
+                continue
+            try:
+                out_us = int(raw.split("=", 1)[1])
+                percent = int(max(0.0, min(100.0, (out_us / 1_000_000.0) / duration * 100.0)))
+            except (ValueError, ZeroDivisionError):
+                continue
+            now = time.monotonic()
+            if percent != last_percent and (now - last_ui) >= MEDIA_CONVERT_PROGRESS_INTERVAL:
+                await progress_cb(percent)
+                last_ui = now
+                last_percent = percent
+
+        await proc.wait()
+        stderr = (await stderr_task).decode("utf-8", errors="ignore")
+    except asyncio.CancelledError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
+    if proc.returncode != 0:
+        low_err = stderr.casefold()
+        if "stream map '0:a:0?' matches no streams" in low_err or "matches no streams" in low_err:
+            raise RuntimeError("no_audio_track")
+        if "invalid data" in low_err or "could not find codec" in low_err:
+            raise RuntimeError("invalid_media")
+        raise RuntimeError("ffmpeg_failed")
+    if not Path(output_path).exists() or Path(output_path).stat().st_size <= 0:
+        raise RuntimeError("ffmpeg_failed")
+    await progress_cb(100, force=True)
+
+
+async def _self_media_convert(event, uid, operation):
+    if not event.is_reply:
+        return "❌ ابتدا روی فایل موردنظر ریپلای کن."
+
+    replied = await event.get_reply_message()
+    if not replied:
+        return "❌ فایل رسانه‌ای قابل تبدیل پیدا نشد."
+
+    kind = _message_media_kind(replied)
+    requirements = {
+        "voice_to_mp3": {"voice"},
+        "mp3_to_voice": {"audio"},
+        "video_to_voice": {"video"},
+        "video_to_mp3": {"video"},
+    }
+    if kind not in requirements.get(operation, set()):
+        if operation == "voice_to_mp3":
+            return "❌ این فایل برای تبدیل به MP3 مناسب نیست."
+        if operation == "mp3_to_voice":
+            return "❌ این فایل MP3/Audio برای تبدیل به ویس مناسب نیست."
+        return "❌ این فایل برای تبدیل ویدیو به صدا مناسب نیست."
+
+    if operation == "mp3_to_voice" and not _message_is_mp3(replied):
+        return "❌ این فایل MP3 نیست و برای این تبدیل مناسب نیست."
+
+    size = _message_media_size(replied)
+    if size and size > MEDIA_CONVERT_MAX_MB * 1024 * 1024:
+        raise RuntimeError("file_too_large")
+
+    if uid in media_convert_state:
+        return "⏳ یک تبدیل رسانه‌ای همین حالا در حال انجام است."
+
+    state = {"status": "processing", "operation": operation, "message_id": int(event.id), "started": time.time()}
+    media_convert_state[uid] = state
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_media_{uid}_"))
+    input_path = None
+    output_path = None
+
+    async def progress_cb(percent, force=False):
+        now = time.monotonic()
+        if not force and now - state.get("last_ui", 0.0) < MEDIA_CONVERT_PROGRESS_INTERVAL:
+            return
+        state["last_ui"] = now
+        with contextlib.suppress(Exception):
+            await event.edit(_media_progress_text(percent, operation), parse_mode="html", buttons=None)
+
+    try:
+        if not await _media_binary_exists("ffmpeg") or not await _media_binary_exists("ffprobe"):
+            raise RuntimeError("ffmpeg_not_found")
+
+        with contextlib.suppress(Exception):
+            await event.edit(_media_progress_text(0, operation), parse_mode="html", buttons=None)
+
+        try:
+            input_path = await replied.download_media(file=str(tmp_dir))
+        except Exception as exc:
+            raise RuntimeError("download_failed") from exc
+        if not input_path:
+            raise RuntimeError("download_failed")
+        input_path = Path(input_path)
+
+        duration = await _ffprobe_duration(input_path)
+        if not await _ffprobe_has_audio(input_path):
+            raise RuntimeError("no_audio_track")
+        suffix = ".mp3" if operation in {"voice_to_mp3", "video_to_mp3"} else ".ogg"
+        output_path = tmp_dir / f"converted{suffix}"
+        await _ffmpeg_convert_with_progress(input_path, output_path, operation, duration, progress_cb)
+
+        try:
+            if operation in {"voice_to_mp3", "video_to_mp3"}:
+                await event.client.send_file(
+                    event.chat_id, str(output_path),
+                    caption="🎵 فایل MP3 آماده است.",
+                    force_document=True,
+                )
+            else:
+                # Telethon's voice_note=True sends this as a Telegram Voice Message,
+                # not as a document merely carrying an .ogg filename.
+                await event.client.send_file(
+                    event.chat_id, str(output_path),
+                    voice_note=True,
+                )
+        except FloodWaitError as exc:
+            raise RuntimeError("floodwait") from exc
+        except Exception as exc:
+            raise RuntimeError("send_failed") from exc
+
+        return "__SUCCESS__"
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[SELF {uid}] media conversion {operation} failed: {exc}")
+        return _media_error_message(exc)
+    finally:
+        media_convert_state.pop(uid, None)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
@@ -2083,6 +2429,21 @@ async def self_handle_outgoing(event, uid):
 
     if low in {"دانلود", "download"}:
         await event.edit(await _self_save_replied_message(event, uid))
+        return
+
+    media_operation = _media_conversion_command(text)
+    if media_operation:
+        if uid in media_convert_state:
+            with contextlib.suppress(Exception):
+                await event.edit("⏳ یک تبدیل رسانه‌ای همین حالا در حال انجام است.")
+            return
+        result = await _self_media_convert(event, uid, media_operation)
+        if result == "__SUCCESS__":
+            with contextlib.suppress(Exception):
+                await event.edit("✅ تبدیل با موفقیت انجام شد.")
+        else:
+            with contextlib.suppress(Exception):
+                await event.edit(result)
         return
 
     if low in {"متن", "text"} and event.is_reply:
