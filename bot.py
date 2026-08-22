@@ -605,54 +605,70 @@ def self_panel_text(uid):
     )
 
 
-def self_guide_text():
-    return (
-        "╭━━━━━━━ ✦ راهنمای سلف ✦ ━━━━━━━╮\n\n"
-        "⚙️ <b>پنل</b>\n"
-        "• پنل ← باز کردن پنل شیشه‌ای\n"
-        "• راهنما ← نمایش همین راهنما\n\n"
-        "✍️ <b>متن</b>\n"
-        "• بولد روشن / بولد خاموش\n"
-        "• فونت فارسی روشن / فونت فارسی خاموش\n"
-        "• فونت انگلیسی از پنل\n"
-        "• ترنسلیت روشن / ترنسلیت خاموش\n\n"
-        "🕐 <b>ساعت ایران</b>\n"
-        "• ساعت روشن / ساعت خاموش\n"
-        "• دکمه فونت ساعت، فونت فعلی و پیش‌نمایش را نشان می‌دهد\n\n"
-        "❤️ <b>ریاکشن + ریپلای</b>\n"
-        "• روی پیام کاربر ریپلای کن و «ریاکشن ❤️» بفرست\n"
-        "• حذف: «حذف ریاکشن» یا «حذف ریاکشن + ریپلای»\n\n"
-        "👁 سین روشن / سین خاموش\n"
-        "⌨️ تایپینگ روشن / تایپینگ خاموش\n"
-        "🎮 حالت بازی روشن / حالت بازی خاموش\n"
-        "🤖 تبچی روشن / تبچی خاموش\n"
-        "• تبچی متن متن دلخواه\n\n"
-        "💎 <b>انتقال</b>\n"
-        "• روی پیام کاربر ریپلای کن و بنویس: انتقال 500\n\n"
-        "💾 <b>دانلود</b>\n"
-        "• روی هر پیام، عکس، ویدیو، ویس یا رسانه ریپلای کن و «دانلود» بفرست.\n\n"
-        "📝 <b>ویس به متن</b>\n"
-        "• روی ویس ریپلای کن و «متن» بفرست.\n\n"
-        "🔎 <b>OCR</b>\n"
-        "• روی تصویر ریپلای کن و «OCR» بفرست.\n\n"
-        "👥 <b>ساخت</b>\n"
-        "• ساخت گروه اسم گروه\n"
-        "• ساخت چنل اسم چنل\n\n"
-        "🎲 <b>تاس</b>\n"
-        "• «تاس 1» تا «تاس 6» تاس واقعی تلگرام را تا رسیدن به عدد خواسته‌شده رول می‌کند و تاس‌های ناموفق را پاک می‌کند.\n\n"
-        "🧹 <b>پاکسازی اکانت</b>\n"
-        "• از پنل اجرا می‌شود و هر بخش دکمه مستقل دارد: گپ‌ها، کانال‌ها، چت‌های دوطرفه، مخاطبین، ربات‌ها + بلاک، و پاکسازی همه.\n"
-        "• Saved Messages دست‌نخورده می‌ماند.\n\n"
-        "🔒 <b>قفل چت</b>\n"
-        "• روی پیام کاربر ریپلای کن و «قفل چت» بفرست؛ پیام‌های بعدی دوطرفه پاک می‌شوند.\n"
-        "🖼️ <b>تبدیل رسانه</b>\n"
-        "• روی عکس ریپلای کن: «استیکر» یا «استیکر + ریپلای».\n"
-        "• روی استیکر ریپلای کن: «عکس» یا «عکس + ریپلای».\n"
-        "• استیکر متحرک در صورت امکان به GIF تبدیل می‌شود.\n\n"
-        "🚫 <b>بلاک + ریپلای</b>\n"
-        "• داخل گروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» بفرست.\n\n"
-        "╰━━━━━━━━━━━━━━━━━━━━━━╯"
-    )
+def self_guide_text(page=1):
+    pages = [
+        (
+            "📚 <b>راهنمای سلف — صفحه ۱ از ۳</b>\n\n"
+            "⚙️ <b>پنل و تنظیمات</b>\n"
+            "• «پنل» پنل سلف را در همان چتی که دستور را فرستادی باز می‌کند.\n"
+            "• ساعت، بولد، فونت فارسی/انگلیسی، ترجمه، سین، تایپینگ و حالت بازی از پنل قابل کنترل‌اند.\n\n"
+            "❤️ <b>ریاکشن</b>\n"
+            "• روی پیام کاربر ریپلای کن و «ریاکشن ❤️» را بفرست.\n"
+            "• برای حذف: «حذف ریاکشن».\n\n"
+            "🤖 <b>تبچی</b>\n"
+            "• «تبچی روشن / خاموش»\n"
+            "• «تبچی متن متن دلخواه» برای تعیین پاسخ خودکار.\n\n"
+            "👁 <b>سین</b> و ⌨️ <b>تایپینگ</b>\n"
+            "• هرکدام را از پنل روشن یا خاموش کن."
+        ),
+        (
+            "📚 <b>راهنمای سلف — صفحه ۲ از ۳</b>\n\n"
+            "💾 <b>ذخیره از چنل خصوصی</b>\n"
+            "• از پنل، «ذخیره از چنل خصوصی» را بزن.\n"
+            "• به‌جای وارد کردن آیدی، همه چنل‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
+            "• فرمت هر مورد: <code>-ID</code> | <b>Channel Name</b>\n"
+            "• بعد از انتخاب چنل، نوع مدیا و تعداد را انتخاب کن.\n"
+            "• ذخیره‌سازی با کپی انجام می‌شود و پیام فوروارد نمی‌شود.\n"
+            "• برای عکس، فقط پیام‌هایی که واقعاً <b>Photo</b> دارند شمرده می‌شوند؛ اگر عکسی نباشد لاگ ثبت می‌شود و نتیجه هم صریح اعلام می‌شود.\n\n"
+            "💎 <b>انتقال الماس</b>\n"
+            "• روی پیام کاربر ریپلای کن و «انتقال 500» بفرست.\n\n"
+            "📝 <b>ویس / OCR</b>\n"
+            "• روی ویس ریپلای + «متن».\n"
+            "• روی تصویر ریپلای + «OCR».\n\n"
+            "🖼️ <b>تبدیل رسانه</b>\n"
+            "• عکس → «استیکر»\n"
+            "• استیکر → «عکس»"
+        ),
+        (
+            "📚 <b>راهنمای سلف — صفحه ۳ از ۳</b>\n\n"
+            "🧹 <b>پاکسازی اکانت</b>\n"
+            "• چت‌ها، گپ‌ها، کانال‌ها، مخاطبین، ربات‌ها یا همه را جداگانه پاکسازی کن.\n"
+            "• Saved Messages دست‌نخورده می‌ماند.\n\n"
+            "🔒 <b>قفل چت</b>\n"
+            "• روی پیام کاربر در پیوی ریپلای کن و «قفل چت» بفرست.\n"
+            "• برای خاموش کردن: «بازکردن قفل چت».\n\n"
+            "🚫 <b>بلاک + ریپلای</b>\n"
+            "• داخل گروه روی پیام کاربر ریپلای کن و «بلاک + ریپلای» بفرست.\n\n"
+            "🎲 <b>تاس</b>\n"
+            "• «تاس 1» تا «تاس 6»؛ فقط نتیجه موفق باقی می‌ماند.\n\n"
+            "🕐 <b>فونت ساعت</b>\n"
+            "• از دکمه فونت ساعت، فونت‌ها را یکی‌یکی تغییر بده."
+        )
+    ]
+    page = max(1, min(int(page), len(pages)))
+    return pages[page - 1]
+
+
+def self_guide_buttons(uid, page=1):
+    page = max(1, min(int(page), 3))
+    nav = []
+    if page > 1:
+        nav.append(btn("◀️ قبلی", _self_cb(uid, f"guide_page:{page-1}"), "danger"))
+    if page < 3:
+        nav.append(btn("بعدی ▶️", _self_cb(uid, f"guide_page:{page+1}"), "success"))
+    rows = [nav] if nav else []
+    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
+    return rows
 
 
 def self_font_preview(uid, kind):
@@ -742,12 +758,12 @@ async def send_self_panel(chat_id: int, uid: int, reply_to=None):
     )
 
 
-async def send_self_guide(chat_id: int, uid: int, reply_to=None):
+async def send_self_guide(chat_id: int, uid: int, reply_to=None, page=1):
     return await bot.send_message(
         chat_id,
-        self_guide_text(),
+        self_guide_text(page),
         parse_mode="html",
-        buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+        buttons=self_guide_buttons(uid, page),
         reply_to=reply_to,
     )
 
@@ -763,6 +779,30 @@ def self_chat_lock_targets(uid):
 
 def self_save_chat_lock_targets(uid, targets):
     self_set(uid, "chat_lock_targets", json.dumps(sorted(int(x) for x in targets)))
+
+
+async def _private_channel_entries(client, limit=None):
+    """Return joined private broadcast channels as (display_id, title, entity)."""
+    items = []
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", None)
+        if not entity or not getattr(dialog, "is_channel", False):
+            continue
+        # Private channel = no public username.  Megagroups are not treated as channels here.
+        if getattr(entity, "megagroup", False) or getattr(entity, "username", None):
+            continue
+        title = (getattr(entity, "title", None) or getattr(dialog, "name", None) or "بدون نام").strip()
+        display_id = getattr(dialog, "id", None)
+        if display_id is None:
+            display_id = -100 * 0 + int(entity.id)
+            display_id = -1000000000000 - int(entity.id) if int(entity.id) > 0 else int(entity.id)
+        items.append((int(display_id), title, entity))
+    items.sort(key=lambda x: x[1].casefold())
+    return items[:limit] if limit else items
+
+
+def _private_channel_button_id(entity):
+    return int(getattr(entity, "id", 0))
 
 
 def self_channel_save_state(uid):
@@ -1031,11 +1071,14 @@ async def handle_self_panel_callback(event):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
     if action == "guide":
-        await event.edit(
-            self_guide_text(),
-            parse_mode="html",
-            buttons=[[btn("🔙 برگشت به پنل", _self_cb(uid, "panel"), "primary")]],
-        )
+        await event.edit(self_guide_text(1), parse_mode="html", buttons=self_guide_buttons(uid, 1))
+        return True
+    if action.startswith("guide_page:"):
+        try:
+            page = int(action.split(":", 1)[1])
+        except ValueError:
+            page = 1
+        await event.edit(self_guide_text(page), parse_mode="html", buttons=self_guide_buttons(uid, page))
         return True
     if action == "panel":
         await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
@@ -1102,15 +1145,46 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "channel_save":
-        self_set_channel_save_state(uid, {"step": "channel"})
+        client = self_clients.get(uid)
+        if not client:
+            await event.edit("❌ سلف فعال نیست. ابتدا سلف را فعال کن.", parse_mode="html", buttons=self_panel_buttons(uid))
+            return True
+        channels = await _private_channel_entries(client)
+        if not channels:
+            await event.edit(
+                "💾 <b>ذخیره از چنل خصوصی</b>\n\n❌ هیچ چنل خصوصیِ عضوشده‌ای برای این اکانت پیدا نشد.",
+                parse_mode="html",
+                buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+            )
+            return True
+        self_set_channel_save_state(uid, {"step": "select_channel"})
+        buttons = []
+        for display_id, title, entity in channels:
+            buttons.append([btn(f"{display_id} | {title}", _self_cb(uid, f"channel_pick:{int(entity.id)}"), "primary")])
+        buttons.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
         await event.edit(
-            "💾 <b>ذخیره از چنل خصوصی</b>\n\n"
-            "آیدی یا لینک چنل موردنظر را بفرست.\n"
-            "مثال: <code>-1001234567890</code> یا <code>@channel</code>",
-            parse_mode="html",
-            buttons=[[btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
-                     [btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
+            "💾 <b>چنل خصوصی را انتخاب کن</b>\n\n"
+            "فقط چنل‌های خصوصی که همین اکانت داخلشان عضو است نمایش داده می‌شوند.",
+            parse_mode="html", buttons=buttons,
         )
+        return True
+
+    if action.startswith("channel_pick:"):
+        try:
+            entity_id = int(action.split(":", 1)[1])
+            client = self_clients.get(uid)
+            entity = await client.get_entity(entity_id) if client else None
+            if not entity or getattr(entity, "megagroup", False) or getattr(entity, "username", None):
+                raise ValueError("چنل خصوصی معتبر پیدا نشد")
+            title = getattr(entity, "title", None) or "بدون نام"
+            state = {"step": "media", "channel_id": int(entity.id), "channel_title": title}
+            self_set_channel_save_state(uid, state)
+            await event.edit(
+                f"📢 <b>{html.escape(title)}</b>\n<code>{html.escape(str(getattr(event, 'chat_id', '')))}</code>\n\nنوع مدیا را انتخاب کن:",
+                parse_mode="html", buttons=self_channel_media_buttons(uid),
+            )
+        except Exception as exc:
+            await event.edit(f"❌ انتخاب چنل ناموفق بود.\n<code>{html.escape(str(exc))}</code>", parse_mode="html", buttons=self_panel_buttons(uid))
         return True
 
     if action == "channel_cancel":
@@ -1123,8 +1197,8 @@ async def handle_self_panel_callback(event):
         if media_kind not in {"photos", "videos", "music", "voice", "text", "all"}:
             return True
         state = self_channel_save_state(uid)
-        if not state.get("channel"):
-            await event.edit("❌ ابتدا آیدی چنل را وارد کن.", buttons=self_panel_buttons(uid))
+        if not state.get("channel_id"):
+            await event.edit("❌ ابتدا چنل را از لیست انتخاب کن.", buttons=self_panel_buttons(uid))
             return True
         labels = {
             "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
@@ -1533,58 +1607,81 @@ async def _self_roll_guaranteed_six(event, uid):
     return await _self_roll_guaranteed_value(event, uid, 6)
 
 
+def self_channel_media_buttons(uid):
+    return [
+        [btn("🖼 تصاویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیوها", _self_cb(uid, "channel_media:videos"))],
+        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس ها", _self_cb(uid, "channel_media:voice"))],
+        [btn("📝 متن ها", _self_cb(uid, "channel_media:text")), btn("📦 کل مدیا ها", _self_cb(uid, "channel_media:all"))],
+        [btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
+    ]
+
+
 async def _self_save_channel_media(client, uid, state, count):
-    """Save only the requested number/type from a private channel to Saved Messages."""
+    """Copy requested items from a private channel to Saved Messages; never forward."""
     kind = state.get("media", "all")
-    channel = state.get("channel")
+    channel_id = state.get("channel_id")
     labels = {"photos":"تصویر", "videos":"ویدیو", "music":"موسیقی", "voice":"ویس", "text":"متن", "all":"مدیا"}
-    if not channel:
+    if not channel_id:
         return "❌ چنل انتخاب نشده است."
     try:
-        entity = await client.get_entity(channel)
+        entity = await client.get_entity(int(channel_id))
         selected = []
-        async for msg in client.iter_messages(entity, limit=max(count * 5, count + 20)):
+        async for msg in client.iter_messages(entity, limit=max(count * 8, count + 30)):
             if not msg:
                 continue
-            media = getattr(msg, "media", None)
-            matched = False
-            if kind == "photos": matched = bool(getattr(msg, "photo", False))
-            elif kind == "videos": matched = bool(getattr(msg, "video", False))
-            elif kind == "music": matched = bool(getattr(msg, "audio", False))
-            elif kind == "voice": matched = bool(getattr(msg, "voice", False))
-            elif kind == "text": matched = bool((msg.raw_text or "").strip()) and not media
-            elif kind == "all": matched = bool(media or (msg.raw_text or "").strip())
+            if kind == "photos":
+                matched = bool(getattr(msg, "photo", None))
+            elif kind == "videos":
+                matched = bool(getattr(msg, "video", None))
+            elif kind == "music":
+                matched = bool(getattr(msg, "audio", None)) and not bool(getattr(msg, "voice", None))
+            elif kind == "voice":
+                matched = bool(getattr(msg, "voice", None))
+            elif kind == "text":
+                matched = bool((msg.raw_text or "").strip()) and not getattr(msg, "media", None)
+            else:
+                matched = bool(getattr(msg, "media", None) or (msg.raw_text or "").strip())
             if matched:
                 selected.append(msg)
                 if len(selected) >= count:
                     break
+
         if not selected:
+            if kind == "photos":
+                print(f"[CHANNEL_SAVE {uid}] NO_PHOTO: no photo was published in channel {channel_id}")
+                return "❌ هیچ عکسی در این چنل منتشر نشده است."
             return f"❌ هیچ موردی از نوع «{labels.get(kind, kind)}» در چنل پیدا نشد."
 
         saved = 0
-        # Keep chronological order in Saved Messages.
+        # Oldest -> newest, but copied rather than forwarded so there is no Telegram forward header.
         for msg in reversed(selected):
             try:
-                await client.forward_messages("me", msg)
+                media = getattr(msg, "media", None)
+                caption = msg.raw_text or None
+                if media:
+                    path = await msg.download_media()
+                    if not path:
+                        print(f"[CHANNEL_SAVE {uid}] media download failed for message {msg.id}")
+                        continue
+                    try:
+                        await client.send_file("me", path, caption=caption)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            os.remove(path)
+                elif caption:
+                    await client.send_message("me", caption)
+                else:
+                    continue
                 saved += 1
-            except Exception:
-                # Protected content cannot be forwarded; copy it when possible.
-                try:
-                    if getattr(msg, "media", None):
-                        path = await msg.download_media()
-                        if path:
-                            await client.send_file("me", path, caption=msg.raw_text or None)
-                            with contextlib.suppress(Exception):
-                                os.remove(path)
-                            saved += 1
-                    elif (msg.raw_text or "").strip():
-                        await client.send_message("me", msg.raw_text)
-                        saved += 1
-                except Exception as exc:
-                    print(f"[SELF {uid}] channel save message {getattr(msg,'id','?')}: {exc}")
-        return f"✅ {saved} {labels.get(kind, 'مورد')} آخر چنل در پیام‌های ذخیره‌شده ذخیره شد."
+            except Exception as exc:
+                print(f"[CHANNEL_SAVE {uid}] copy failed channel={channel_id} message={getattr(msg,'id','?')}: {exc}")
+
+        if kind == "photos" and saved == 0:
+            print(f"[CHANNEL_SAVE {uid}] NO_PHOTO: channel {channel_id} had no successfully copyable photo")
+            return "❌ هیچ عکسی در این چنل قابل ذخیره‌سازی نبود."
+        return f"✅ {saved} {labels.get(kind, 'مورد')} آخر چنل بدون فوروارد در پیام‌های ذخیره‌شده کپی شد."
     except Exception as exc:
-        print(f"[SELF {uid}] channel save failed: {exc}")
+        print(f"[CHANNEL_SAVE {uid}] channel save failed: {exc}")
         return f"❌ ذخیره از چنل انجام نشد.\n<code>{html.escape(str(exc))}</code>"
 
 
@@ -1600,29 +1697,17 @@ async def self_handle_outgoing(event, uid):
     if channel_state:
         step = channel_state.get("step")
         if step == "channel":
+            # Kept only as a compatibility fallback for old pending states.
             try:
                 raw_channel = text.strip()
                 if raw_channel.startswith("https://t.me/"):
                     raw_channel = "@" + raw_channel.rstrip("/").split("/")[-1].split("?")[0]
                 entity = await event.client.get_entity(raw_channel)
-                if not (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
-                    raise ValueError("این آیدی متعلق به کانال نیست")
-                channel_state.update({"step": "media", "channel": raw_channel, "channel_id": int(entity.id)})
+                if getattr(entity, "megagroup", False) or getattr(entity, "username", None):
+                    raise ValueError("فقط چنل خصوصیِ عضو اکانت قابل انتخاب است")
+                channel_state.update({"step": "media", "channel_id": int(entity.id), "channel_title": getattr(entity, "title", "بدون نام")})
                 self_set_channel_save_state(uid, channel_state)
-                await event.edit(
-                    "📢 چنل پیدا شد. حالا نوع مورد ذخیره‌شدن را انتخاب کن.",
-                    buttons=None,
-                )
-                await bot.send_message(
-                    event.chat_id,
-                    "💾 نوع ذخیره را از پنل انتخاب کن:",
-                    buttons=[
-                        [btn("🖼 تصاویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیوها", _self_cb(uid, "channel_media:videos"))],
-                        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس ها", _self_cb(uid, "channel_media:voice"))],
-                        [btn("📝 متن ها", _self_cb(uid, "channel_media:text")), btn("📦 کل مدیا ها", _self_cb(uid, "channel_media:all"))],
-                        [btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
-                    ],
-                )
+                await event.edit("📢 چنل انتخاب شد. نوع مدیا را از دکمه‌های همین پنل انتخاب کن.", parse_mode="html", buttons=self_channel_media_buttons(uid))
             except Exception as exc:
                 await event.edit(f"❌ چنل پیدا نشد یا دسترسی وجود ندارد.\n<code>{html.escape(str(exc))}</code>", parse_mode="html")
                 self_clear_channel_save_state(uid)
@@ -2738,20 +2823,16 @@ async def group_commands(event):
                 target = reply.sender_id
 
         balance = get_balance(target)
-        buttons = [[
-            btn(
-                f"💎 {balance:,}",
-                f"balance_{target}".encode(),
-                "primary"
-            )
-        ]]
-
-        balance_value_toman = balance * DIAMOND_PRICE_TOMAN
+        try:
+            target_entity = await bot.get_entity(int(target))
+            username = getattr(target_entity, "username", None)
+        except Exception:
+            username = None
+        identity = f"@{username}" if username else str(int(target))
+        buttons = [[btn(f"💎 {balance:,}", f"balance_{target}".encode(), "primary")]]
         await event.reply(
             f"🎖️ **موجودی الماس**\n\n"
-            f"👤 آیدی: `{target}`\n"
-            f"💎 موجودی: `{balance:,}`\n"
-            f"💰 ارزش موجودی: `{balance_value_toman:,}` تومان",
+            f"👤 آیدی: `{identity}`",
             buttons=buttons
         )
         return
