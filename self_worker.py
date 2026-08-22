@@ -93,8 +93,11 @@ async def _react(client, event, emoji="❤️"):
         ))
 
 def _clean_clock_name(first_name: str) -> str:
-    # The self bot writes only a bare HH:MM suffix, never square brackets.
-    return re.sub(r"\s*(?:\d{1,2}:\d{2})\s*$", "", first_name or "").strip()
+    # Remove the clock regardless of which Unicode digit font was used.
+    app = _app()
+    digit_chars = "".join(app.SELF_CLOCK_FONTS.values())
+    pattern = rf"\s*[{re.escape(digit_chars)}]{{1,2}}:[{re.escape(digit_chars)}]{{2}}\s*$"
+    return re.sub(pattern, "", first_name or "").strip()
 
 
 async def _update_profile_clock(client, uid):
