@@ -463,9 +463,23 @@ def self_remove_reaction(uid, target_id):
     self_set(uid, "reaction_emojis", json.dumps(mapping, ensure_ascii=False))
 
 def self_clock(uid):
-    now=datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
-    chars=SELF_CLOCK_FONTS.get(self_get(uid,"clock_font","normal"), SELF_CLOCK_FONTS["normal"])
+    now = datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
+    chars = SELF_CLOCK_FONTS.get(self_get(uid, "clock_font", "normal"), SELF_CLOCK_FONTS["normal"])
     return now.translate(str.maketrans("0123456789", chars))
+
+
+def _clock_suffix_pattern():
+    # All digit alphabets used by the clock-font selector.  This lets us
+    # replace a previously formatted clock instead of accumulating old
+    # Unicode digits in the profile name.
+    digit_chars = "".join(SELF_CLOCK_FONTS.values())
+    return re.compile(rf"\s*[{re.escape(digit_chars)}]{{1,2}}:[{re.escape(digit_chars)}]{{2}}\s*$")
+
+
+_CLOCK_SUFFIX_RE = _clock_suffix_pattern()
+
+def _clean_clock_suffix(name: str) -> str:
+    return _CLOCK_SUFFIX_RE.sub("", name or "").strip()
 
 def self_transform_english(text, uid):
     return text.translate(SELF_ENGLISH_FONTS.get(self_get(uid,"english_font","normal"), SELF_ENGLISH_FONTS["normal"]))
@@ -834,34 +848,65 @@ def _cleanup_categories(dialogs):
 
 
 async def _cleanup_private_dialogs(client, dialogs, uid, label, block_bots=False, progress_cb=None):
+    total = len(dialogs)
+    if not total:
+        return 0
+
+    # Telegram rate-limits long cleanup jobs.  A small amount of concurrency
+    # makes private-history cleanup substantially faster without hammering the API.
+    semaphore = asyncio.Semaphore(3)
+    lock = asyncio.Lock()
     done = 0
-    for dialog in dialogs:
+
+    async def one(dialog):
+        nonlocal done
         entity = dialog.entity
-        if progress_cb:
-            await progress_cb(f"🧹 {label}… {done}/{len(dialogs)}")
-        try:
-            await _cleanup_delete_private(client, entity)
-            if block_bots and getattr(entity, "bot", False):
-                await _tg_call_with_flood_retry(
-                    lambda e=entity: client(functions.contacts.BlockRequest(id=e)),
-                    label="block bot",
-                )
-        except Exception as exc:
-            print(f"[CLEANUP {uid}] private {getattr(entity,'id','?')}: {exc}")
-        done += 1
+        async with semaphore:
+            try:
+                await _cleanup_delete_private(client, entity)
+                if block_bots and getattr(entity, "bot", False):
+                    await _tg_call_with_flood_retry(
+                        lambda e=entity: client(functions.contacts.BlockRequest(id=e)),
+                        label="block bot",
+                    )
+            except Exception as exc:
+                print(f"[CLEANUP {uid}] private {getattr(entity,'id','?')}: {exc}")
+            finally:
+                async with lock:
+                    done += 1
+                    current = done
+                # Updating the Telegram panel for every dialog was a major
+                # source of slowness.  Refresh only every 5 items and at the end.
+                if progress_cb and (current == total or current % 5 == 0):
+                    await progress_cb(f"🧹 {label}… {current}/{total}")
+
+    await asyncio.gather(*(one(dialog) for dialog in dialogs))
     return done
 
 
 async def _cleanup_leave_dialogs(client, dialogs, uid, label, progress_cb=None):
+    total = len(dialogs)
+    if not total:
+        return 0
+
+    semaphore = asyncio.Semaphore(3)
+    lock = asyncio.Lock()
     done = 0
-    for dialog in dialogs:
+
+    async def one(dialog):
+        nonlocal done
         entity = dialog.entity
-        if progress_cb:
-            await progress_cb(f"🚪 {label}… {done}/{len(dialogs)}")
-        ok, err = await _cleanup_leave_dialog_safe(client, entity, uid)
-        if not ok:
-            print(f"[CLEANUP {uid}] leave {getattr(entity,'id','?')}: {err}")
-        done += 1
+        async with semaphore:
+            ok, err = await _cleanup_leave_dialog_safe(client, entity, uid)
+            if not ok:
+                print(f"[CLEANUP {uid}] leave {getattr(entity,'id','?')}: {err}")
+            async with lock:
+                done += 1
+                current = done
+            if progress_cb and (current == total or current % 5 == 0):
+                await progress_cb(f"🚪 {label}… {current}/{total}")
+
+    await asyncio.gather(*(one(dialog) for dialog in dialogs))
     return done
 
 
@@ -871,9 +916,18 @@ async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
         self_set(uid, "cleanup_progress", "❌ سلف فعال نیست")
         return
 
-    async def progress(text):
+    last_panel_update = 0.0
+
+    async def progress(text, force=False):
+        nonlocal last_panel_update
         self_set(uid, "cleanup_progress", text)
         if panel_chat_id and panel_message_id:
+            now = time.monotonic()
+            # Never edit the same Telegram message dozens/hundreds of times per
+            # second.  State is still saved on every call; UI is throttled.
+            if not force and (now - last_panel_update) < 0.75:
+                return
+            last_panel_update = now
             with contextlib.suppress(Exception):
                 await bot.edit_message(
                     panel_chat_id, panel_message_id, self_panel_text(uid),
@@ -911,12 +965,12 @@ async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
             "chats": "چت‌ها", "bots": "ربات‌ها", "groups": "گپ‌ها",
             "channels": "کانال‌ها", "contacts": "مخاطبین", "all": "همه"
         }
-        await progress(f"✅ {labels.get(target, 'پاکسازی')} انجام شد • {total} گفتگو • {contact_count} مخاطب")
+        await progress(f"✅ {labels.get(target, 'پاکسازی')} انجام شد • {total} گفتگو • {contact_count} مخاطب", force=True)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         print(f"[CLEANUP {uid}] fatal: {exc}")
-        await progress(f"⚠️ پاکسازی با خطا متوقف شد: {exc}")
+        await progress(f"⚠️ پاکسازی با خطا متوقف شد: {exc}", force=True)
     finally:
         self_set(uid, "cleanup_running", "off")
         _cleanup_tasks.pop(uid, None)
@@ -946,15 +1000,21 @@ async def handle_self_panel_callback(event):
     await safe_answer(event)
 
     if action == "close":
-        # Answer the callback first, then delete the exact bot message that owns it.
+        # Inline-mode results are bot messages.  Delete the concrete message
+        # through the bot client first; CallbackQuery.delete() is unreliable
+        # for some inline-result message types.
+        await safe_answer(event, "پنل بسته شد.")
+        deleted = False
         with contextlib.suppress(Exception):
-            await event.answer("پنل بسته شد.", alert=False)
-        try:
-            await event.delete()
-        except Exception as exc:
-            print(f"[SELF {uid}] close panel failed: {exc}")
-            with contextlib.suppress(Exception):
+            if event.chat_id and event.message_id:
                 await bot.delete_messages(event.chat_id, event.message_id)
+                deleted = True
+        if not deleted:
+            with contextlib.suppress(Exception):
+                await event.delete()
+                deleted = True
+        if not deleted:
+            print(f"[SELF {uid}] close panel failed: chat={event.chat_id} msg={event.message_id}")
         return True
     if action == "guide":
         await event.edit(
@@ -1058,6 +1118,14 @@ async def handle_self_panel_callback(event):
         cur = self_get(uid, "clock_font", "normal")
         nxt = names[(names.index(cur) + 1) % len(names)] if cur in names else names[0]
         self_set(uid, "clock_font", nxt)
+
+        # Apply the selected font immediately to the profile name instead of
+        # waiting for the worker's next polling tick.
+        client = self_clients.get(uid)
+        if client and time_name_enabled(uid):
+            with contextlib.suppress(Exception):
+                await update_time_name(uid, client)
+
         await event.edit(
             self_panel_text(uid) + "\n\n" + self_font_preview(uid, "clock"),
             parse_mode="html",
@@ -1812,18 +1880,17 @@ async def update_time_name(user_id: int, client):
         if not me:
             return
 
-        now = datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
         first = me.first_name or "کاربر"
-
-        # Remove a previous [HH:MM] suffix generated by this bot.
-        clean = re.sub(r"\s*(?:\[\d{1,2}:\d{2}\]|\d{1,2}:\d{2})\s*$", "", first).strip()
-        new_first = f"{clean[:55]} {now}"
+        clean = _clean_clock_suffix(first)
+        # IMPORTANT: use the selected clock font here.  The previous worker
+        # hard-coded ASCII digits, so the panel preview changed but the name
+        # always received the default/plain clock.
+        new_first = f"{clean[:55]} {self_clock(user_id)}"
 
         if new_first != first:
             from telethon.tl.functions.account import UpdateProfileRequest
             await client(UpdateProfileRequest(first_name=new_first))
     except Exception as exc:
-        # Function import is intentionally local to keep startup simple.
         print(f"[SELF {user_id}] time-name update skipped: {exc}")
 
 
