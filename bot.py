@@ -1106,6 +1106,13 @@ async def handle_self_panel_callback(event):
         return True
 
     action = parts[2]
+
+    # During an active channel-save operation, stale/queued channel callbacks
+    # must not be allowed to mutate or restart the flow.
+    if action.startswith("channel_") and self_channel_save_state(uid).get("step") == "processing":
+        await safe_answer(event, "⏳ ذخیره مدیا در حال انجام است.", True)
+        return True
+
     await safe_answer(event)
 
     if action == "close":
@@ -1721,114 +1728,238 @@ def _channel_progress_text(percent, label="در حال ذخیره مدیا…"):
     return f"💾 <b>{html.escape(label)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>"
 
 
-async def _channel_progress_animation(state, duration=3.0):
-    chat_id = state.get("panel_chat_id")
-    message_id = state.get("panel_message_id")
-    if not chat_id or not message_id:
-        return
-    steps = 15
-    interval = duration / steps
-    for step in range(steps + 1):
-        percent = min(90, round(step * 90 / steps))
-        with contextlib.suppress(Exception):
+class _ChannelProgressController:
+    """Single, throttled UI owner for the private-channel save progress message."""
+
+    def __init__(self, state, *, min_interval=0.4):
+        self.chat_id = state.get("panel_chat_id")
+        self.message_id = state.get("panel_message_id")
+        self.min_interval = float(min_interval)
+        self.last_edit = 0.0
+        self.last_percent = None
+
+    async def update(self, processed, total, *, successful=0, failed=0, force=False):
+        if not self.chat_id or not self.message_id:
+            return
+
+        total = max(0, int(total))
+        processed = max(0, min(int(processed), total)) if total else 0
+        percent = 100 if total == 0 else int(processed * 100 / total)
+        percent = max(0, min(100, percent))
+        now = time.monotonic()
+
+        # Keep the real progress calculation tied to every processed item, but
+        # throttle Telegram edits so fast operations do not flood the bot API.
+        if not force:
+            if percent == self.last_percent:
+                return
+            if (now - self.last_edit) < self.min_interval:
+                return
+
+        text = _channel_progress_text(percent)
+        try:
             await bot.edit_message(
-                int(chat_id), int(message_id),
-                _channel_progress_text(percent),
-                parse_mode="html", buttons=None,
+                int(self.chat_id),
+                int(self.message_id),
+                text,
+                parse_mode="html",
+                buttons=None,
             )
-        if step < steps:
-            await asyncio.sleep(interval)
+            self.last_edit = time.monotonic()
+            self.last_percent = percent
+        except Exception as exc:
+            # A UI edit failure must never abort the real storage operation.
+            print(f"[CHANNEL_SAVE UI] progress edit failed: {exc}")
 
+    async def finish(self, *, successful, failed, requested, available):
+        """Force the real operation's final 100% state, then replace it with the result."""
+        if not self.chat_id or not self.message_id:
+            return
 
-async def _channel_progress_done(state, success=True, result_text=None):
-    chat_id = state.get("panel_chat_id")
-    message_id = state.get("panel_message_id")
-    if not chat_id or not message_id:
-        return
-    if success:
-        with contextlib.suppress(Exception):
+        await self.update(
+            max(available, 1) if available else 0,
+            max(available, 1) if available else 0,
+            successful=successful,
+            failed=failed,
+            force=True,
+        )
+
+        if successful == requested and failed == 0 and available >= requested:
+            text = "✅ <b>مدیا مورد نظر با موفقیت ذخیره شد!</b>"
+        elif successful == 0 and failed == 0:
+            text = "❌ <b>هیچ مدیای قابل ذخیره‌سازی پیدا نشد.</b>"
+        else:
+            text = (
+                "⚠️ <b>عملیات تکمیل شد.</b>\n"
+                f"✅ موفق: {successful}\n"
+                f"❌ ناموفق: {failed}"
+            )
+            if available < requested:
+                text += f"\n📦 پیدا/پردازش‌شده: {available} از {requested}"
+
+        try:
             await bot.edit_message(
-                int(chat_id), int(message_id),
-                _channel_progress_text(100, "ذخیره‌سازی کامل شد"),
-                parse_mode="html", buttons=None,
+                int(self.chat_id),
+                int(self.message_id),
+                text,
+                parse_mode="html",
+                buttons=[[btn("↩️ برگشت", self._back_callback(), "primary")]],
             )
-            await asyncio.sleep(0.15)
-        text = "✅ <b>مدیا مورد نظر با موفقیت ذخیره شد!</b>"
-        if result_text and not result_text.startswith("❌"):
-            text += f"\n\n{html.escape(result_text)}"
-    else:
-        text = result_text or "❌ ذخیره مدیا انجام نشد."
-    with contextlib.suppress(Exception):
-        await bot.edit_message(int(chat_id), int(message_id), text, parse_mode="html", buttons=None)
+        except Exception as exc:
+            # Result UI is best-effort and must not change the storage result.
+            print(f"[CHANNEL_SAVE UI] final edit failed: {exc}")
+
+    def _back_callback(self):
+        # The callback is already scoped to the same user in _self_cb.
+        # panel_chat_id is the private chat, so the UID is stored in state by caller.
+        return self._back_data
+
+    def set_back_callback(self, callback_data):
+        self._back_data = callback_data
+        return self
 
 
-async def _self_save_channel_media(client, uid, state, count):
+async def _channel_progress_done(state, *, successful, failed, requested, available):
+    controller = _ChannelProgressController(state).set_back_callback(
+        _self_cb(int(state["uid"]), "panel")
+    )
+    await controller.finish(
+        successful=successful,
+        failed=failed,
+        requested=requested,
+        available=available,
+    )
+
+
+async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
     """Copy requested items from a private channel to Saved Messages; never forward."""
     kind = state.get("media", "all")
     channel_id = state.get("channel_id")
-    labels = {"photos":"تصویر", "videos":"ویدیو", "music":"موسیقی", "voice":"ویس", "text":"متن", "all":"مدیا"}
+    labels = {
+        "photos": "تصویر",
+        "videos": "ویدیو",
+        "music": "موسیقی",
+        "voice": "ویس",
+        "text": "متن",
+        "all": "مدیا",
+    }
     if not channel_id:
-        return "❌ چنل انتخاب نشده است."
+        return {"saved": 0, "failed": 0, "processed": 0, "available": 0, "error": "❌ چنل انتخاب نشده است."}
+
     try:
-        entity = await client.get_entity(int(channel_id))
-        selected = []
-        async for msg in client.iter_messages(entity, limit=max(count * 8, count + 30)):
-            if not msg:
-                continue
-            if kind == "photos":
-                matched = bool(getattr(msg, "photo", None))
-            elif kind == "videos":
-                matched = bool(getattr(msg, "video", None))
-            elif kind == "music":
-                matched = bool(getattr(msg, "audio", None)) and not bool(getattr(msg, "voice", None))
-            elif kind == "voice":
-                matched = bool(getattr(msg, "voice", None))
-            elif kind == "text":
-                matched = bool((msg.raw_text or "").strip()) and not getattr(msg, "media", None)
-            else:
-                matched = bool(getattr(msg, "media", None) or (msg.raw_text or "").strip())
-            if matched:
-                selected.append(msg)
-                if len(selected) >= count:
-                    break
+        entity = await _tg_call_with_flood_retry(
+            lambda: client.get_entity(int(channel_id)),
+            label="resolve private channel",
+        )
+
+        async def collect_selected():
+            selected_items = []
+            async for msg in client.iter_messages(
+                entity,
+                limit=max(count * 8, count + 30),
+            ):
+                if not msg:
+                    continue
+                if kind == "photos":
+                    matched = bool(getattr(msg, "photo", None))
+                elif kind == "videos":
+                    matched = bool(getattr(msg, "video", None))
+                elif kind == "music":
+                    matched = bool(getattr(msg, "audio", None)) and not bool(getattr(msg, "voice", None))
+                elif kind == "voice":
+                    matched = bool(getattr(msg, "voice", None))
+                elif kind == "text":
+                    matched = bool((msg.raw_text or "").strip()) and not getattr(msg, "media", None)
+                else:
+                    matched = bool(getattr(msg, "media", None) or (msg.raw_text or "").strip())
+
+                if matched:
+                    selected_items.append(msg)
+                    if len(selected_items) >= count:
+                        break
+            return selected_items
+
+        # The existing FloodWait retry helper also covers message discovery.
+        selected = await _tg_call_with_flood_retry(
+            collect_selected,
+            label="read private channel messages",
+        )
+        total = len(selected)
 
         if not selected:
             if kind == "photos":
-                print(f"[CHANNEL_SAVE {uid}] NO_PHOTO: no photo was published in channel {channel_id}")
-                return "❌ هیچ عکسی در این چنل منتشر نشده است."
-            return f"❌ هیچ موردی از نوع «{labels.get(kind, kind)}» در چنل پیدا نشد."
+                error = "❌ هیچ عکسی در این چنل منتشر نشده است."
+            else:
+                error = f"❌ هیچ موردی از نوع «{labels.get(kind, kind)}» در چنل پیدا نشد."
+            return {"saved": 0, "failed": 0, "processed": 0, "available": 0, "error": error}
 
         saved = 0
+        failed = 0
+        processed = 0
+
         # Oldest -> newest, but copied rather than forwarded so there is no Telegram forward header.
         for msg in reversed(selected):
             try:
                 media = getattr(msg, "media", None)
                 caption = msg.raw_text or None
+
                 if media:
-                    path = await msg.download_media()
+                    path = await _tg_call_with_flood_retry(
+                        lambda m=msg: m.download_media(),
+                        label=f"download media {getattr(msg, 'id', '?')}",
+                    )
                     if not path:
-                        print(f"[CHANNEL_SAVE {uid}] media download failed for message {msg.id}")
-                        continue
+                        raise RuntimeError("download_media returned no file")
                     try:
-                        await client.send_file("me", path, caption=caption)
+                        await _tg_call_with_flood_retry(
+                            lambda p=path, c=caption: client.send_file("me", p, caption=c),
+                            label=f"save media {getattr(msg, 'id', '?')}",
+                        )
                     finally:
                         with contextlib.suppress(Exception):
                             os.remove(path)
                 elif caption:
-                    await client.send_message("me", caption)
+                    await _tg_call_with_flood_retry(
+                        lambda c=caption: client.send_message("me", c),
+                        label=f"save text {getattr(msg, 'id', '?')}",
+                    )
                 else:
-                    continue
+                    raise RuntimeError("matched message contained no savable content")
+
                 saved += 1
             except Exception as exc:
-                print(f"[CHANNEL_SAVE {uid}] copy failed channel={channel_id} message={getattr(msg,'id','?')}: {exc}")
+                failed += 1
+                print(
+                    f"[CHANNEL_SAVE {uid}] copy failed "
+                    f"channel={channel_id} message={getattr(msg, 'id', '?')}: {exc}"
+                )
+            finally:
+                processed += 1
+                if progress_cb:
+                    # The callback is UI-only and is deliberately isolated from
+                    # storage errors; it computes progress from real processing.
+                    with contextlib.suppress(Exception):
+                        await progress_cb(processed, total, successful=saved, failed=failed)
 
-        if kind == "photos" and saved == 0:
-            print(f"[CHANNEL_SAVE {uid}] NO_PHOTO: channel {channel_id} had no successfully copyable photo")
-            return "❌ هیچ عکسی در این چنل قابل ذخیره‌سازی نبود."
-        return f"✅ {saved} {labels.get(kind, 'مورد')} آخر چنل بدون فوروارد در پیام‌های ذخیره‌شده کپی شد."
+        return {
+            "saved": saved,
+            "failed": failed,
+            "processed": processed,
+            "available": total,
+            "error": None,
+        }
+
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         print(f"[CHANNEL_SAVE {uid}] channel save failed: {exc}")
-        return f"❌ ذخیره از چنل انجام نشد.\n<code>{html.escape(str(exc))}</code>"
+        return {
+            "saved": 0,
+            "failed": 0,
+            "processed": 0,
+            "available": 0,
+            "error": f"❌ ذخیره از چنل انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+        }
 
 
 async def self_handle_outgoing(event, uid):
@@ -1859,6 +1990,11 @@ async def self_handle_outgoing(event, uid):
                 self_clear_channel_save_state(uid)
             return
 
+        if step == "processing":
+            # A processing state consumes this flow until the real save finishes.
+            # In particular, a new numeric outgoing message must never restart it.
+            return
+
         if step == "count":
             try:
                 count = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")))
@@ -1867,23 +2003,81 @@ async def self_handle_outgoing(event, uid):
             except Exception as exc:
                 await event.edit(f"❌ تعداد نامعتبر است: {exc}")
                 return
+
+            # Enter PROCESSING before doing any real Telegram work. The panel
+            # message becomes the single progress UI and all old buttons vanish.
+            channel_state.update({
+                "step": "processing",
+                "uid": int(uid),
+                "requested": int(count),
+            })
+            self_set_channel_save_state(uid, channel_state)
+
+            controller = _ChannelProgressController(channel_state).set_back_callback(
+                _self_cb(uid, "panel")
+            )
+
             with contextlib.suppress(Exception):
                 await event.delete()
-            animation = asyncio.create_task(_channel_progress_animation(channel_state, 3.0))
+
+            # This edit is intentionally awaited before storage starts: from this
+            # point onward the user sees exactly one button-less processing message.
+            await controller.update(0, count, force=True)
+
             try:
-                result_text = await _self_save_channel_media(event.client, uid, channel_state, count)
-                await animation
-                success = not result_text.startswith("❌")
-                await _channel_progress_done(channel_state, success=success, result_text=result_text)
-            except Exception as exc:
-                animation.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await animation
-                await _channel_progress_done(
-                    channel_state, success=False,
-                    result_text=f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                result = await _self_save_channel_media(
+                    event.client,
+                    uid,
+                    channel_state,
+                    count,
+                    progress_cb=controller.update,
                 )
+
+                if result.get("error"):
+                    # No fake progress is added after a real fatal error.
+                    # If no item was processed, show the clear failure directly.
+                    if result.get("processed", 0) == 0:
+                        try:
+                            await bot.edit_message(
+                                int(controller.chat_id),
+                                int(controller.message_id),
+                                result["error"],
+                                parse_mode="html",
+                                buttons=[[btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
+                            )
+                        except Exception as ui_exc:
+                            print(f"[CHANNEL_SAVE UI] fatal-error edit failed: {ui_exc}")
+                    else:
+                        await _channel_progress_done(
+                            channel_state,
+                            successful=result["saved"],
+                            failed=result["failed"],
+                            requested=count,
+                            available=result["available"],
+                        )
+                else:
+                    await _channel_progress_done(
+                        channel_state,
+                        successful=result["saved"],
+                        failed=result["failed"],
+                        requested=count,
+                        available=result["available"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
+                with contextlib.suppress(Exception):
+                    await bot.edit_message(
+                        int(controller.chat_id),
+                        int(controller.message_id),
+                        f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                        parse_mode="html",
+                        buttons=[[btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
+                    )
             finally:
+                # Never leave the user stuck in PROCESSING, even after an
+                # unexpected exception or cancellation.
                 self_clear_channel_save_state(uid)
             return
 
