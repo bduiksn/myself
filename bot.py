@@ -341,6 +341,7 @@ purchase_state = {}
 active_games = {}
 self_workers = {}
 self_clients = {}
+_channel_save_tasks = {}
 _self_reply_cache = set()
 _inline_bot_cache = {}
 _cleanup_tasks = {}
@@ -911,6 +912,11 @@ def _private_channel_button_id(entity):
     return int(getattr(entity, "id", 0))
 
 
+def _private_channel_access_hash(entity):
+    value = getattr(entity, "access_hash", None)
+    return int(value) if value is not None else None
+
+
 def self_channel_save_state(uid):
     try:
         raw = self_get(uid, "channel_save_state", "{}")
@@ -1173,6 +1179,15 @@ async def handle_self_panel_callback(event):
     # During an active channel-save operation, stale/queued channel callbacks
     # must not be allowed to mutate or restart the flow.
     if action.startswith("channel_") and self_channel_save_state(uid).get("step") == "processing":
+        if action == "channel_cancel":
+            task = _channel_save_tasks.get(uid)
+            if task and not task.done():
+                task.cancel()
+                await safe_answer(event, "🛑 توقف ذخیره‌سازی ارسال شد.")
+            else:
+                self_clear_channel_save_state(uid)
+                await safe_answer(event, "ℹ️ عملیات فعالی پیدا نشد.", True)
+            return True
         await safe_answer(event, "⏳ ذخیره مدیا در حال انجام است.", True)
         return True
 
@@ -1349,7 +1364,12 @@ async def handle_self_panel_callback(event):
                 raise ValueError("چنل خصوصی معتبر پیدا نشد")
 
             title = getattr(entity, "title", None) or "بدون نام"
-            state = {"step": "media", "channel_id": int(entity.id), "channel_title": title}
+            state = {
+                "step": "media",
+                "channel_id": int(entity.id),
+                "channel_access_hash": _private_channel_access_hash(entity),
+                "channel_title": title,
+            }
             self_set_channel_save_state(uid, state)
             await event.edit(
                 f"📢 <b>{html.escape(title)}</b>\n\nنوع مدیا را انتخاب کن:",
@@ -1402,44 +1422,70 @@ async def handle_self_panel_callback(event):
                 await safe_answer(event, "⚠️ تعداد باید بین 1 تا 1000 باشد.", True)
                 return True
 
+            # The callback must return immediately.  Running the whole download/upload
+            # pipeline inside the callback made Telegram look frozen and prevented
+            # other panel updates from being handled smoothly.
+            existing = _channel_save_tasks.get(uid)
+            if existing and not existing.done():
+                await safe_answer(event, "⏳ ذخیره مدیا از قبل در حال انجام است.", True)
+                return True
+
             state.update({
                 "step": "processing",
                 "uid": int(uid),
                 "requested": int(count),
                 "processing_started": time.monotonic(),
+                "panel_chat_id": int(event.chat_id),
+                "panel_message_id": int(event.message_id),
             })
             self_set_channel_save_state(uid, state)
             controller = _ChannelProgressController(state).set_back_callback(_self_cb(uid, "panel"))
 
-            # Show progress immediately. Never delay the actual save operation:
-            # the old five-second sleep made the flow look stuck and also delayed
-            # the first real progress update.
-            await controller._edit(_channel_progress_text(0, "درحال آماده‌سازی…"), buttons=None)
+            await controller._edit(
+                _channel_progress_text(0, "درحال آماده‌سازی و پیدا کردن مدیا…", processed=0, total=count),
+                buttons=None,
+            )
 
-            try:
-                result = await _self_save_channel_media(
-                    event.client, uid, state, count, progress_cb=controller.update
-                )
-                if result.get("error") and result.get("processed", 0) == 0:
-                    await controller._edit(result["error"], buttons=None)
-                else:
-                    await _channel_progress_done(
+            async def run_save():
+                try:
+                    result = await _self_save_channel_media(
+                        self_clients.get(uid) or event.client,
+                        uid,
                         state,
-                        successful=result["saved"],
-                        failed=result["failed"],
-                        requested=count,
-                        available=result["available"],
+                        count,
+                        progress_cb=controller.update,
                     )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
-                await controller._edit(
-                    f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
-                    buttons=None,
-                )
-            finally:
-                self_clear_channel_save_state(uid)
+                    if result.get("error") and result.get("processed", 0) == 0:
+                        await controller._edit(
+                            result["error"],
+                            buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                        )
+                    else:
+                        await _channel_progress_done(
+                            state,
+                            successful=result["saved"],
+                            failed=result["failed"],
+                            requested=count,
+                            available=result["available"],
+                        )
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await controller._edit(
+                            "🛑 <b>ذخیره مدیا متوقف شد.</b>",
+                            buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                        )
+                except Exception as exc:
+                    print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
+                    with contextlib.suppress(Exception):
+                        await controller._edit(
+                            f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                            buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                        )
+                finally:
+                    self_clear_channel_save_state(uid)
+                    _channel_save_tasks.pop(uid, None)
+
+            _channel_save_tasks[uid] = asyncio.create_task(run_save())
             return True
         else:
             digit = command
@@ -2099,12 +2145,17 @@ def _channel_count_text(state):
     )
 
 
-def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None):
+def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None, successful=None, failed=None):
     percent = max(0, min(100, int(percent)))
     slots = 24
     filled = round(slots * percent / 100)
     bar = "▰" * filled + "▱" * (slots - filled)
-    return f"💾 <b>ذخیره مدیا</b> {bar} <i>{html.escape(label)}</i>"
+    counts = ""
+    if total is not None:
+        counts = f"\n\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
+        if successful is not None or failed is not None:
+            counts += f"  •  ✅ {int(successful or 0)}  ❌ {int(failed or 0)}"
+    return f"💾 <b>ذخیره مدیا</b>\n{bar} <b>{percent}%</b>\n<i>{html.escape(label)}</i>{counts}"
 
 
 class _ChannelProgressController:
@@ -2154,7 +2205,13 @@ class _ChannelProgressController:
             if (now - self.last_edit) < self.min_interval:
                 return
 
-        text = _channel_progress_text(percent, processed=processed, total=total)
+        text = _channel_progress_text(
+            percent,
+            processed=processed,
+            total=total,
+            successful=successful,
+            failed=failed,
+        )
         if await self._edit(text, buttons=None):
             self.last_edit = time.monotonic()
             self.last_percent = percent
@@ -2222,10 +2279,17 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
         return {"saved": 0, "failed": 0, "processed": 0, "available": 0, "error": "❌ چنل انتخاب نشده است."}
 
     try:
-        entity = await _tg_call_with_flood_retry(
-            lambda: client.get_entity(int(channel_id)),
-            label="resolve private channel",
-        )
+        access_hash = state.get("channel_access_hash")
+        if access_hash is not None:
+            entity = await _tg_call_with_flood_retry(
+                lambda: client.get_entity(types.InputPeerChannel(int(channel_id), int(access_hash))),
+                label="resolve private channel",
+            )
+        else:
+            entity = await _tg_call_with_flood_retry(
+                lambda: client.get_entity(int(channel_id)),
+                label="resolve private channel",
+            )
 
         async def collect_selected():
             selected_items = []
@@ -2279,20 +2343,32 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                 caption = msg.raw_text or None
 
                 if media:
-                    path = await _tg_call_with_flood_retry(
-                        lambda m=msg: m.download_media(),
-                        label=f"download media {getattr(msg, 'id', '?')}",
-                    )
-                    if not path:
-                        raise RuntimeError("download_media returned no file")
+                    media_id = getattr(msg, "id", "?")
+                    direct_error = None
                     try:
+                        # Fast path: reuse Telegram's already-known media object.
+                        # This avoids an unnecessary disk round-trip for normal media.
                         await _tg_call_with_flood_retry(
-                            lambda p=path, c=caption: client.send_file("me", p, caption=c),
-                            label=f"save media {getattr(msg, 'id', '?')}",
+                            lambda m=media, c=caption: client.send_file("me", m, caption=c),
+                            label=f"copy media {media_id}",
                         )
-                    finally:
-                        with contextlib.suppress(Exception):
-                            os.remove(path)
+                    except Exception as direct_exc:
+                        direct_error = direct_exc
+                        print(f"[CHANNEL_SAVE {uid}] direct media copy failed {media_id}: {direct_exc}; using download fallback")
+                        path = await _tg_call_with_flood_retry(
+                            lambda m=msg: m.download_media(),
+                            label=f"download media {media_id}",
+                        )
+                        if not path:
+                            raise RuntimeError(f"media download failed: {direct_error}")
+                        try:
+                            await _tg_call_with_flood_retry(
+                                lambda p=path, c=caption: client.send_file("me", p, caption=c),
+                                label=f"upload media {media_id}",
+                            )
+                        finally:
+                            with contextlib.suppress(Exception):
+                                os.remove(path)
                 elif caption:
                     await _tg_call_with_flood_retry(
                         lambda c=caption: client.send_message("me", c),
