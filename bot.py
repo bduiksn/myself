@@ -21,6 +21,7 @@ import secrets
 import tempfile
 import shutil
 import re
+import zipfile
 import sqlite3
 import time
 from pathlib import Path
@@ -657,6 +658,7 @@ def self_guide_text(page=1):
             "• «متن» روی ویس یا فایل صوتی ریپلای‌شده: تبدیل صدا به متن.\n"
             "• «OCR» یا «او سی آر» روی تصویر: استخراج متن تصویر.\n"
             "• «دانلود» روی پیام ریپلای‌شده: انتقال پیام/رسانه به پیام‌های ذخیره‌شده.\n"
+            "• «unzip» یا «استخراج» روی فایل ZIP/RAR ریپلای‌شده: استخراج و ارسال تک‌تک فایل‌ها با نوار پیشرفت ۵ ثانیه‌ای.\n"
             "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
             "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ برای استیکر متحرک در صورت امکان GIF ساخته می‌شود."
         ),
@@ -1672,24 +1674,230 @@ async def _self_create_chat_or_channel(event, uid, kind, title):
         return f"❌ ساخت {kind} ناموفق بود.\n{exc}"
 
 
-async def _delete_dice_message(client, chat_id, message_id):
+def _archive_command(text: str) -> bool:
+    normalized = re.sub(r"\\s+", " ", (text or "").strip().casefold())
+    return normalized in {
+        "unzip", "unzip + ریپلای", "unzip ریپلای", "unzip + ریپلی", "unzip ریپلی",
+        "استخراج", "استخراج + ریپلای", "استخراج ریپلای", "استخراج + ریپلی", "استخراج ریپلی",
+    }
+
+
+def _archive_filename(message):
+    file_obj = getattr(message, "file", None)
+    name = getattr(file_obj, "name", None) if file_obj else None
+    if name:
+        return str(name)
+    document = getattr(message, "document", None)
+    for attr in getattr(document, "attributes", None) or []:
+        if type(attr).__name__.casefold().endswith("filename"):
+            value = getattr(attr, "file_name", None)
+            if value:
+                return str(value)
+    return "archive"
+
+
+def _safe_archive_member_name(name: str) -> str:
+    name = str(name or "").replace("\\", "/")
+    parts = [part for part in name.split("/") if part not in {"", ".", ".."}]
+    return "_".join(parts)[:240] or "file"
+
+
+def _unique_path(directory: Path, filename: str) -> Path:
+    base = Path(_safe_archive_member_name(filename))
+    candidate = directory / base.name
+    index = 2
+    while candidate.exists():
+        candidate = directory / f"{base.stem} ({index}){base.suffix}"
+        index += 1
+    return candidate
+
+
+def _extract_zip(archive_path: str, output_dir: str):
+    extracted = []
+    with zipfile.ZipFile(archive_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            target = _unique_path(Path(output_dir), info.filename)
+            with zf.open(info, "r") as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+            extracted.append(target)
+    return extracted
+
+
+def _extract_rar(archive_path: str, output_dir: str):
+    try:
+        import rarfile
+    except ImportError as exc:
+        raise RuntimeError("rarfile_not_installed") from exc
+    extracted = []
+    with rarfile.RarFile(archive_path) as rf:
+        for info in rf.infolist():
+            if info.isdir():
+                continue
+            target = _unique_path(Path(output_dir), info.filename)
+            with rf.open(info, "r") as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+            extracted.append(target)
+    return extracted
+
+
+def _extract_archive_sync(archive_path: str, output_dir: str, suffix: str):
+    if suffix.casefold() == ".zip":
+        return _extract_zip(archive_path, output_dir)
+    if suffix.casefold() == ".rar":
+        return _extract_rar(archive_path, output_dir)
+    raise RuntimeError("unsupported_archive")
+
+
+def _archive_progress_text(percent: int, phase="در حال استخراج فایل‌ها…"):
+    percent = max(0, min(100, int(percent)))
+    slots = 20
+    filled = round(slots * percent / 100)
+    bar = "▰" * filled + "▱" * (slots - filled)
+    return f"📦 <b>{html.escape(phase)}</b>\\n\\n<code>{bar}</code> <b>{percent}%</b>\\n⏳ نوار پیشرفت ۵ ثانیه‌ای"
+
+
+async def _self_unzip_reply(event, uid):
+    """Extract a replied ZIP/RAR and send every extracted file separately."""
+    if not event.is_reply:
+        return "❌ روی فایل .zip یا .rar ریپلای کن و «unzip» یا «استخراج» را بفرست."
+
+    replied = await event.get_reply_message()
+    if not replied or not getattr(replied, "media", None):
+        return "❌ فایل .zip یا .rar در پیام ریپلای‌شده پیدا نشد."
+
+    filename = _archive_filename(replied)
+    suffix = Path(filename).suffix.casefold()
+    mime = (getattr(getattr(replied, "document", None), "mime_type", None) or "").casefold()
+    if suffix not in {".zip", ".rar"} and mime not in {
+        "application/zip", "application/x-rar-compressed", "application/vnd.rar"
+    }:
+        return "❌ فقط فایل‌های .zip و .rar قابل استخراج هستند."
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_unzip_{uid}_"))
+    progress_task = None
+    started = time.monotonic()
+    try:
+        with contextlib.suppress(Exception):
+            await event.edit(_archive_progress_text(0), parse_mode="html")
+
+        async def animate_progress():
+            duration = 5.0
+            while True:
+                elapsed = time.monotonic() - started
+                percent = min(99, int((elapsed / duration) * 100))
+                with contextlib.suppress(Exception):
+                    await event.edit(_archive_progress_text(percent), parse_mode="html")
+                if elapsed >= duration:
+                    return
+                await asyncio.sleep(0.25)
+
+        progress_task = asyncio.create_task(animate_progress())
+        archive_path = await replied.download_media(file=str(tmp_dir / _safe_archive_member_name(filename)))
+        if not archive_path:
+            raise RuntimeError("download_failed")
+
+        output_dir = tmp_dir / "extracted"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            files = await asyncio.to_thread(
+                _extract_archive_sync, archive_path, str(output_dir), suffix
+            )
+        except RuntimeError as exc:
+            if str(exc) == "rarfile_not_installed":
+                return "❌ برای استخراج RAR کتابخانه `rarfile` روی سرور نصب نیست."
+            raise
+
+        remaining = 5.0 - (time.monotonic() - started)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        if progress_task:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_task
+
+        with contextlib.suppress(Exception):
+            await event.edit(
+                f"📦 <b>استخراج کامل شد</b>\n\n📁 تعداد فایل‌ها: <b>{len(files)}</b>\n📤 در حال ارسال تک‌تک فایل‌ها…",
+                parse_mode="html",
+            )
+
+        if not files:
+            return "__DONE_NO_FILES__"
+
+        sent = failed = 0
+        for file_path in files:
+            try:
+                await event.client.send_file(event.chat_id, str(file_path), force_document=True)
+                sent += 1
+            except FloodWaitError as exc:
+                await asyncio.sleep(max(1, int(getattr(exc, "seconds", 1))))
+                try:
+                    await event.client.send_file(event.chat_id, str(file_path), force_document=True)
+                    sent += 1
+                except Exception as inner_exc:
+                    failed += 1
+                    print(f"[UNZIP {uid}] send retry failed: {inner_exc}")
+            except Exception as exc:
+                failed += 1
+                print(f"[UNZIP {uid}] send failed: {exc}")
+
+        with contextlib.suppress(Exception):
+            await event.edit(
+                "✅ <b>استخراج و ارسال انجام شد.</b>\n\n"
+                f"📁 فایل‌های پیدا شده: <b>{len(files)}</b>\n"
+                f"✅ ارسال موفق: <b>{sent}</b>\n"
+                f"❌ ارسال ناموفق: <b>{failed}</b>",
+                parse_mode="html",
+            )
+        return "__DONE__"
+    except Exception as exc:
+        print(f"[UNZIP {uid}] failed: {exc}")
+        if str(exc) == "download_failed":
+            return "❌ دانلود فایل ZIP/RAR ناموفق بود."
+        if isinstance(exc, zipfile.BadZipFile):
+            return "❌ فایل ZIP خراب یا نامعتبر است."
+        return f"❌ استخراج فایل انجام نشد.\nدلیل: {html.escape(str(exc))}"
+    finally:
+        if progress_task:
+            progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await progress_task
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _delete_dice_message(client, chat_id, message_id, entity=None):
     """Delete an unsuccessful dice result reliably in private chats and Saved Messages."""
+    message_id = int(message_id)
+    try:
+        target = entity
+        if target is None:
+            with contextlib.suppress(Exception):
+                target = await client.get_input_entity(int(chat_id))
+        if target is not None:
+            await _tg_call_with_flood_retry(
+                lambda: client.delete_messages(target, message_id, revoke=True),
+                label="delete failed dice",
+            )
+            return True
+    except Exception as exc:
+        print(f"[DICE] peer-aware delete failed chat={chat_id} message={message_id}: {exc}")
+
     try:
         from telethon.tl.functions.messages import DeleteMessagesRequest
         await _tg_call_with_flood_retry(
-            lambda: client(DeleteMessagesRequest(
-                id=[int(message_id)],
-                revoke=True,
-            )),
-            label="delete failed dice",
+            lambda: client(DeleteMessagesRequest(id=[message_id], revoke=True)),
+            label="delete failed dice raw",
         )
         return True
     except Exception as exc:
-        print(f"[DICE] delete failed chat={chat_id} message={message_id}: {exc}")
-        with contextlib.suppress(Exception):
-            await client.delete_messages(chat_id, int(message_id), revoke=True)
-            return True
-        return False
+        print(f"[DICE] raw delete failed chat={chat_id} message={message_id}: {exc}")
+
+    with contextlib.suppress(Exception):
+        await client.delete_messages(chat_id, message_id, revoke=True)
+        return True
+    return False
 
 
 async def _self_roll_guaranteed_value(event, uid, target):
@@ -1717,7 +1925,10 @@ async def _self_roll_guaranteed_value(event, uid, target):
             # Failed results must never remain visible.  Use the raw Telegram
             # DeleteMessagesRequest as the primary path; it is more reliable
             # than the convenience wrapper for private dialogs/Saved Messages.
-            await _delete_dice_message(event.client, event.chat_id, msg.id)
+            entity = None
+            with contextlib.suppress(Exception):
+                entity = await event.get_input_chat()
+            await _delete_dice_message(event.client, event.chat_id, msg.id, entity=entity)
             await asyncio.sleep(0.15)
 
         return False
@@ -2343,6 +2554,13 @@ async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
     if not text:
+        return
+
+    if _archive_command(text):
+        result = await _self_unzip_reply(event, uid)
+        if result not in {"__DONE__", "__DONE_NO_FILES__"}:
+            with contextlib.suppress(Exception):
+                await event.edit(result, parse_mode="html")
         return
 
     # Interactive private-channel saver.  The bot panel stores only the
