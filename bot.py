@@ -1752,8 +1752,8 @@ async def _self_transcribe_reply(event, uid):
                 str(path),
                 language="fa",
                 task="transcribe",
-                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "5")),
-                best_of=int(os.getenv("WHISPER_BEST_OF", "5")),
+                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "8")),
+                best_of=int(os.getenv("WHISPER_BEST_OF", "8")),
                 temperature=0,
                 vad_filter=True,
                 condition_on_previous_text=True,
@@ -1794,11 +1794,76 @@ async def _self_ocr_reply(event, uid):
             return "❌ قابلیت OCR نیاز به نصب `pytesseract` و `Pillow` دارد."
 
         def run_ocr():
-            image = Image.open(path)
+            from PIL import ImageOps, ImageFilter
+
+            image = Image.open(path).convert("RGB")
+
+            # Upscale small screenshots/photos before OCR.
+            max_side = max(image.size)
+            if max_side < 2600:
+                scale = min(3.0, 2600.0 / max_side)
+                image = image.resize(
+                    (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+
+            gray = ImageOps.grayscale(image)
+            gray = ImageOps.autocontrast(gray)
+            gray = gray.filter(ImageFilter.SHARPEN)
+
+            # Multiple layouts/thresholds improve Persian OCR on screenshots and photos.
+            variants = [
+                (gray, 6),
+                (gray, 11),
+                (gray.point(lambda p: 255 if p > 170 else 0), 6),
+                (gray.point(lambda p: 255 if p > 200 else 0), 11),
+            ]
+
+            best_text = ""
+            best_score = float("-inf")
+            for variant, psm in variants:
+                try:
+                    data = pytesseract.image_to_data(
+                        variant,
+                        lang="fas+eng",
+                        config=f"--oem 1 --psm {psm}",
+                        output_type=pytesseract.Output.DICT,
+                    )
+                    words = []
+                    confidences = []
+                    for word, conf in zip(data.get("text", []), data.get("conf", [])):
+                        word = (word or "").strip()
+                        if not word:
+                            continue
+                        words.append(word)
+                        try:
+                            value = float(conf)
+                            if value >= 0:
+                                confidences.append(value)
+                        except (TypeError, ValueError):
+                            pass
+                    candidate = " ".join(words).strip()
+                    if not candidate:
+                        continue
+                    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+                    score = avg_conf + min(len(candidate), 500) * 0.01
+                    if score > best_score:
+                        best_score = score
+                        best_text = candidate
+                except Exception as exc:
+                    print(f"[SELF {uid}] OCR pass psm={psm} failed: {exc}")
+
+            if best_text:
+                return best_text
+
             try:
-                return pytesseract.image_to_string(image, lang="fas+eng").strip()
+                return pytesseract.image_to_string(
+                    gray, lang="fas+eng", config="--oem 1 --psm 6"
+                ).strip()
             except Exception:
-                return pytesseract.image_to_string(image, lang="eng").strip()
+                return pytesseract.image_to_string(
+                    gray, lang="eng", config="--oem 1 --psm 6"
+                ).strip()
 
         result = await asyncio.to_thread(run_ocr)
         return f"🔎 **متن تصویر:**\n\n{result}" if result else "❌ متنی در تصویر پیدا نشد."
@@ -2005,7 +2070,7 @@ class _ChannelProgressController:
 
         await self._edit(
             text,
-            buttons=[[btn("↩️ برگشت", self._back_callback(), "primary")]],
+            buttons=None,
         )
 
     def _back_callback(self):
@@ -2624,10 +2689,13 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
+    slots = 24
+    filled = round(slots * percent / 100)
+    bar = "▰" * filled + "▱" * (slots - filled)
     counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
     return (
         f"📦 <b>استخراج آرشیو</b>\n\n"
-        f"<b>{percent}%</b>{counter}\n"
+        f"<code>{bar}</code> <b>{percent}%</b>{counter}\n"
         f"<i>{html.escape(phase)}</i>"
     )
 
@@ -3158,74 +3226,78 @@ async def self_handle_outgoing(event, uid):
             return
 
         if step == "count":
-            try:
-                count = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")))
+            normalized_count = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")).strip()
+
+            # A stale channel-save panel must not consume unrelated commands.
+            if not re.fullmatch(r"\d+", normalized_count):
+                self_clear_channel_save_state(uid)
+                channel_state = {}
+            else:
+                count = int(normalized_count)
                 if count < 1 or count > 1000:
-                    raise ValueError("تعداد باید بین 1 تا 1000 باشد")
-            except Exception as exc:
-                await event.edit(f"❌ تعداد نامعتبر است: {exc}")
-                return
+                    await event.edit(f"❌ تعداد نامعتبر است: تعداد باید بین 1 تا 1000 باشد")
+                    return
 
-            # Enter PROCESSING before doing any real Telegram work. The panel
-            # message becomes the single progress UI and all old buttons vanish.
-            channel_state.update({
-                "step": "processing",
-                "uid": int(uid),
-                "requested": int(count),
-                "processing_started": time.monotonic(),
-            })
-            self_set_channel_save_state(uid, channel_state)
+                # Enter PROCESSING before doing any real Telegram work. The panel
+                # message becomes the single progress UI and all old buttons vanish.
+                channel_state.update({
+                    "step": "processing",
+                    "uid": int(uid),
+                    "requested": int(count),
+                    "processing_started": time.monotonic(),
+                })
+                self_set_channel_save_state(uid, channel_state)
 
-            controller = _ChannelProgressController(channel_state).set_back_callback(
-                _self_cb(uid, "panel")
-            )
-
-            # Convert the original panel prompt into the progress message first.
-            # Capture the actual returned message when Telethon provides it.
-            # This avoids stale inline-message IDs causing silent progress edits.
-            with contextlib.suppress(Exception):
-                edited_panel = await event.edit(
-                    _channel_progress_text(0, processed=0, total=count),
-                    parse_mode="html",
-                    buttons=None,
+                controller = _ChannelProgressController(channel_state).set_back_callback(
+                    _self_cb(uid, "panel")
                 )
-                actual_id = getattr(edited_panel, "id", None)
-                if actual_id:
-                    channel_state["panel_message_id"] = int(actual_id)
-                    self_set_channel_save_state(uid, channel_state)
-                    controller = _ChannelProgressController(channel_state).set_back_callback(
-                        _self_cb(uid, "panel")
+
+                # The existing bot panel is the single progress UI. Do not edit
+                # the user's numeric input into a second progress message.
+                await controller.update(0, count, force=True)
+
+                with contextlib.suppress(Exception):
+                    await event.delete()
+
+                try:
+                    result = await _self_save_channel_media(
+                        event.client,
+                        uid,
+                        channel_state,
+                        count,
+                        progress_cb=controller.update,
                     )
 
-            await controller.update(0, count, force=True)
-
-            with contextlib.suppress(Exception):
-                await event.delete()
-
-            try:
-                result = await _self_save_channel_media(
-                    event.client,
-                    uid,
-                    channel_state,
-                    count,
-                    progress_cb=controller.update,
-                )
-
-                if result.get("error"):
-                    # No fake progress is added after a real fatal error.
-                    # If no item was processed, show the clear failure directly.
-                    if result.get("processed", 0) == 0:
-                        try:
-                            await bot.edit_message(
-                                int(controller.chat_id),
-                                int(controller.message_id),
-                                result["error"],
-                                parse_mode="html",
-                                buttons=[[btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
+                    if result.get("error"):
+                        # No fake progress is added after a real fatal error.
+                        # If no item was processed, show the clear failure directly.
+                        if result.get("processed", 0) == 0:
+                            try:
+                                await bot.edit_message(
+                                    int(controller.chat_id),
+                                    int(controller.message_id),
+                                    result["error"],
+                                    parse_mode="html",
+                                    buttons=None,
+                                )
+                            except Exception as ui_exc:
+                                print(f"[CHANNEL_SAVE UI] fatal-error edit failed: {ui_exc}")
+                        else:
+                            elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
+                            if elapsed < 3.0:
+                                await asyncio.sleep(3.0 - elapsed)
+                            await _channel_progress_done(
+                                channel_state,
+                                successful=result["saved"],
+                                failed=result["failed"],
+                                requested=count,
+                                available=result["available"],
                             )
-                        except Exception as ui_exc:
-                            print(f"[CHANNEL_SAVE UI] fatal-error edit failed: {ui_exc}")
                     else:
+                        # Keep the processing/progress message visible for at least
+                        # three seconds, even when Telegram returns the selected
+                        # messages very quickly. This makes the progress UI visible
+                        # instead of flashing past instantly.
                         elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
                         if elapsed < 3.0:
                             await asyncio.sleep(3.0 - elapsed)
@@ -3236,38 +3308,23 @@ async def self_handle_outgoing(event, uid):
                             requested=count,
                             available=result["available"],
                         )
-                else:
-                    # Keep the processing/progress message visible for at least
-                    # three seconds, even when Telegram returns the selected
-                    # messages very quickly. This makes the progress UI visible
-                    # instead of flashing past instantly.
-                    elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
-                    if elapsed < 3.0:
-                        await asyncio.sleep(3.0 - elapsed)
-                    await _channel_progress_done(
-                        channel_state,
-                        successful=result["saved"],
-                        failed=result["failed"],
-                        requested=count,
-                        available=result["available"],
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
-                with contextlib.suppress(Exception):
-                    await bot.edit_message(
-                        int(controller.chat_id),
-                        int(controller.message_id),
-                        f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
-                        parse_mode="html",
-                        buttons=[[btn("↩️ برگشت", _self_cb(uid, "panel"), "primary")]],
-                    )
-            finally:
-                # Never leave the user stuck in PROCESSING, even after an
-                # unexpected exception or cancellation.
-                self_clear_channel_save_state(uid)
-            return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
+                    with contextlib.suppress(Exception):
+                        await bot.edit_message(
+                            int(controller.chat_id),
+                            int(controller.message_id),
+                            f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                            parse_mode="html",
+                            buttons=None,
+                        )
+                finally:
+                    # Never leave the user stuck in PROCESSING, even after an
+                    # unexpected exception or cancellation.
+                    self_clear_channel_save_state(uid)
+                return
 
     if low in _UNZIP_COMMANDS:
         result = await _self_unzip_reply(event, uid)
@@ -3305,14 +3362,15 @@ async def self_handle_outgoing(event, uid):
 
         with contextlib.suppress(Exception):
             await event.edit("🎙️ <b>در حال تبدیل ویس به متن…</b>\n<i>لطفاً چند لحظه صبر کن.</i>", parse_mode="html")
-        result = await _self_transcribe_reply(event, uid)
         try:
-            await event.client.send_message(event.chat_id, result, reply_to=replied.id)
-        except Exception:
-            with contextlib.suppress(Exception):
-                await event.respond(result)
+            result = await asyncio.wait_for(
+                _self_transcribe_reply(event, uid),
+                timeout=float(os.getenv("STT_TIMEOUT_SECONDS", "600")),
+            )
+        except asyncio.TimeoutError:
+            result = "❌ تبدیل ویس به متن زمان‌بر شد؛ دوباره تلاش کن."
         with contextlib.suppress(Exception):
-            await event.delete()
+            await event.edit(result, parse_mode="html")
         return
 
     if low in {"ocr", "او سی آر"} and event.is_reply:
@@ -3527,57 +3585,6 @@ async def self_handle_outgoing(event, uid):
             await event.edit(f"🚫 کاربر `{target}` بلاک شد.")
         except Exception as exc:
             await event.edit(f"❌ بلاک انجام نشد: {exc}")
-        return
-
-    transfer = re.fullmatch(r"انتقال\s+(\d+)", text)
-    if transfer:
-        amount = int(transfer.group(1))
-        if not (event.is_group or event.is_channel):
-            await event.edit("❌ این دستور فقط داخل گپ قابل استفاده است.")
-            return
-        if amount <= 0:
-            await event.edit("❌ مقدار انتقال باید بیشتر از صفر باشد.")
-            return
-        if not event.is_reply:
-            await event.edit("❌ روی پیام کاربر ریپلای کن و بنویس: انتقال 500")
-            return
-        replied = await event.get_reply_message()
-        target = int(replied.sender_id) if replied and replied.sender_id else 0
-        if not target:
-            await event.edit("❌ گیرنده پیدا نشد.")
-            return
-        if target == uid:
-            await event.edit("❌ نمی‌توانید به خودتان الماس انتقال دهید.")
-            return
-        balance = get_balance(uid)
-        if balance < amount:
-            await event.edit(f"❌ موجودی کافی نیست.\n💎 موجودی شما: {_fmt_diamonds(balance)}")
-            return
-        init_user_db(target)
-        change_balance(uid, -amount)
-        change_balance(target, amount)
-
-        # Notification must be sent by the bot, not by the logged-in self account.
-        # The self account performs the transfer, while the bot delivers the receipt.
-        sender_label = await _transfer_sender_label(event.client, uid)
-        sender_balance = get_balance(uid)
-        recipient_balance = get_balance(target)
-
-        await event.edit(
-            f"✅ انتقال انجام شد.\n"
-            f"💎 {amount:,} الماس به کاربر `{target}` منتقل شد.\n"
-            f"💰 موجودی باقی‌مانده: {_fmt_diamonds(sender_balance)}"
-        )
-
-        # The notification is deliberately sent by the bot account.
-        with contextlib.suppress(Exception):
-            await bot.send_message(
-                target,
-                "🎁 **الماس دریافت کردید!**\n\n"
-                f"👤 از طرف {sender_label} برای شما واریز شد.\n"
-                f"💎 مقدار: {amount:,} الماس\n"
-                f"💎 موجودی فعلی: {_fmt_diamonds(recipient_balance)} الماس"
-            )
         return
 
     if text.startswith(("/", ".")):
@@ -4460,13 +4467,9 @@ async def group_commands(event):
         return
 
     if text == "موجودی":
+        # Always show the balance of the person who typed "موجودی".
+        # Replying to another user must never change the target.
         target = user_id
-
-        if event.is_reply:
-            reply = await event.get_reply_message()
-            if reply and reply.sender_id:
-                target = reply.sender_id
-
         balance = get_balance(target)
         try:
             target_entity = await bot.get_entity(int(target))
@@ -4485,12 +4488,6 @@ async def group_commands(event):
     game = re.fullmatch(r"بازی\s+(\d+)", text)
     if game:
         amount = int(game.group(1))
-
-        if amount < MIN_GAME:
-            await event.reply(
-                f"❌ حداقل مبلغ بازی {MIN_GAME:,} الماس است."
-            )
-            return
 
         balance = get_balance(user_id)
         if balance < amount:
@@ -4878,11 +4875,19 @@ async def callbacks(event):
             await safe_answer(event, "❌ برگزارکننده نمی‌تواند وارد بازی خودش شود.", True)
             return
 
-        if key not in active_games:
+        game = active_games.get(key)
+        if not game:
             await safe_answer(event, "❌ این بازی منقضی شده است.", True)
             return
 
+        # Lock before the reveal delay so the same game cannot be joined twice.
+        if game.get("resolving"):
+            await safe_answer(event, "⏳ در حال انتخاب برنده ...", True)
+            return
+        game["resolving"] = True
+
         if get_balance(joiner) < amount:
+            game.pop("resolving", None)
             await safe_answer(event, "❌ موجودی کافی ندارید.", True)
             return
 
@@ -4892,8 +4897,15 @@ async def callbacks(event):
         tax = max(1, int(total * GAME_TAX))
         prize = total - tax
 
-        winner = secrets.choice((organizer, joiner))
+        # Exactly 50/50: one unbiased random bit chooses either player.
+        winner = organizer if secrets.randbelow(2) == 0 else joiner
         loser = joiner if winner == organizer else organizer
+
+        # Keep the existing game message; only replace it during the 3-second reveal.
+        with contextlib.suppress(Exception):
+            await event.edit("درحال انتخاب برنده ...", buttons=None)
+
+        await asyncio.sleep(3)
 
         change_balance(winner, prize)
 
@@ -4902,11 +4914,8 @@ async def callbacks(event):
         winner_name = await user_name(winner)
         loser_name = await user_name(loser)
 
-        game = active_games.pop(key)
+        active_games.pop(key, None)
         game["task"].cancel()
-
-        with contextlib.suppress(Exception):
-            await bot.delete_messages(event.chat_id, event.message_id)
 
         # Result layout matches the reference UI: label + value in two columns.
         game_result_buttons = [
@@ -4923,8 +4932,9 @@ async def callbacks(event):
                 btn(f"💎 {_fmt_diamonds(loser_balance)}", b"game_noop_loser_value", "danger"),
             ],
         ]
-        await bot.send_message(
+        await bot.edit_message(
             event.chat_id,
+            event.message_id,
             "🎉 **نتیجه بازی مشخص شد**\n\n"
             f"🎉 **برنده:** {winner_name}\n"
             f"❌ **بازنده:** {loser_name}",
@@ -4933,6 +4943,7 @@ async def callbacks(event):
 
         await safe_answer(event, "✅ بازی به پایان رسید.")
         return
+
 
     # --------------------------------------------------------
     # GAME CANCEL
