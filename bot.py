@@ -76,10 +76,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 
 # Fast-Creat APIs
-FAST_CREAT_NOBITEX_API_KEY = os.getenv("FAST_CREAT_NOBITEX_API_KEY", "6912003519:eWHXkqwDzO78Uj1@Api_ManagerRoBot").strip()
-FAST_CREAT_LOGO_API_KEY = os.getenv("FAST_CREAT_LOGO_API_KEY", "6912003519:pn9WGl6BHVePvYI@Api_ManagerRoBot").strip()
-FAST_CREAT_NOBITEX_URL = "https://api.fast-creat.ir/nobitex/v2"
-FAST_CREAT_LOGO_URL = "https://api.fast-creat.ir/logo"
+FAST_CREAT_NOBITEX_API_KEY = os.getenv("FAST_CREAT_NOBITEX_API_KEY", "").strip()
+FAST_CREAT_LOGO_API_KEY = os.getenv("FAST_CREAT_LOGO_API_KEY", "").strip()
+FAST_CREAT_NOBITEX_URL = os.getenv("FAST_CREAT_NOBITEX_URL", "http://api.fast-creat.ir/nobitex/v2").strip()
+FAST_CREAT_LOGO_URL = os.getenv("FAST_CREAT_LOGO_URL", "http://api.fast-creat.ir/logo").strip()
 TRANSFER_TAX = 0.10
 GAME_TAX = 0.05
 GAME_TIMEOUT = 300
@@ -2809,167 +2809,725 @@ _CRYPTO_ALIASES = {
 }
 
 def _fa_digits(text):
-    return str(text).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    return str(text).translate(str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789"
+    ))
 
-def _format_price_number(value):
+
+def _fast_creat_redact_url(url: str) -> str:
+    """Hide the apikey from debug output without changing the actual request."""
     try:
-        n = float(str(value).replace(",", ""))
-        if n.is_integer():
-            return f"{int(n):,}"
-        return f"{n:,.8f}".rstrip("0").rstrip(".")
+        parsed = urllib.parse.urlsplit(str(url))
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        safe_query = []
+        for key, value in query:
+            safe_query.append((key, "***REDACTED***" if key.casefold() == "apikey" else value))
+        return urllib.parse.urlunsplit((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urllib.parse.urlencode(safe_query),
+            parsed.fragment,
+        ))
     except Exception:
-        return str(value)
+        return "<redacted-url>"
+
+
+def _fast_creat_debug_body(body: bytes, content_type: str, limit: int = 12000) -> str:
+    """Return a useful raw-body preview for logs, never including an API key."""
+    raw = bytes(body or b"")[:limit]
+    charset = "utf-8"
+    m = re.search(r"charset\s*=\s*['\"]?([\\w.-]+)", content_type or "", flags=re.I)
+    if m:
+        charset = m.group(1)
+    try:
+        text = raw.decode(charset, errors="replace")
+    except Exception:
+        text = raw.decode("utf-8", errors="replace")
+
+    # API keys should never be present in response bodies, but redact defensively.
+    for key in (FAST_CREAT_NOBITEX_API_KEY, FAST_CREAT_LOGO_API_KEY):
+        if key:
+            text = text.replace(key, "***REDACTED***")
+    return text
+
+
+def _fast_creat_request(url, params, timeout=15):
+    """
+    Synchronous HTTP worker used only through asyncio.to_thread().
+
+    Returns:
+        {
+            "status": int,
+            "content_type": str,
+            "body": bytes,
+            "final_url": str,
+        }
+
+    It deliberately does NOT assume JSON.  Every response is inspected by
+    status code, Content-Type and raw bytes first.
+    """
+    query = urllib.parse.urlencode(params, doseq=True, quote_via=urllib.parse.quote)
+    full_url = f"{url}{'&' if '?' in url else '?'}{query}"
+    req = urllib.request.Request(
+        full_url,
+        headers={
+            "User-Agent": "HusteRIX-Diamond-Self/2.0",
+            "Accept": "application/json, image/png, image/jpeg, image/webp, */*",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            status = int(getattr(response, "status", response.getcode()))
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read()
+            final_url = response.geturl()
+            print(
+                f"[FAST-CREAT][HTTP] status={status} "
+                f"content_type={content_type!r} bytes={len(body)} "
+                f"url={_fast_creat_redact_url(final_url)}"
+            )
+            print(
+                "[FAST-CREAT][BODY] "
+                + _fast_creat_debug_body(body, content_type)
+            )
+            return {
+                "status": status,
+                "content_type": content_type,
+                "body": body,
+                "final_url": final_url,
+            }
+
+    except urllib.error.HTTPError as exc:
+        body = exc.read() if hasattr(exc, "read") else b""
+        content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
+        print(
+            f"[FAST-CREAT][HTTP ERROR] status={exc.code} "
+            f"content_type={content_type!r} bytes={len(body)} "
+            f"url={_fast_creat_redact_url(full_url)}"
+        )
+        print(
+            "[FAST-CREAT][HTTP ERROR BODY] "
+            + _fast_creat_debug_body(body, content_type)
+        )
+        raise
+
+    except (urllib.error.URLError, TimeoutError) as exc:
+        print(
+            f"[FAST-CREAT][CONNECTION ERROR] "
+            f"url={_fast_creat_redact_url(full_url)} error={exc!r}"
+        )
+        raise
+
+
+def _fast_creat_parse_response(response):
+    """
+    Parse an HTTP response without assuming JSON.
+
+    Returns:
+        {
+            "kind": "json" | "image" | "text" | "binary",
+            "value": parsed JSON / bytes / text,
+            "content_type": str,
+            "status": int,
+        }
+    """
+    body = response.get("body", b"")
+    content_type = (response.get("content_type") or "").casefold()
+
+    if any(x in content_type for x in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif")):
+        return {
+            "kind": "image",
+            "value": body,
+            "content_type": content_type,
+            "status": response.get("status"),
+        }
+
+    stripped = body.lstrip()
+    looks_json = (
+        "json" in content_type
+        or stripped.startswith(b"{")
+        or stripped.startswith(b"[")
+        or stripped.startswith(b'"')
+    )
+    if looks_json:
+        try:
+            decoded = body.decode("utf-8-sig")
+            return {
+                "kind": "json",
+                "value": json.loads(decoded),
+                "content_type": content_type,
+                "status": response.get("status"),
+            }
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            # It was labelled JSON or looked JSON-like, but was not valid JSON.
+            pass
+
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return {
+            "kind": "binary",
+            "value": body,
+            "content_type": content_type,
+            "status": response.get("status"),
+        }
+
+    return {
+        "kind": "text",
+        "value": text,
+        "content_type": content_type,
+        "status": response.get("status"),
+    }
+
+
+def _fast_creat_json_or_text(response):
+    parsed = _fast_creat_parse_response(response)
+    if parsed["kind"] == "json":
+        return parsed["value"], None
+    if parsed["kind"] == "text":
+        text = parsed["value"].strip()
+        # Some services return JSON with a wrong/missing Content-Type.
+        if text:
+            try:
+                return json.loads(text), None
+            except json.JSONDecodeError:
+                return None, text
+    return None, None
+
+
+def _numeric_value(value):
+    """Accept numeric values without changing their semantic unit."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        value = value.strip().replace(",", "")
+        return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value))
+    return False
+
+
+_PRICE_FIELDS = (
+    "lastTradePrice",
+    "last",
+    "last_price",
+    "lastPrice",
+    "latest",
+    "price",
+    "value",
+    "close",
+    "current",
+)
+
+
+def _norm_market(value):
+    if value is None:
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(value)).upper()
+
 
 def _find_crypto_price(payload, symbol):
-    if isinstance(payload, dict):
-        wanted = {symbol.upper(), symbol.lower(), f"{symbol.upper()}IRT", f"{symbol.lower()}irt",
-                  f"{symbol.upper()}-IRT", f"{symbol.lower()}-irt", f"{symbol.upper()}_IRT"}
-        for k, v in payload.items():
-            if str(k) in wanted:
-                if isinstance(v, dict):
-                    for field in ("lastTradePrice", "latest", "last", "price", "last_price", "lastPrice", "value"):
-                        if v.get(field) not in (None, ""):
-                            return v.get(field), v
-                elif isinstance(v, (str, int, float)):
-                    return v, {}
-        for key in ("stats", "data", "markets", "result", "coins"):
-            if key in payload:
-                found = _find_crypto_price(payload[key], symbol)
+    """
+    Recursive market-price extractor.
+
+    It supports both:
+      BTC / BTCIRT / BTC-IRT / BTC_IRT / BTC/IRT
+    and records whose market is carried in fields such as:
+      symbol, base, market, pair.
+
+    Price fields are intentionally checked in the common API order requested
+    by the feature specification.  No rial/toman conversion happens here.
+    """
+    target = str(symbol).upper()
+    wanted_markets = {
+        target,
+        f"{target}IRT",
+        f"{target}USDT",
+        f"{target}IRR",
+    }
+    market_keys = {"symbol", "base", "market", "pair", "symbol_name", "market_symbol"}
+
+    def walk(node, path=()):
+        if isinstance(node, dict):
+            # First: records that explicitly identify the market/symbol.
+            market_values = []
+            for key, value in node.items():
+                if str(key).casefold() in market_keys and isinstance(value, (str, int, float)):
+                    market_values.append(str(value))
+
+            market_norms = {_norm_market(x) for x in market_values}
+            market_match = False
+            for market in market_norms:
+                if market in wanted_markets or market.startswith(target):
+                    market_match = True
+                    break
+
+            if market_match:
+                for field in _PRICE_FIELDS:
+                    for key, value in node.items():
+                        if str(key).casefold() == field.casefold() and _numeric_value(value):
+                            return value, {
+                                "path": path,
+                                "market": market_values,
+                                "price_field": key,
+                                "record": node,
+                            }
+
+            # Second: dictionaries keyed directly by market name.
+            for key, value in node.items():
+                key_norm = _norm_market(key)
+                if key_norm in wanted_markets or key_norm in {target, f"{target}IRT", f"{target}IRR"}:
+                    if isinstance(value, dict):
+                        for field in _PRICE_FIELDS:
+                            for vk, vv in value.items():
+                                if str(vk).casefold() == field.casefold() and _numeric_value(vv):
+                                    return vv, {
+                                        "path": path + (str(key),),
+                                        "market": [str(key)],
+                                        "price_field": vk,
+                                        "record": value,
+                                    }
+                    elif _numeric_value(value):
+                        return value, {
+                            "path": path + (str(key),),
+                            "market": [str(key)],
+                            "price_field": str(key),
+                            "record": value,
+                        }
+
+            # Third: recursively inspect every nested object/list.  This is
+            # intentionally not limited to keys named data/result/object.
+            for key, value in node.items():
+                found = walk(value, path + (str(key),))
                 if found:
                     return found
-        for k, v in payload.items():
-            if symbol.upper() in str(k).upper() and isinstance(v, dict):
-                for field in ("lastTradePrice", "latest", "last", "price", "last_price", "lastPrice", "value"):
-                    if v.get(field) not in (None, ""):
-                        return v.get(field), v
-        for v in payload.values():
-            found = _find_crypto_price(v, symbol)
-            if found:
-                return found
-    elif isinstance(payload, list):
-        for v in payload:
-            found = _find_crypto_price(v, symbol)
-            if found:
-                return found
-    return None
 
-def _fast_creat_get_json(url, params, timeout=12):
-    full_url = url + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    req = urllib.request.Request(full_url, headers={"User-Agent": "HusteRIX-Diamond-Self/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                found = walk(value, path + (index,))
+                if found:
+                    return found
+
+        return None
+
+    return walk(payload)
+
+
+def _format_price_number(value):
+    # Preserve the exact numeric value returned by the API as much as possible.
+    # This is display formatting only; no unit conversion or rounding is done.
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        return str(value)
+    return str(value)
+
 
 def _fast_creat_extract_url(payload):
-    if isinstance(payload, str) and payload.startswith(("http://", "https://")):
-        return payload
+    """Recursive URL extraction from any JSON nesting."""
+    url_keys = {
+        "url", "link", "image", "image_url", "imageurl", "output",
+        "result_url", "image_link", "src", "download_url",
+    }
+
+    if isinstance(payload, str):
+        text = payload.strip()
+        if re.match(r"^https?://\S+$", text, flags=re.I):
+            return text.rstrip(").,]}\"'")
+
+        # A JSON string can occasionally contain a URL surrounded by text.
+        match = re.search(r"https?://[^\s\"'<>]+", text, flags=re.I)
+        if match:
+            return match.group(0).rstrip(").,]}\"'")
+        return None
+
     if isinstance(payload, dict):
-        for key in ("url", "image", "image_url", "link", "result", "data"):
-            if key in payload:
-                found = _fast_creat_extract_url(payload[key])
+        # Prefer semantically named URL fields first.
+        for key, value in payload.items():
+            if str(key).casefold() in url_keys:
+                found = _fast_creat_extract_url(value)
                 if found:
                     return found
+
         for value in payload.values():
             found = _fast_creat_extract_url(value)
             if found:
                 return found
+
     elif isinstance(payload, list):
         for value in payload:
             found = _fast_creat_extract_url(value)
             if found:
                 return found
+
     return None
 
+
+def _fast_creat_decode_base64(payload):
+    """Recursive base64 image extraction; returns (bytes, mime_hint) or None."""
+    base64_keys = {
+        "base64", "image_base64", "imagebase64", "data_base64",
+        "file", "content", "image_data", "data",
+    }
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).casefold() in base64_keys and isinstance(value, str):
+                text = value.strip()
+                mime_hint = None
+                if text.startswith("data:image/") and ";base64," in text:
+                    header, text = text.split(",", 1)
+                    mime_hint = header[5:].split(";", 1)[0]
+                # Base64 is only accepted when it is structurally plausible.
+                compact = re.sub(r"\s+", "", text)
+                if len(compact) >= 32 and re.fullmatch(r"[A-Za-z0-9+/=_-]+", compact):
+                    try:
+                        import base64
+                        padded = compact.replace("-", "+").replace("_", "/")
+                        padded += "=" * (-len(padded) % 4)
+                        data = base64.b64decode(padded, validate=False)
+                        if data:
+                            return data, mime_hint
+                    except Exception:
+                        pass
+
+        for value in payload.values():
+            found = _fast_creat_decode_base64(value)
+            if found:
+                return found
+
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _fast_creat_decode_base64(value)
+            if found:
+                return found
+
+    elif isinstance(payload, str):
+        text = payload.strip()
+        if text.startswith("data:image/") and ";base64," in text:
+            header, encoded = text.split(",", 1)
+            import base64
+            try:
+                return base64.b64decode(encoded, validate=False), header[5:].split(";", 1)[0]
+            except Exception:
+                return None
+
+    return None
+
+
+def _fast_creat_guess_image_ext(content_type="", body=b""):
+    ct = (content_type or "").casefold()
+    if "image/png" in ct or body.startswith(b"\x89PNG"):
+        return ".png"
+    if "image/webp" in ct or body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return ".webp"
+    if "image/gif" in ct or body.startswith(b"GIF8"):
+        return ".gif"
+    return ".jpg"
+
+
+def _fast_creat_fetch_media(params):
+    """
+    Call the media API and normalize all supported response forms.
+
+    Result:
+      ("bytes", bytes, extension)
+      ("url", url, None)
+      ("error", message, None)
+    """
+    response = _fast_creat_request(FAST_CREAT_LOGO_URL, params, timeout=25)
+    status = int(response.get("status") or 0)
+    parsed = _fast_creat_parse_response(response)
+
+    if status < 200 or status >= 300:
+        if parsed["kind"] == "json":
+            detail = _fast_creat_extract_error(parsed["value"])
+        else:
+            detail = str(parsed["value"]).strip() if parsed["value"] is not None else ""
+        return "error", f"HTTP {status}" + (f" — {detail[:500]}" if detail else ""), None
+
+    if parsed["kind"] == "image":
+        body = parsed["value"]
+        if not body:
+            return "error", "پاسخ تصویری سرویس خالی است.", None
+        return "bytes", body, _fast_creat_guess_image_ext(parsed["content_type"], body)
+
+    payload, text = _fast_creat_json_or_text(response)
+
+    if payload is not None:
+        url = _fast_creat_extract_url(payload)
+        if url:
+            return "url", url, None
+
+        decoded = _fast_creat_decode_base64(payload)
+        if decoded:
+            body, mime_hint = decoded
+            return "bytes", body, _fast_creat_guess_image_ext(mime_hint, body)
+
+        error = _fast_creat_extract_error(payload)
+        if error:
+            return "error", error, None
+
+    if text:
+        url = _fast_creat_extract_url(text)
+        if url:
+            return "url", url, None
+
+    return "error", "ساختار پاسخ سرویس قابل شناسایی نیست.", None
+
+
+def _fast_creat_extract_error(payload):
+    if isinstance(payload, str):
+        return payload.strip()[:800]
+    if isinstance(payload, dict):
+        for key in ("error", "message", "msg", "detail", "description", "error_message"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value, ensure_ascii=False)[:800]
+                return str(value)[:800]
+        for value in payload.values():
+            found = _fast_creat_extract_error(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _fast_creat_extract_error(value)
+            if found:
+                return found
+    return None
+
+
 async def _fast_creat_currency_result(symbol):
+    if not FAST_CREAT_NOBITEX_API_KEY:
+        return None, "❌ کلید API نرخ ارز در ENV تنظیم نشده است."
+
     try:
-        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_NOBITEX_URL, {"apikey": FAST_CREAT_NOBITEX_API_KEY})
+        response = await asyncio.to_thread(
+            _fast_creat_request,
+            FAST_CREAT_NOBITEX_URL,
+            {"apikey": FAST_CREAT_NOBITEX_API_KEY},
+            15,
+        )
+        status = int(response.get("status") or 0)
+        parsed = _fast_creat_parse_response(response)
+
+        if status < 200 or status >= 300:
+            if parsed["kind"] == "json":
+                detail = _fast_creat_extract_error(parsed["value"])
+            else:
+                detail = str(parsed["value"]).strip() if parsed["value"] is not None else ""
+            return None, f"❌ سرویس نرخ ارز خطا داد: <b>HTTP {status}</b>" + (
+                f"\n<code>{html.escape(detail[:500])}</code>" if detail else ""
+            )
+
+        payload, text = _fast_creat_json_or_text(response)
+        if payload is None:
+            return None, "❌ پاسخ سرویس نرخ ارز JSON معتبر نیست."
+
         found = _find_crypto_price(payload, symbol)
         if not found:
-            return None, "❌ نرخ این ارز در پاسخ سرویس پیدا نشد."
+            return None, f"❌ نماد <b>{html.escape(symbol)}</b> در پاسخ واقعی سرویس پیدا نشد."
+
         value, details = found
-        return {"symbol": symbol, "price": _format_price_number(value), "raw": details}, None
+        return {
+            "symbol": symbol,
+            "price": _format_price_number(value),
+            "raw": details,
+        }, None
+
     except urllib.error.HTTPError as exc:
-        return None, f"❌ سرویس نرخ ارز خطا داد: HTTP {exc.code}"
+        return None, f"❌ سرویس نرخ ارز خطا داد: <b>HTTP {exc.code}</b>"
+    except urllib.error.URLError:
+        return None, "❌ اتصال به سرویس نرخ ارز برقرار نشد."
+    except TimeoutError:
+        return None, "❌ زمان پاسخ سرویس نرخ ارز تمام شد."
+    except json.JSONDecodeError:
+        return None, "❌ پاسخ JSON سرویس نرخ ارز قابل پردازش نیست."
     except Exception as exc:
-        print(f"[FAST-CREAT] nobitex failed: {exc}")
+        print(f"[FAST-CREAT][NOBITEX] unexpected error: {type(exc).__name__}: {exc}")
         return None, "❌ دریافت نرخ ارز ناموفق بود؛ چند لحظه بعد دوباره تلاش کن."
 
+
 def _currency_ui(data, fa_name):
+    # The API's numeric value is displayed verbatim.  No Rial/Toman
+    # conversion is performed because the wrapper response must define its unit.
     return (
         "╭━━━━━━━ 💱 <b>نرخ لحظه‌ای ارز</b> ━━━━━━━╮\n\n"
-        f"🪙 <b>{fa_name}</b>  •  <code>{data['symbol']}/IRT</code>\n\n"
-        f"💰 <b>{data['price']} تومان</b>\n\n"
-        "⚡ <i>منبع: نوبیتکس • بروزرسانی لحظه‌ای</i>\n"
+        f"🪙 <b>{html.escape(fa_name)}</b>  •  <code>{html.escape(data['symbol'])}</code>\n\n"
+        f"💰 <b>{html.escape(data['price'])}</b>\n\n"
+        "⚡ <i>منبع: Fast-Creat / نوبیتکس • بروزرسانی لحظه‌ای</i>\n"
         "╰━━━━━━━━HusteRIX━━━━━━━━╯"
     )
+
 
 async def _self_currency_command(event, uid, text):
     m = re.fullmatch(r"قیمت\s+(.+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
+
     raw = _fa_digits(m.group(1).strip()).casefold()
     if raw not in _CRYPTO_ALIASES:
-        await event.edit("❌ <b>ارز شناخته نشد.</b>\n\nمثال:\n<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>", parse_mode="html")
+        await event.edit(
+            "❌ <b>ارز شناخته نشد.</b>\n\n"
+            "مثال:\n<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>",
+            parse_mode="html",
+        )
         return True
+
     symbol, fa_name = _CRYPTO_ALIASES[raw]
     with contextlib.suppress(Exception):
-        await event.edit(f"💱 <b>در حال دریافت نرخ {symbol}…</b>", parse_mode="html")
+        await event.edit(
+            f"💱 <b>در حال دریافت نرخ {html.escape(symbol)}...</b>",
+            parse_mode="html",
+        )
+
     data, error = await _fast_creat_currency_result(symbol)
     await event.edit(error if error else _currency_ui(data, fa_name), parse_mode="html")
     return True
 
+
 async def _self_logo_command(event, uid, text):
-    m = re.fullmatch(r"لوگو\s+([0-9۰-۹]{1,3})\s+(.+)", text.strip(), flags=re.S)
+    m = re.fullmatch(r"لوگو\s+([0-9۰-۹]{1,3})\s+(.+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
+
+    if not FAST_CREAT_LOGO_API_KEY:
+        await event.edit("❌ کلید API لوگوساز در ENV تنظیم نشده است.", parse_mode="html")
+        return True
+
     logo_id = int(_fa_digits(m.group(1)))
     logo_text = m.group(2).strip()
     if not 1 <= logo_id <= 140:
         await event.edit("❌ شماره لوگو باید بین <b>۱ تا ۱۴۰</b> باشد.", parse_mode="html")
         return True
+
     with contextlib.suppress(Exception):
-        await event.edit("🎨 <b>در حال ساخت لوگو…</b>", parse_mode="html")
+        await event.edit("🎨 <b>در حال ساخت لوگو...</b>", parse_mode="html")
+
     try:
-        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_LOGO_URL,
-            {"apikey": FAST_CREAT_LOGO_API_KEY, "type": "logo", "id": logo_id, "text": logo_text})
-        image_url = _fast_creat_extract_url(payload)
-        if not image_url:
-            await event.edit("❌ سرویس لوگوساز لینک تصویر برنگرداند.", parse_mode="html")
+        kind, result, extra = await asyncio.to_thread(
+            _fast_creat_fetch_media,
+            {
+                "apikey": FAST_CREAT_LOGO_API_KEY,
+                "type": "logo",
+                "id": logo_id,
+                "text": logo_text,
+            },
+        )
+
+        caption = (
+            f"🎨 <b>لوگو آماده شد</b>\n\n"
+            f"🆔 قالب: <b>{logo_id}</b>\n"
+            f"✏️ متن: <b>{html.escape(logo_text)}</b>"
+        )
+
+        if kind == "bytes":
+            from io import BytesIO
+            media = BytesIO(result)
+            media.name = f"logo_{logo_id}{extra or '.jpg'}"
+            await event.client.send_file(event.chat_id, media, caption=caption, parse_mode="html")
+        elif kind == "url":
+            await event.client.send_file(event.chat_id, result, caption=caption, parse_mode="html")
+        else:
+            await event.edit(
+                f"❌ <b>ساخت لوگو ناموفق بود.</b>\n\n"
+                f"<code>{html.escape(str(result)[:700])}</code>",
+                parse_mode="html",
+            )
             return True
-        await event.client.send_file(event.chat_id, image_url,
-            caption=f"🎨 <b>لوگو آماده شد</b>\n\n🆔 قالب: <b>{logo_id}</b>\n✏️ متن: <b>{html.escape(logo_text)}</b>", parse_mode="html")
-        await event.delete()
+
+        with contextlib.suppress(Exception):
+            await event.delete()
+        return True
+
+    except urllib.error.HTTPError as exc:
+        print(f"[FAST-CREAT][LOGO] HTTP {exc.code}")
+        await event.edit(
+            f"❌ <b>سرویس لوگوساز خطا داد.</b>\n<code>HTTP {exc.code}</code>",
+            parse_mode="html",
+        )
+        return True
+    except (urllib.error.URLError, TimeoutError):
+        await event.edit("❌ <b>اتصال به سرویس لوگوساز برقرار نشد.</b>", parse_mode="html")
         return True
     except Exception as exc:
-        print(f"[FAST-CREAT] logo failed: {exc}")
-        await event.edit("❌ ساخت لوگو ناموفق بود؛ دوباره تلاش کن.")
+        print(f"[FAST-CREAT][LOGO] unexpected error: {type(exc).__name__}: {exc}")
+        await event.edit("❌ <b>ساخت لوگو ناموفق بود؛ پاسخ سرویس قابل پردازش نبود.</b>", parse_mode="html")
         return True
+
 
 async def _self_effect_command(event, uid, text):
     m = re.fullmatch(r"افکت\s+([0-9۰-۹]{1,2})\s+(https?://\S+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
+
+    if not FAST_CREAT_LOGO_API_KEY:
+        await event.edit("❌ کلید API افکت‌ساز در ENV تنظیم نشده است.", parse_mode="html")
+        return True
+
     effect_id = int(_fa_digits(m.group(1)))
     image_url = m.group(2).strip()
     if not 1 <= effect_id <= 80:
         await event.edit("❌ شماره افکت باید بین <b>۱ تا ۸۰</b> باشد.", parse_mode="html")
         return True
+
     with contextlib.suppress(Exception):
-        await event.edit("🖼️ <b>در حال اعمال افکت…</b>", parse_mode="html")
+        await event.edit("🖼️ <b>در حال اعمال افکت...</b>", parse_mode="html")
+
     try:
-        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_LOGO_URL,
-            {"apikey": FAST_CREAT_LOGO_API_KEY, "type": "effect", "id": effect_id, "url": image_url})
-        result_url = _fast_creat_extract_url(payload)
-        if not result_url:
-            await event.edit("❌ سرویس افکت لینک تصویر خروجی را برنگرداند.", parse_mode="html")
+        kind, result, extra = await asyncio.to_thread(
+            _fast_creat_fetch_media,
+            {
+                "apikey": FAST_CREAT_LOGO_API_KEY,
+                "type": "effect",
+                "id": effect_id,
+                "url": image_url,
+            },
+        )
+
+        caption = f"🖼️ <b>افکت آماده شد</b>\n\n🆔 افکت: <b>{effect_id}</b>"
+
+        if kind == "bytes":
+            from io import BytesIO
+            media = BytesIO(result)
+            media.name = f"effect_{effect_id}{extra or '.jpg'}"
+            await event.client.send_file(event.chat_id, media, caption=caption, parse_mode="html")
+        elif kind == "url":
+            await event.client.send_file(event.chat_id, result, caption=caption, parse_mode="html")
+        else:
+            await event.edit(
+                f"❌ <b>ساخت افکت ناموفق بود.</b>\n\n"
+                f"<code>{html.escape(str(result)[:700])}</code>",
+                parse_mode="html",
+            )
             return True
-        await event.client.send_file(event.chat_id, result_url,
-            caption=f"🖼️ <b>افکت آماده شد</b>\n\n🆔 افکت: <b>{effect_id}</b>", parse_mode="html")
-        await event.delete()
+
+        with contextlib.suppress(Exception):
+            await event.delete()
+        return True
+
+    except urllib.error.HTTPError as exc:
+        print(f"[FAST-CREAT][EFFECT] HTTP {exc.code}")
+        await event.edit(
+            f"❌ <b>سرویس افکت‌ساز خطا داد.</b>\n<code>HTTP {exc.code}</code>",
+            parse_mode="html",
+        )
+        return True
+    except (urllib.error.URLError, TimeoutError):
+        await event.edit("❌ <b>اتصال به سرویس افکت‌ساز برقرار نشد.</b>", parse_mode="html")
         return True
     except Exception as exc:
-        print(f"[FAST-CREAT] effect failed: {exc}")
-        await event.edit("❌ ساخت افکت ناموفق بود؛ دوباره تلاش کن.")
+        print(f"[FAST-CREAT][EFFECT] unexpected error: {type(exc).__name__}: {exc}")
+        await event.edit("❌ <b>ساخت افکت ناموفق بود؛ پاسخ سرویس قابل پردازش نبود.</b>", parse_mode="html")
         return True
+
 
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
