@@ -25,6 +25,9 @@ import re
 import sqlite3
 import subprocess
 import time
+import urllib.request
+import urllib.error
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -66,6 +69,17 @@ SELF_CLOCK_UPDATE_INTERVAL = 1
 MIN_SELF_BALANCE = 100
 MIN_DIAMOND_PURCHASE = 500
 DIAMOND_PRICE_TOMAN = 40
+
+# Optional high-accuracy cloud speech-to-text. Set OPENAI_API_KEY in the server environment.
+# If it is not configured, the bot falls back to local faster-whisper.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+
+# Fast-Creat APIs
+FAST_CREAT_NOBITEX_API_KEY = os.getenv("FAST_CREAT_NOBITEX_API_KEY", "6912003519:eWHXkqwDzO78Uj1@Api_ManagerRoBot").strip()
+FAST_CREAT_LOGO_API_KEY = os.getenv("FAST_CREAT_LOGO_API_KEY", "6912003519:pn9WGl6BHVePvYI@Api_ManagerRoBot").strip()
+FAST_CREAT_NOBITEX_URL = "https://api.fast-creat.ir/nobitex/v2"
+FAST_CREAT_LOGO_URL = "https://api.fast-creat.ir/logo"
 TRANSFER_TAX = 0.10
 GAME_TAX = 0.05
 GAME_TIMEOUT = 300
@@ -590,6 +604,9 @@ def self_panel_buttons(uid):
         [
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
+        ],        [
+            btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
+            btn("🎨 لوگوساز", _self_cb(uid, "logo"), "primary"),
         ],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
@@ -626,91 +643,127 @@ def self_panel_text(uid):
 def self_guide_text(page=1):
     pages = [
         (
-            "📚 <b>راهنمای سلف — صفحه ۱ از ۵</b>\n\n"
-            "🧊 <b>پنل و تنظیمات پروفایل</b>\n"
-            "• «پنل» پنل شیشه‌ای سلف را در همان گفتگو باز می‌کند.\n"
-            "• 🕐 ساعت روی نام: نمایش ساعت ایران روی نام پروفایل و روشن/خاموش‌کردن آن.\n"
-            "• «فونت ساعت» برای انتخاب ظاهر اعداد ساعت؛ فونت‌های مختلف از پنل قابل تغییر هستند.\n"
-            "• 🅱 «بولد روشن / خاموش» برای بولدکردن متن‌های ارسالی.\n"
-            "• 🅵 «فونت فارسی روشن / خاموش» برای کشیده‌سازی ظاهری متن فارسی.\n"
-            "• 🔤 «فونت انگلیسی» برای تغییر ظاهر حروف انگلیسی.\n\n"
-            "💎 <b>مدیریت سلف</b>\n"
-            "• فعال/غیرفعال‌کردن قابلیت‌های سلف از طریق دکمه‌های پنل.\n"
-            "• نمایش وضعیت قابلیت‌ها، ساعت، ریاکشن، قفل چت و وضعیت پاکسازی در پنل.\n"
-            "• حساب کاربری، خرید سلف، مدیریت سلف و زیرمجموعه‌گیری از منوی اصلی در دسترس هستند."
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۱ از ۸</i>\n\n"
+            "<blockquote>🧭 <b>شروع سریع</b>\n"
+            "این راهنما قابلیت‌ها را کوتاه و مرحله‌به‌مرحله توضیح می‌دهد.</blockquote>\n\n"
+            "🕐 <b>ساعت روی نام</b>\n"
+            "فعال/غیرفعال‌کردن ساعت ایران روی نام پروفایل.\n\n"
+            "🔤 <b>فونت ساعت</b>\n"
+            "ظاهر اعداد ساعت را از پنل تغییر بده.\n\n"
+            "🅱 <b>بولد</b>\n"
+            "برای پررنگ‌کردن متن‌های ارسالی.\n\n"
+            "🅵 <b>فونت فارسی</b>\n"
+            "برای ظاهر کشیده و متفاوت متن فارسی."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۲ از ۵</b>\n\n"
-            "🌐 <b>ترجمه و وضعیت گفتگو</b>\n"
-            "• «ترنسلیت روشن / خاموش»: ترجمه خودکار متن‌های ارسالی به انگلیسی.\n"
-            "• «سین روشن / خاموش»: خوانده‌شدن پیام‌های دریافتی.\n"
-            "• «تایپینگ روشن / خاموش»: نمایش وضعیت تایپ‌کردن در گفتگوها.\n"
-            "• «حالت بازی روشن / خاموش»: نمایش وضعیت بازی به‌جای تایپینگ.\n\n"
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۲ از ۸</i>\n\n"
+            "🌐 <b>ترجمه</b>\n"
+            "<blockquote>متن‌های ارسالی را به انگلیسی ترجمه می‌کند.</blockquote>\n\n"
+            "👁 <b>سین</b>\n"
+            "پیام‌های دریافتی را به‌عنوان خوانده‌شده علامت می‌زند.\n\n"
+            "⌨️ <b>تایپینگ</b>\n"
+            "وضعیت تایپ‌کردن را در گفتگو نمایش می‌دهد.\n\n"
+            "🎮 <b>حالت بازی</b>\n"
+            "به‌جای تایپینگ، وضعیت بازی را نمایش می‌دهد."
+        ),
+        (
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۳ از ۸</i>\n\n"
             "🤖 <b>تبچی</b>\n"
-            "• «تبچی روشن / خاموش» برای فعال یا غیرفعال‌کردن پاسخ خودکار.\n"
-            "• «تبچی متن متن دلخواه» متن پاسخ خودکار را ذخیره و فعال می‌کند.\n\n"
+            "پاسخ خودکار را روشن یا خاموش کن.\n\n"
+            "<code>تبچی متن سلام، فعلاً در دسترس نیستم.</code>\n"
+            "متن پاسخ خودکار را تغییر می‌دهد.\n\n"
             "❤️ <b>ریاکشن خودکار</b>\n"
-            "• روی پیام کاربر ریپلای کن و «ریاکشن 🔥» یا یکی از ایموجی‌های پشتیبانی‌شده را بفرست.\n"
-            "• «حذف ریاکشن» یا «ریاکشن خاموش» ریاکشن خودکار آن کاربر را حذف می‌کند.\n"
-            "• ریاکشن انتخاب‌شده روی پیام‌های بعدی همان کاربر اعمال می‌شود."
+            "<blockquote>روی پیام کاربر ریپلای کن و ریاکشن دلخواه را تنظیم کن.</blockquote>\n\n"
+            "<u>حذف ریاکشن</u> یا <u>ریاکشن خاموش</u>\n"
+            "تنظیم ریاکشن آن کاربر را پاک می‌کند."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۳ از ۵</b>\n\n"
-            "🎵 <b>تبدیل رسانه</b>\n"
-            "• 🎵 روی ویس ریپلای کن → «ویس به mp3» → تبدیل ویس به MP3.\n"
-            "• 🎙️ روی MP3 ریپلای کن → «mp3 به ویس» → تبدیل MP3 به ویس تلگرام.\n"
-            "• 🎬 روی ویدیو ریپلای کن → «ویدیو به ویس» → استخراج صدا و ارسال به‌صورت ویس.\n"
-            "• 🎬 روی ویدیو ریپلای کن → «ویدیو به mp3» → استخراج صدا و ارسال به‌صورت MP3.\n"
-            "• تبدیل‌ها با FFmpeg انجام می‌شوند و پیام عملیات با درصد پیشرفت به‌روزرسانی می‌شود.\n\n"
-            "📝 <b>ابزارهای پیام</b>\n"
-            "• «متن» روی ویس یا فایل صوتی ریپلای‌شده: تبدیل صدا به متن.\n"
-            "• «متن + ریپلی» یا «متن + ریپلای»: نتیجه را دقیقاً روی همان ویس/فایل ریپلای می‌کند.\n"
-            "• «OCR» یا «او سی آر» روی تصویر: استخراج متن تصویر.\n"
-            "• «دانلود» روی پیام ریپلای‌شده: انتقال پیام/رسانه به پیام‌های ذخیره‌شده.\n"
-            "• «unzip + ریپلی» / «unzip + ریپلای» یا «استخراج + ریپلی» / «استخراج + ریپلای» روی ZIP/RAR: استخراج و ارسال تک‌تک فایل‌ها.\n"
-            "• «unzip» و «استخراج» نیز روی آرشیو ریپلای‌شده کار می‌کنند؛ نوار پیشرفت کوتاه و یک‌خطی است.\n"
-            "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
-            "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ برای استیکر متحرک در صورت امکان GIF ساخته می‌شود."
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۴ از ۸</i>\n\n"
+            "🎙️ <b>ویس → متن</b>\n\n"
+            "<code>متن</code>\n"
+            "روی ویس یا فایل صوتی ریپلای کن.\n\n"
+            "<code>متن + ریپلی</code>\n"
+            "یا\n"
+            "<code>متن + ریپلای</code>\n"
+            "نتیجه را روی همان ویس ریپلای می‌کند.\n\n"
+            "✨ <i>برای فارسی، در صورت تنظیم API، موتور دقیق ابری استفاده می‌شود.</i>"
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۴ از ۵</b>\n\n"
-            "📢 <b>ذخیره از چنل خصوصی</b>\n"
-            "• از پنل «ذخیره چنل» را انتخاب کن؛ فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
-            "• نوع ذخیره را انتخاب کن: تصاویر، ویدیوها، موسیقی، ویس‌ها، متن‌ها یا کل مدیاها.\n"
-            "• تعداد موردنظر را از ۱ تا ۱۰۰۰ ارسال کن.\n"
-            "• پس از شروع، همان پیام پنل به پیام پردازش تبدیل می‌شود و همه دکمه‌ها حذف می‌شوند.\n"
-            "• نوار پیشرفت بر اساس موارد واقعاً پردازش‌شده به‌روزرسانی می‌شود و در صورت کوتاه‌بودن عملیات، صفحه پردازش حداقل حدود ۳ ثانیه باقی می‌ماند.\n"
-            "• در پایان همان پیام به نتیجه عملیات و دکمه بازگشت تبدیل می‌شود.\n\n"
-            "🗑️ <b>آرشیو پیام‌های حذف‌شده</b>\n"
-            "• پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند.\n"
-            "• هنگام پاکسازی کامل/گروهی چت، پنج پیام آخرِ باقی‌مانده برای Snapshot آرشیو می‌شوند.\n"
-            "• در نسخه آرشیوشده، شناسه/نام نویسنده برای تشخیص صاحب پیام درج می‌شود."
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۵ از ۸</i>\n\n"
+            "🎵 <b>تبدیل رسانه</b>\n\n"
+            "<code>ویس به mp3</code>\n"
+            "ویس را به MP3 تبدیل می‌کند.\n\n"
+            "<code>mp3 به ویس</code>\n"
+            "MP3 را به ویس تلگرام تبدیل می‌کند.\n\n"
+            "<code>ویدیو به ویس</code>\n"
+            "صدای ویدیو را جدا و به‌صورت ویس ارسال می‌کند.\n\n"
+            "<code>ویدیو به mp3</code>\n"
+            "صدای ویدیو را به MP3 تبدیل می‌کند."
         ),
         (
-            "📚 <b>راهنمای سلف — صفحه ۵ از ۵</b>\n\n"
-            "🧹 <b>پاکسازی اکانت</b>\n"
-            "• پاکسازی چت‌های خصوصی، گپ‌ها، کانال‌ها، مخاطبین و ربات‌ها به‌صورت جداگانه.\n"
-            "• گزینه «پاکسازی همه» همه بخش‌های قابل انتخاب را اجرا می‌کند.\n"
-            "• پاکسازی چت خصوصی تا جایی که Telegram اجازه دهد دوطرفه انجام می‌شود و پیام‌های ذخیره‌شده دست‌نخورده می‌مانند.\n\n"
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۶ از ۸</i>\n\n"
+            "📦 <b>استخراج آرشیو</b>\n\n"
+            "<code>unzip + ریپلی</code>\n"
+            "یا\n"
+            "<code>استخراج + ریپلای</code>\n\n"
+            "روی ZIP/RAR ریپلای کن.\n"
+            "فایل‌های استخراج‌شده یکی‌یکی ارسال می‌شوند.\n\n"
+            "📊 <b>پیشرفت</b>\n"
+            "<blockquote>نمایش درصد به‌صورت ساده و خلوت؛ بدون نوار شلوغ.</blockquote>\n\n"
+            "🖼️ <b>OCR</b>\n"
+            "روی تصویر ریپلای کن و <code>OCR</code> یا <code>او سی آر</code> بفرست."
+        ),
+        (
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۷ از ۸</i>\n\n"
+            "💾 <b>ذخیره چنل</b>\n"
+            "از پنل، «ذخیره چنل» را انتخاب کن.\n\n"
+            "📢 فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n\n"
+            "🎯 <b>تعداد</b>\n"
+            "از ۱ تا ۱۰۰۰ مورد را می‌توانی انتخاب کنی.\n\n"
+            "🗑️ <b>آرشیو حذف‌شده‌ها</b>\n"
+            "پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند."
+        ),
+        (
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۸ از ۹</i>\n\n"
+            "💱 <b>نرخ لحظه‌ای ارز</b>\n"
+            "<code>قیمت BTC</code>\n"
+            "<code>قیمت SOL</code>\n"
+            "<code>قیمت ETH</code>\n"
+            "قیمت ارز از سرویس لحظه‌ای نوبیتکس دریافت می‌شود و همان پیام با نتیجه جابه‌جا می‌شود.\n\n"
+            "🎨 <b>لوگوساز</b>\n"
+            "<code>لوگو 12 HusteRIX</code>\n"
+            "ساخت لوگو از بین ۱۴۰ قالب.\n\n"
+            "🖼️ <b>افکت‌ساز</b>\n"
+            "<code>افکت 12 https://...</code>\n"
+            "اعمال افکت از بین ۸۰ قالب روی لینک مستقیم تصویر."
+        ),
+        (
+            "📚 <b>راهنمای سلف</b>\n"
+            "<i>صفحه ۹ از ۹</i>\n\n"
+            "🧹 <b>پاکسازی</b>\n"
+            "چت‌ها، گپ‌ها، کانال‌ها، مخاطبین و ربات‌ها را جداگانه پاکسازی کن.\n\n"
             "🔒 <b>قفل چت</b>\n"
-            "• در پیوی روی پیام کاربر ریپلای کن و «قفل چت» بفرست.\n"
-            "• برای غیرفعال‌کردن: «بازکردن قفل چت».\n\n"
-            "🚫 <b>بلاک</b>\n"
-            "• در گروه/سوپرگروه روی پیام کاربر ریپلای کن و «بلاک» یا «بلاک + ریپلای» بفرست.\n\n"
+            "روی پیام کاربر ریپلای کن و <code>قفل چت</code> بفرست.\n\n"
             "💎 <b>انتقال الماس</b>\n"
-            "• داخل گپ روی پیام کاربر ریپلای کن و «انتقال ۵۰۰» یا مقدار دلخواه را بفرست.\n\n"
-            "👥 <b>ساخت گروه و کانال</b>\n"
-            "• «ساخت گروه نام گروه» برای ساخت سوپرگروه.\n"
-            "• «ساخت چنل نام چنل» برای ساخت کانال.\n\n"
+            "<code>انتقال ۵۰۰</code>\n\n"
             "🎲 <b>تاس</b>\n"
-            "• «تاس ۱» تا «تاس ۶»؛ تاس واقعی Telegram تا رسیدن به نتیجه درخواستی تکرار می‌شود و فقط نتیجه موفق باقی می‌ماند."
+            "<code>تاس ۱</code> تا <code>تاس ۶</code>\n\n"
+            "<blockquote>✨ برای برگشت به پنل، دکمه «بازگشت» را بزن.</blockquote>"
         ),
     ]
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
 
 def self_guide_buttons(uid, page=1):
-    total_pages = 5
+    total_pages = 9
     page = max(1, min(int(page), total_pages))
     nav = []
     if page > 1:
@@ -1155,12 +1208,32 @@ async def handle_self_panel_callback(event):
             print(f"[SELF {uid}] guide callback failed: {exc}")
             await safe_answer(event, "❌ راهنما باز نشد؛ دوباره تلاش کن.", True)
         return True
+    if action == "currency":
+        await event.edit(
+            "💱 <b>نرخ لحظه‌ای ارز</b>\n\n"
+            "قیمت را با این دستور بگیر:\n\n"
+            "<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>\n\n"
+            "⚡ پاسخ از سرویس لحظه‌ای نوبیتکس دریافت می‌شود.",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+    if action == "logo":
+        await event.edit(
+            "🎨 <b>لوگوساز و افکت‌ساز</b>\n\n"
+            "ساخت لوگو از ۱۴۰ قالب:\n<code>لوگو 12 HusteRIX</code>\n\n"
+            "اعمال افکت از ۸۰ قالب روی لینک مستقیم عکس:\n<code>افکت 12 https://example.com/photo.jpg</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+
     if action.startswith("guide_page:"):
         try:
             page = int(action.split(":", 1)[1])
         except ValueError:
             page = 1
-        page = max(1, min(page, 5))
+        page = max(1, min(page, 9))
         try:
             await event.edit(
                 self_guide_text(page),
@@ -1578,8 +1651,76 @@ async def _self_save_replied_message(event, uid):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _openai_multipart_body(file_path: str, filename: str, language: str = "fa"):
+    """Build a multipart/form-data body without requiring an extra HTTP package."""
+    boundary = "----HusteRIXSpeechBoundary" + secrets.token_hex(12)
+    with open(file_path, "rb") as f:
+        audio = f.read()
+
+    fields = [
+        ("model", OPENAI_TRANSCRIBE_MODEL),
+        ("language", language),
+        ("response_format", "json"),
+        ("prompt", "این فایل صوتی فارسی است. متن را دقیقاً به فارسی پیاده‌سازی کن؛ لهجه و گفتار محاوره‌ای را حفظ کن و به کردی یا زبان دیگری ترجمه نکن."),
+    ]
+    chunks = []
+    for key, value in fields:
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+
+    chunks.extend([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
+        b"Content-Type: application/octet-stream\r\n\r\n",
+        audio,
+        b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _openai_transcribe_sync(path: str):
+    if not OPENAI_API_KEY:
+        return None
+
+    body, content_type = _openai_multipart_body(
+        path,
+        Path(path).name or "voice.ogg",
+        language=os.getenv("WHISPER_LANGUAGE", "fa"),
+    )
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/audio/transcriptions",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return str(payload.get("text") or "").strip()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"openai_http_{exc.code}: {detail[:500]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"openai_transcription_failed: {exc}") from exc
+
+
 async def _self_transcribe_reply(event, uid):
-    """Voice/audio -> text with faster-whisper."""
+    """Voice/audio -> accurate Persian text.
+
+    Primary path: OpenAI transcription API when OPENAI_API_KEY is configured.
+    Fallback: local faster-whisper with a stronger default model.
+    """
     if not event.is_reply:
         return "❌ روی ویس یا فایل صوتی ریپلای کن و «متن» را بفرست."
     replied = await event.get_reply_message()
@@ -1592,33 +1733,53 @@ async def _self_transcribe_reply(event, uid):
         if not path:
             return "❌ دانلود ویس ناموفق بود."
 
+        # Cloud transcription is much more reliable for Persian and does not
+        # choke on normal 1–2 minute Telegram voice messages.
+        if OPENAI_API_KEY:
+            try:
+                result = await asyncio.to_thread(_openai_transcribe_sync, str(path))
+                if result:
+                    return f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
+            except Exception as exc:
+                print(f"[SELF {uid}] OpenAI transcription failed, using local fallback: {exc}")
+
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            return "❌ قابلیت تبدیل ویس به متن نیاز به نصب `faster-whisper` دارد."
+            if OPENAI_API_KEY:
+                return "❌ سرویس تبدیل صدا موقتاً در دسترس نیست و موتور محلی هم نصب نشده است."
+            return "❌ برای دقت بالاتر، `OPENAI_API_KEY` را تنظیم کن؛ در حالت محلی هم نصب `faster-whisper` لازم است."
 
         model = getattr(_self_transcribe_reply, "_model", None)
         if model is None:
-            model = WhisperModel(
-                os.getenv("WHISPER_MODEL", "small"),
-                device=os.getenv("WHISPER_DEVICE", "cpu"),
-                compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
-            )
+            model_name = os.getenv("WHISPER_MODEL", "large-v3")
+            device = os.getenv("WHISPER_DEVICE", "cpu")
+            compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+            model = WhisperModel(model_name, device=device, compute_type=compute_type)
             _self_transcribe_reply._model = model
 
         def run_transcription():
             segments, _ = model.transcribe(
                 str(path),
-                language=os.getenv("WHISPER_LANGUAGE", "fa"),
+                language="fa",
+                task="transcribe",
+                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "5")),
+                best_of=int(os.getenv("WHISPER_BEST_OF", "5")),
+                temperature=0,
                 vad_filter=True,
+                condition_on_previous_text=True,
             )
             return " ".join(seg.text.strip() for seg in segments).strip()
 
         result = await asyncio.to_thread(run_transcription)
-        return f"📝 متن ویس:\n\n{result}" if result else "❌ صدایی برای تبدیل به متن پیدا نشد."
+        return (
+            f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
+            if result
+            else "❌ صدایی برای تبدیل به متن پیدا نشد."
+        )
     except Exception as exc:
         print(f"[SELF {uid}] transcription failed: {exc}")
-        return f"❌ تبدیل ویس به متن انجام نشد.\n{exc}"
+        return "❌ تبدیل ویس به متن انجام نشد؛ دوباره تلاش کن."
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2474,11 +2635,12 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
-    slots = 10
-    filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
-    counter = f" • {int(current)}/{int(total)}" if total else ""
-    return f"📦 <b>{html.escape(phase)}</b> {bar} <b>{percent}%</b>{counter}"
+    counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
+    return (
+        f"📦 <b>استخراج آرشیو</b>\n\n"
+        f"<b>{percent}%</b>{counter}\n"
+        f"<i>{html.escape(phase)}</i>"
+    )
 
 
 async def _archive_progress_5s(event, started_at: float, phase="در حال استخراج…"):
@@ -2492,7 +2654,7 @@ async def _archive_progress_5s(event, started_at: float, phase="در حال اس
         percent = int((elapsed / 5.0) * 95)
         with contextlib.suppress(Exception):
             await event.edit(_archive_progress_text(percent, phase))
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.6)
 
 
 async def _self_unzip_reply(event, uid):
@@ -2628,10 +2790,199 @@ async def _self_unzip_reply(event, uid):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+
+# ============================================================
+# FAST-CREAT: LIVE CRYPTO PRICE + LOGO/EFFECT
+# ============================================================
+
+_CRYPTO_ALIASES = {
+    "btc": ("BTC", "بیت‌کوین"), "بیت کوین": ("BTC", "بیت‌کوین"), "بیتکوین": ("BTC", "بیت‌کوین"),
+    "eth": ("ETH", "اتریوم"), "اتریوم": ("ETH", "اتریوم"),
+    "sol": ("SOL", "سولانا"), "سول": ("SOL", "سولانا"), "سولانا": ("SOL", "سولانا"),
+    "usdt": ("USDT", "تتر"), "تتر": ("USDT", "تتر"),
+    "ton": ("TON", "تون‌کوین"), "toncoin": ("TON", "تون‌کوین"),
+    "trx": ("TRX", "ترون"), "ترون": ("TRX", "ترون"),
+    "xrp": ("XRP", "ریپل"), "ریپل": ("XRP", "ریپل"),
+    "doge": ("DOGE", "دوج‌کوین"), "دوج": ("DOGE", "دوج‌کوین"),
+    "bnb": ("BNB", "بایننس‌کوین"), "ada": ("ADA", "کاردانو"),
+    "dot": ("DOT", "پولکادات"), "avax": ("AVAX", "آوالانچ"), "shib": ("SHIB", "شیبا"),
+}
+
+def _fa_digits(text):
+    return str(text).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+
+def _format_price_number(value):
+    try:
+        n = float(str(value).replace(",", ""))
+        if n.is_integer():
+            return f"{int(n):,}"
+        return f"{n:,.8f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(value)
+
+def _find_crypto_price(payload, symbol):
+    if isinstance(payload, dict):
+        wanted = {symbol.upper(), symbol.lower(), f"{symbol.upper()}IRT", f"{symbol.lower()}irt",
+                  f"{symbol.upper()}-IRT", f"{symbol.lower()}-irt", f"{symbol.upper()}_IRT"}
+        for k, v in payload.items():
+            if str(k) in wanted:
+                if isinstance(v, dict):
+                    for field in ("lastTradePrice", "latest", "last", "price", "last_price", "lastPrice", "value"):
+                        if v.get(field) not in (None, ""):
+                            return v.get(field), v
+                elif isinstance(v, (str, int, float)):
+                    return v, {}
+        for key in ("stats", "data", "markets", "result", "coins"):
+            if key in payload:
+                found = _find_crypto_price(payload[key], symbol)
+                if found:
+                    return found
+        for k, v in payload.items():
+            if symbol.upper() in str(k).upper() and isinstance(v, dict):
+                for field in ("lastTradePrice", "latest", "last", "price", "last_price", "lastPrice", "value"):
+                    if v.get(field) not in (None, ""):
+                        return v.get(field), v
+        for v in payload.values():
+            found = _find_crypto_price(v, symbol)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for v in payload:
+            found = _find_crypto_price(v, symbol)
+            if found:
+                return found
+    return None
+
+def _fast_creat_get_json(url, params, timeout=12):
+    full_url = url + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    req = urllib.request.Request(full_url, headers={"User-Agent": "HusteRIX-Diamond-Self/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+def _fast_creat_extract_url(payload):
+    if isinstance(payload, str) and payload.startswith(("http://", "https://")):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("url", "image", "image_url", "link", "result", "data"):
+            if key in payload:
+                found = _fast_creat_extract_url(payload[key])
+                if found:
+                    return found
+        for value in payload.values():
+            found = _fast_creat_extract_url(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _fast_creat_extract_url(value)
+            if found:
+                return found
+    return None
+
+async def _fast_creat_currency_result(symbol):
+    try:
+        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_NOBITEX_URL, {"apikey": FAST_CREAT_NOBITEX_API_KEY})
+        found = _find_crypto_price(payload, symbol)
+        if not found:
+            return None, "❌ نرخ این ارز در پاسخ سرویس پیدا نشد."
+        value, details = found
+        return {"symbol": symbol, "price": _format_price_number(value), "raw": details}, None
+    except urllib.error.HTTPError as exc:
+        return None, f"❌ سرویس نرخ ارز خطا داد: HTTP {exc.code}"
+    except Exception as exc:
+        print(f"[FAST-CREAT] nobitex failed: {exc}")
+        return None, "❌ دریافت نرخ ارز ناموفق بود؛ چند لحظه بعد دوباره تلاش کن."
+
+def _currency_ui(data, fa_name):
+    return (
+        "╭━━━━━━━ 💱 <b>نرخ لحظه‌ای ارز</b> ━━━━━━━╮\n\n"
+        f"🪙 <b>{fa_name}</b>  •  <code>{data['symbol']}/IRT</code>\n\n"
+        f"💰 <b>{data['price']} تومان</b>\n\n"
+        "⚡ <i>منبع: نوبیتکس • بروزرسانی لحظه‌ای</i>\n"
+        "╰━━━━━━━━HusteRIX━━━━━━━━╯"
+    )
+
+async def _self_currency_command(event, uid, text):
+    m = re.fullmatch(r"قیمت\s+(.+)", text.strip(), flags=re.S | re.I)
+    if not m:
+        return False
+    raw = _fa_digits(m.group(1).strip()).casefold()
+    if raw not in _CRYPTO_ALIASES:
+        await event.edit("❌ <b>ارز شناخته نشد.</b>\n\nمثال:\n<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>", parse_mode="html")
+        return True
+    symbol, fa_name = _CRYPTO_ALIASES[raw]
+    with contextlib.suppress(Exception):
+        await event.edit(f"💱 <b>در حال دریافت نرخ {symbol}…</b>", parse_mode="html")
+    data, error = await _fast_creat_currency_result(symbol)
+    await event.edit(error if error else _currency_ui(data, fa_name), parse_mode="html")
+    return True
+
+async def _self_logo_command(event, uid, text):
+    m = re.fullmatch(r"لوگو\s+([0-9۰-۹]{1,3})\s+(.+)", text.strip(), flags=re.S)
+    if not m:
+        return False
+    logo_id = int(_fa_digits(m.group(1)))
+    logo_text = m.group(2).strip()
+    if not 1 <= logo_id <= 140:
+        await event.edit("❌ شماره لوگو باید بین <b>۱ تا ۱۴۰</b> باشد.", parse_mode="html")
+        return True
+    with contextlib.suppress(Exception):
+        await event.edit("🎨 <b>در حال ساخت لوگو…</b>", parse_mode="html")
+    try:
+        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_LOGO_URL,
+            {"apikey": FAST_CREAT_LOGO_API_KEY, "type": "logo", "id": logo_id, "text": logo_text})
+        image_url = _fast_creat_extract_url(payload)
+        if not image_url:
+            await event.edit("❌ سرویس لوگوساز لینک تصویر برنگرداند.", parse_mode="html")
+            return True
+        await event.client.send_file(event.chat_id, image_url,
+            caption=f"🎨 <b>لوگو آماده شد</b>\n\n🆔 قالب: <b>{logo_id}</b>\n✏️ متن: <b>{html.escape(logo_text)}</b>", parse_mode="html")
+        await event.delete()
+        return True
+    except Exception as exc:
+        print(f"[FAST-CREAT] logo failed: {exc}")
+        await event.edit("❌ ساخت لوگو ناموفق بود؛ دوباره تلاش کن.")
+        return True
+
+async def _self_effect_command(event, uid, text):
+    m = re.fullmatch(r"افکت\s+([0-9۰-۹]{1,2})\s+(https?://\S+)", text.strip(), flags=re.S | re.I)
+    if not m:
+        return False
+    effect_id = int(_fa_digits(m.group(1)))
+    image_url = m.group(2).strip()
+    if not 1 <= effect_id <= 80:
+        await event.edit("❌ شماره افکت باید بین <b>۱ تا ۸۰</b> باشد.", parse_mode="html")
+        return True
+    with contextlib.suppress(Exception):
+        await event.edit("🖼️ <b>در حال اعمال افکت…</b>", parse_mode="html")
+    try:
+        payload = await asyncio.to_thread(_fast_creat_get_json, FAST_CREAT_LOGO_URL,
+            {"apikey": FAST_CREAT_LOGO_API_KEY, "type": "effect", "id": effect_id, "url": image_url})
+        result_url = _fast_creat_extract_url(payload)
+        if not result_url:
+            await event.edit("❌ سرویس افکت لینک تصویر خروجی را برنگرداند.", parse_mode="html")
+            return True
+        await event.client.send_file(event.chat_id, result_url,
+            caption=f"🖼️ <b>افکت آماده شد</b>\n\n🆔 افکت: <b>{effect_id}</b>", parse_mode="html")
+        await event.delete()
+        return True
+    except Exception as exc:
+        print(f"[FAST-CREAT] effect failed: {exc}")
+        await event.edit("❌ ساخت افکت ناموفق بود؛ دوباره تلاش کن.")
+        return True
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
     if not text:
+        return
+
+    # FAST-CREAT: live prices, logo builder and image effects.
+    if await _self_currency_command(event, uid, text):
+        return
+    if await _self_logo_command(event, uid, text):
+        return
+    if await _self_effect_command(event, uid, text):
         return
 
     # Interactive private-channel saver.  The bot panel stores only the
@@ -2808,7 +3159,7 @@ async def self_handle_outgoing(event, uid):
             return
 
         with contextlib.suppress(Exception):
-            await event.edit("⏳ در حال تبدیل ویس به متن…")
+            await event.edit("🎙️ <b>در حال تبدیل ویس به متن…</b>\n<i>لطفاً چند لحظه صبر کن.</i>", parse_mode="html")
         result = await _self_transcribe_reply(event, uid)
         try:
             await event.client.send_message(event.chat_id, result, reply_to=replied.id)
@@ -3625,7 +3976,7 @@ async def inline_query_handler(event):
     if query == "راهنما":
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای پنج‌صفحه‌ای سلف با دکمه‌های قبلی و بعدی.",
+            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز و لوگوساز.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
