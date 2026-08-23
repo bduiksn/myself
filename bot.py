@@ -1569,9 +1569,9 @@ async def _self_save_replied_message(event, uid):
 async def _self_transcribe_reply(event, uid):
     """Voice/audio -> text with faster-whisper."""
     if not event.is_reply:
-        return "❌ روی ویس ریپلای کن و «متن» را بفرست."
+        return "❌ روی ویس یا فایل صوتی ریپلای کن و «متن» را بفرست."
     replied = await event.get_reply_message()
-    if not replied or not replied.media:
+    if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
         return "❌ ویس یا فایل صوتی پیدا نشد."
 
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
@@ -1603,10 +1603,10 @@ async def _self_transcribe_reply(event, uid):
             return " ".join(seg.text.strip() for seg in segments).strip()
 
         result = await asyncio.to_thread(run_transcription)
-        return f"📝 **متن ویس:**\n\n{result}" if result else "❌ صدایی برای تبدیل به متن پیدا نشد."
+        return f"📝 متن ویس:\n\n{result}" if result else "❌ صدایی برای تبدیل به متن پیدا نشد."
     except Exception as exc:
         print(f"[SELF {uid}] transcription failed: {exc}")
-        return "❌ تبدیل ویس به متن انجام نشد."
+        return f"❌ تبدیل ویس به متن انجام نشد.\n{exc}"
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -1672,6 +1672,26 @@ async def _self_create_chat_or_channel(event, uid, kind, title):
         return f"❌ ساخت {kind} ناموفق بود.\n{exc}"
 
 
+async def _delete_dice_message(client, chat_id, message_id):
+    """Delete an unsuccessful dice result reliably in private chats and Saved Messages."""
+    try:
+        from telethon.tl.functions.messages import DeleteMessagesRequest
+        await _tg_call_with_flood_retry(
+            lambda: client(DeleteMessagesRequest(
+                id=[int(message_id)],
+                revoke=True,
+            )),
+            label="delete failed dice",
+        )
+        return True
+    except Exception as exc:
+        print(f"[DICE] delete failed chat={chat_id} message={message_id}: {exc}")
+        with contextlib.suppress(Exception):
+            await client.delete_messages(chat_id, int(message_id), revoke=True)
+            return True
+        return False
+
+
 async def _self_roll_guaranteed_value(event, uid, target):
     """Send a real Telegram dice and reroll until Telegram returns the requested value."""
     try:
@@ -1681,8 +1701,6 @@ async def _self_roll_guaranteed_value(event, uid, target):
         if target < 1 or target > 6:
             return False
 
-        # A requested face has a 1/6 chance per roll. 60 attempts make
-        # failure extremely unlikely while preventing an accidental endless loop.
         for _ in range(60):
             msg = await _tg_call_with_flood_retry(
                 lambda: event.client.send_file(
@@ -1696,18 +1714,11 @@ async def _self_roll_guaranteed_value(event, uid, target):
             if value == target:
                 return True
 
-            # Keep only the successful roll visible in the chat.
-            with contextlib.suppress(Exception):
-                await _tg_call_with_flood_retry(
-                    lambda: event.client.delete_messages(
-                        event.chat_id,
-                        msg.id,
-                        revoke=True,
-                    ),
-                    label="delete failed dice",
-                )
-
-            await asyncio.sleep(0.2)
+            # Failed results must never remain visible.  Use the raw Telegram
+            # DeleteMessagesRequest as the primary path; it is more reliable
+            # than the convenience wrapper for private dialogs/Saved Messages.
+            await _delete_dice_message(event.client, event.chat_id, msg.id)
+            await asyncio.sleep(0.15)
 
         return False
     except Exception as exc:
@@ -2287,10 +2298,23 @@ async def _self_media_convert(event, uid, operation):
 
         try:
             if operation in {"voice_to_mp3", "video_to_mp3"}:
+                # Send as Telegram audio, not as a generic document.  The old
+                # force_document=True made Telegram show the .mp3 like an
+                # installation/file attachment without the in-app audio player.
+                audio_attributes = [
+                    types.DocumentAttributeAudio(
+                        duration=max(1, int(round(duration))),
+                        voice=False,
+                    )
+                ]
                 await event.client.send_file(
-                    event.chat_id, str(output_path),
+                    event.chat_id,
+                    str(output_path),
                     caption="🎵 فایل MP3 آماده است.",
-                    force_document=True,
+                    force_document=False,
+                    mime_type="audio/mpeg",
+                    attributes=audio_attributes,
+                    supports_streaming=True,
                 )
             else:
                 # Telethon's voice_note=True sends this as a Telegram Voice Message,
@@ -2372,7 +2396,22 @@ async def self_handle_outgoing(event, uid):
             )
 
             # Convert the original panel prompt into the progress message first.
-            # Only then remove the numeric reply so the prompt never remains stuck.
+            # Capture the actual returned message when Telethon provides it.
+            # This avoids stale inline-message IDs causing silent progress edits.
+            with contextlib.suppress(Exception):
+                edited_panel = await event.edit(
+                    _channel_progress_text(0, processed=0, total=count),
+                    parse_mode="html",
+                    buttons=None,
+                )
+                actual_id = getattr(edited_panel, "id", None)
+                if actual_id:
+                    channel_state["panel_message_id"] = int(actual_id)
+                    self_set_channel_save_state(uid, channel_state)
+                    controller = _ChannelProgressController(channel_state).set_back_callback(
+                        _self_cb(uid, "panel")
+                    )
+
             await controller.update(0, count, force=True)
 
             with contextlib.suppress(Exception):
@@ -2465,7 +2504,19 @@ async def self_handle_outgoing(event, uid):
         return
 
     if low == "متن" and event.is_reply:
-        await event.edit(await _self_transcribe_reply(event, uid), parse_mode="md")
+        # Do not rely on editing the outgoing command message: in some private
+        # chats Telegram can reject that edit while the transcription itself
+        # succeeds.  Send a fresh result message and then remove the command.
+        with contextlib.suppress(Exception):
+            await event.edit("⏳ در حال تبدیل ویس به متن…")
+        result = await _self_transcribe_reply(event, uid)
+        try:
+            await event.client.send_message(event.chat_id, result, reply_to=event.id)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await event.respond(result)
+        with contextlib.suppress(Exception):
+            await event.delete()
         return
 
     if low in {"ocr", "او سی آر"} and event.is_reply:
