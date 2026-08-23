@@ -142,14 +142,21 @@ def init_user_db(user_id: int):
         """, (user_id,))
 
 
-def get_balance(user_id: int) -> int:
+def get_balance(user_id: int) -> float:
     init_user_db(user_id)
     with connect_db(user_id) as db:
         row = db.execute(
             "SELECT balance FROM users WHERE user_id=?",
             (user_id,)
         ).fetchone()
-        return int(row[0]) if row else 0
+        return float(row[0]) if row else 0.0
+
+
+def _fmt_diamonds(value) -> str:
+    value = float(value or 0)
+    if value.is_integer():
+        return f"{int(value):,}"
+    return f"{value:,.1f}".rstrip("0").rstrip(".")
 
 
 def get_phone_number(user_id: int):
@@ -197,12 +204,12 @@ async def send_phone_request(user_id: int):
     )
 
 
-def change_balance(user_id: int, amount: int):
+def change_balance(user_id: int, amount: float):
     init_user_db(user_id)
     with connect_db(user_id) as db:
         db.execute(
             "UPDATE users SET balance = balance + ? WHERE user_id=?",
-            (amount, user_id)
+            (float(amount), user_id)
         )
 
 
@@ -657,9 +664,11 @@ def self_guide_text(page=1):
             "• تبدیل‌ها با FFmpeg انجام می‌شوند و پیام عملیات با درصد پیشرفت به‌روزرسانی می‌شود.\n\n"
             "📝 <b>ابزارهای پیام</b>\n"
             "• «متن» روی ویس یا فایل صوتی ریپلای‌شده: تبدیل صدا به متن.\n"
+            "• «متن + ریپلی» یا «متن + ریپلای»: نتیجه را دقیقاً روی همان ویس/فایل ریپلای می‌کند.\n"
             "• «OCR» یا «او سی آر» روی تصویر: استخراج متن تصویر.\n"
             "• «دانلود» روی پیام ریپلای‌شده: انتقال پیام/رسانه به پیام‌های ذخیره‌شده.\n"
-            "• «unzip + ریپلی» یا «استخراج + ریپلی» روی ZIP/RAR: استخراج آرشیو و ارسال تک‌تک فایل‌ها؛ نوار پیشرفت استخراج حداقل ۵ ثانیه نمایش داده می‌شود.\n"
+            "• «unzip + ریپلی» / «unzip + ریپلای» یا «استخراج + ریپلی» / «استخراج + ریپلای» روی ZIP/RAR: استخراج و ارسال تک‌تک فایل‌ها.\n"
+            "• «unzip» و «استخراج» نیز روی آرشیو ریپلای‌شده کار می‌کنند؛ نوار پیشرفت کوتاه و یک‌خطی است.\n"
             "• «استیکر» روی عکس: تبدیل عکس به استیکر.\n"
             "• «عکس» روی استیکر: تبدیل استیکر به تصویر؛ برای استیکر متحرک در صورت امکان GIF ساخته می‌شود."
         ),
@@ -2465,11 +2474,11 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
-    slots = 20
+    slots = 10
     filled = round(slots * percent / 100)
     bar = "▰" * filled + "▱" * (slots - filled)
-    counter = f"\n📦 فایل‌ها: <b>{int(current)}</b> از <b>{int(total)}</b>" if total else ""
-    return f"📦 <b>{html.escape(phase)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>{counter}"
+    counter = f" • {int(current)}/{int(total)}" if total else ""
+    return f"📦 <b>{html.escape(phase)}</b> {bar} <b>{percent}%</b>{counter}"
 
 
 async def _archive_progress_5s(event, started_at: float, phase="در حال استخراج…"):
@@ -2790,15 +2799,19 @@ async def self_handle_outgoing(event, uid):
                 await event.edit(result)
         return
 
-    if low == "متن" and event.is_reply:
-        # Do not rely on editing the outgoing command message: in some private
-        # chats Telegram can reject that edit while the transcription itself
-        # succeeds.  Send a fresh result message and then remove the command.
+    if event.is_reply and re.fullmatch(r"متن(?:\s*(?:\+\s*)?ریپ(?:ل|لی)|\s*\+\s*ریپ(?:ل|لی))?", low):
+        # Accept: متن / متن + ریپلی / متن + ریپلای and reply to the original media.
+        replied = await event.get_reply_message()
+        if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
+            with contextlib.suppress(Exception):
+                await event.edit("❌ روی ویس یا فایل صوتی ریپلای کن و «متن + ریپلی» را بفرست.")
+            return
+
         with contextlib.suppress(Exception):
             await event.edit("⏳ در حال تبدیل ویس به متن…")
         result = await _self_transcribe_reply(event, uid)
         try:
-            await event.client.send_message(event.chat_id, result, reply_to=event.id)
+            await event.client.send_message(event.chat_id, result, reply_to=replied.id)
         except Exception:
             with contextlib.suppress(Exception):
                 await event.respond(result)
@@ -3042,7 +3055,7 @@ async def self_handle_outgoing(event, uid):
             return
         balance = get_balance(uid)
         if balance < amount:
-            await event.edit(f"❌ موجودی کافی نیست.\n💎 موجودی شما: {balance:,}")
+            await event.edit(f"❌ موجودی کافی نیست.\n💎 موجودی شما: {_fmt_diamonds(balance)}")
             return
         init_user_db(target)
         change_balance(uid, -amount)
@@ -3057,7 +3070,7 @@ async def self_handle_outgoing(event, uid):
         await event.edit(
             f"✅ انتقال انجام شد.\n"
             f"💎 {amount:,} الماس به کاربر `{target}` منتقل شد.\n"
-            f"💰 موجودی باقی‌مانده: {sender_balance:,}"
+            f"💰 موجودی باقی‌مانده: {_fmt_diamonds(sender_balance)}"
         )
 
         # The notification is deliberately sent by the bot account.
@@ -3067,7 +3080,7 @@ async def self_handle_outgoing(event, uid):
                 "🎁 **الماس دریافت کردید!**\n\n"
                 f"👤 از طرف {sender_label} برای شما واریز شد.\n"
                 f"💎 مقدار: {amount:,} الماس\n"
-                f"💎 موجودی فعلی: {recipient_balance:,} الماس"
+                f"💎 موجودی فعلی: {_fmt_diamonds(recipient_balance)} الماس"
             )
         return
 
@@ -3395,8 +3408,8 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
 
             start_time = int(start[2])
             elapsed_hours = int((time.time() - start_time) // 3600)
-            due_total = int(elapsed_hours * SELF_HOURLY_COST)
-            charged_total = int(float(get_setting(user_id, "charged_diamonds", "0") or 0))
+            due_total = (elapsed_hours + 1) * float(SELF_HOURLY_COST)
+            charged_total = float(get_setting(user_id, "charged_diamonds", "0") or 0)
             if due_total > charged_total:
                 charge = due_total - charged_total
                 with connect_db(user_id) as db:
@@ -3477,7 +3490,7 @@ async def begin_self_login(user_id: int, event=None):
     if balance < MIN_SELF_BALANCE:
         text = (
             "❌ موجودی شما کافی نیست.\n\n"
-            f"💎 موجودی: {balance:,}\n"
+            f"💎 موجودی: {_fmt_diamonds(balance)}\n"
             f"💎 حداقل موجودی لازم: {MIN_SELF_BALANCE:,} الماس\n"
             f"💎 هزینه: {SELF_HOURLY_COST:g} الماس در ساعت"
         )
@@ -3554,8 +3567,11 @@ async def finish_login(user_id: int):
         pending.pop(user_id, None)
         return
 
+    # First 2.5 diamonds are charged immediately when activation succeeds.
+    activation_cost = float(SELF_HOURLY_COST)
+    change_balance(user_id, -activation_cost)
     save_active_session(user_id, session_string, state.get("sub_type", 0))
-    set_setting(user_id, "charged_diamonds", "0")
+    set_setting(user_id, "charged_diamonds", str(activation_cost))
 
     await start_self_worker(
         user_id,
@@ -3566,7 +3582,7 @@ async def finish_login(user_id: int):
     await bot.send_message(
         user_id,
         "✅ سلف با موفقیت فعال شد!\n\n"
-        f"💎 هزینه فعال‌سازی کسر نمی‌شود؛ از این پس {SELF_HOURLY_COST:g} الماس در ساعت محاسبه می‌شود."
+        f"💎 {SELF_HOURLY_COST:g} الماس همان لحظه فعال‌سازی کسر شد؛ از این پس هر ساعت {SELF_HOURLY_COST:g} الماس کسر می‌شود."
     )
 
     with contextlib.suppress(Exception):
@@ -3962,7 +3978,7 @@ async def group_commands(event):
         except Exception:
             username = None
         identity = f"@{username}" if username else str(int(target))
-        buttons = [[btn(f"💎 {balance:,}", f"balance_{target}".encode(), "primary")]]
+        buttons = [[btn(f"💎 {_fmt_diamonds(balance)}", f"balance_{target}".encode(), "primary")]]
         await event.reply(
             f"🎖️ **موجودی الماس**\n\n"
             f"👤 آیدی: **{identity}**",
@@ -3984,7 +4000,7 @@ async def group_commands(event):
         if balance < amount:
             await event.reply(
                 f"❌ موجودی کافی نیست.\n"
-                f"💎 موجودی: {balance:,}"
+                f"💎 موجودی: {_fmt_diamonds(balance)}"
             )
             return
 
@@ -3995,14 +4011,15 @@ async def group_commands(event):
         prize = total - tax
 
         text_game = (
-            "💎 **بازی**\n"
-            f" ‌**{amount:,}**\n\n"
-            "🎉 **جایزه برنده:**\n"
-            f"{prize:,} 💎\n"
-            "💰 **مالیات:**\n"
-            f"{tax:,} 💎\n\n"
+            "<b>💎 بازی\n"
+            f" ‌{_fmt_diamonds(amount)}\n\n"
+            "🎉 جایزه برنده:\n"
+            f"{_fmt_diamonds(prize)} 💎\n"
+            "💰 مالیات:\n"
+            f"{_fmt_diamonds(tax)} 💎\n\n"
+            "𝗛𝘂𝘀𝘁𝗲𝗥𝗜𝗫 𝗗𝗶𝗺𝗼𝗻𝗱 𝗦𝗲𝗹𝗳\n\n"
             "💎 💎 💎\n"
-            "برای شروع بازی، نفر دوم روی پیوستن بزند."
+            "برای شروع بازی، نفر دوم روی پیوستن بزند.</b>"
         )
 
         buttons = [
@@ -4018,7 +4035,7 @@ async def group_commands(event):
             ]
         ]
 
-        msg = await event.reply(text_game, buttons=buttons)
+        msg = await event.reply(text_game, parse_mode="html", buttons=buttons)
 
         key = (event.chat_id, msg.id)
         task = asyncio.create_task(
@@ -4065,7 +4082,7 @@ async def group_commands(event):
         if balance < total:
             await event.reply(
                 f"❌ موجودی کافی نیست.\n\n"
-                f"💎 موجودی: {balance:,}\n"
+                f"💎 موجودی: {_fmt_diamonds(balance)}\n"
                 f"💎 مبلغ انتقال: {amount:,}\n"
                 f"🧾 مالیات: {tax:,}\n"
                 f"📉 کسر کل: {total:,}"
@@ -4159,7 +4176,7 @@ async def callbacks(event):
         text = (
             "👤 **حساب کاربری**\n\n"
             f"🆔 آیدی: `{user_id}`\n"
-            f"💎 موجودی: `{balance:,}` الماس\n"
+            f"💎 موجودی: `{_fmt_diamonds(balance)}` الماس\n"
             f"💰 ارزش موجودی: `{balance_value_toman:,}` تومان\n"
             f"🔐 وضعیت سلف: `{self_status}`\n"
             f"⏱ مدت فعالیت: `{duration}`"
@@ -4344,7 +4361,7 @@ async def callbacks(event):
     if data.startswith("balance_"):
         target = int(data.split("_", 1)[1])
         balance = get_balance(target)
-        await safe_answer(event, f"💎 موجودی: {balance:,} الماس")
+        await safe_answer(event, f"💎 موجودی: {_fmt_diamonds(balance)} الماس")
         return
 
     # --------------------------------------------------------
@@ -4403,11 +4420,11 @@ async def callbacks(event):
             ],
             [
                 btn("💎 موجودی برنده", b"game_noop_winner", "primary"),
-                btn(f"💎 {winner_balance:,}", b"game_noop_winner_value", "primary"),
+                btn(f"💎 {_fmt_diamonds(winner_balance)}", b"game_noop_winner_value", "primary"),
             ],
             [
                 btn("❌ موجودی بازنده", b"game_noop_loser", "danger"),
-                btn(f"💎 {loser_balance:,}", b"game_noop_loser_value", "danger"),
+                btn(f"💎 {_fmt_diamonds(loser_balance)}", b"game_noop_loser_value", "danger"),
             ],
         ]
         await bot.send_message(
@@ -4572,7 +4589,7 @@ async def show_manage_self(event):
         text = (
             "⚙️ **مدیریت سلف**\n\n"
             "🔐 وضعیت: غیرفعال ❌\n"
-            f"💎 موجودی: {balance:,}\n\n"
+            f"💎 موجودی: {_fmt_diamonds(balance)}\n\n"
             f"حداقل موجودی فعال‌سازی: {MIN_SELF_BALANCE:,} الماس\n"
             f"هزینه استفاده: {SELF_HOURLY_COST:g} الماس در ساعت"
         )
@@ -4591,7 +4608,7 @@ async def show_manage_self(event):
             "⚙️ **مدیریت سلف**\n\n"
             f"🔐 وضعیت: {status}\n"
             f"⏱ مدت فعالیت: {days} روز و {hours} ساعت\n"
-            f"💎 موجودی: {balance:,}\n"
+            f"💎 موجودی: {_fmt_diamonds(balance)}\n"
             f"🕐 ساعت کنار نام: {'فعال ✅' if clock else 'غیرفعال ❌'}\n"
         )
         buttons = [
