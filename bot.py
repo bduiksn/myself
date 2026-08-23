@@ -1179,15 +1179,6 @@ async def handle_self_panel_callback(event):
     # During an active channel-save operation, stale/queued channel callbacks
     # must not be allowed to mutate or restart the flow.
     if action.startswith("channel_") and self_channel_save_state(uid).get("step") == "processing":
-        if action == "channel_cancel":
-            task = _channel_save_tasks.get(uid)
-            if task and not task.done():
-                task.cancel()
-                await safe_answer(event, "🛑 توقف ذخیره‌سازی ارسال شد.")
-            else:
-                self_clear_channel_save_state(uid)
-                await safe_answer(event, "ℹ️ عملیات فعالی پیدا نشد.", True)
-            return True
         await safe_answer(event, "⏳ ذخیره مدیا در حال انجام است.", True)
         return True
 
@@ -1422,10 +1413,15 @@ async def handle_self_panel_callback(event):
                 await safe_answer(event, "⚠️ تعداد باید بین 1 تا 1000 باشد.", True)
                 return True
 
-            # State is switched to processing before the initial UI edit so any
-            # stale/duplicate callback is rejected immediately by the processing guard.
+            # Capture the real logged-in self client now. The worker receives this
+            # exact object explicitly and never performs a later self_clients lookup.
+            client = self_clients.get(uid) or getattr(event, "client", None)
+            if client is None:
+                await safe_answer(event, "❌ سلف فعال نیست.", True)
+                return True
+
             existing = _channel_save_tasks.get(uid)
-            if existing and not existing.done():
+            if existing is not None and not existing.done():
                 await safe_answer(event, "⏳ یک عملیات ذخیره مدیا در حال انجام است.", True)
                 return True
 
@@ -1436,6 +1432,7 @@ async def handle_self_panel_callback(event):
                 "requested": int(count),
                 "media": state.get("media", "all"),
                 "channel_id": int(state["channel_id"]),
+                "channel_access_hash": state.get("channel_access_hash"),
                 "channel_title": str(state.get("channel_title") or "چنل"),
                 "panel_chat_id": int(event.chat_id),
                 "panel_message_id": int(event.message_id),
@@ -1443,20 +1440,20 @@ async def handle_self_panel_callback(event):
                 "operation_id": operation_id,
             })
             self_set_channel_save_state(uid, state)
+            worker_state = dict(state)
 
-            # This is the only edit performed by the callback. It removes the
-            # numeric keyboard before any channel discovery/download/upload begins.
+            # Remove the numeric keyboard before any heavy Telegram work.
             try:
                 await _channel_save_ui_edit(
-                    state,
+                    worker_state,
                     "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
                     buttons=None,
                 )
             except Exception as exc:
                 print(
                     "[CHANNEL_SAVE UI] initial processing edit failed: "
-                    f"chat_id={state['panel_chat_id']} "
-                    f"message_id={state['panel_message_id']} "
+                    f"chat_id={worker_state['panel_chat_id']} "
+                    f"message_id={worker_state['panel_message_id']} "
                     f"error={exc}"
                 )
                 if self_channel_save_state(uid).get("operation_id") == operation_id:
@@ -1464,7 +1461,15 @@ async def handle_self_panel_callback(event):
                 await safe_answer(event, "❌ شروع ذخیره‌سازی ناموفق بود.", True)
                 return True
 
-            task = asyncio.create_task(_channel_save_worker(uid, dict(state), count))
+            task = asyncio.create_task(
+                _channel_save_worker(
+                    client=client,
+                    uid=uid,
+                    state=worker_state,
+                    count=count,
+                    operation_id=operation_id,
+                )
+            )
             _channel_save_tasks[uid] = task
             return True
         else:
@@ -2405,6 +2410,16 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                 "error": error,
             }
 
+        if progress_cb:
+            await progress_cb(
+                0,
+                total,
+                successful=0,
+                failed=0,
+                force=True,
+                label=f"ذخیره {labels.get(kind, 'مدیا')}",
+            )
+
         saved = 0
         failed = 0
         processed = 0
@@ -2479,7 +2494,7 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                             or processed == total
                             or failed > 0
                         ),
-                        label="در حال ذخیره…",
+                        label=f"ذخیره {labels.get(kind, 'مدیا')}",
                     )
 
         return {
@@ -2503,9 +2518,8 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
         }
 
 
-async def _channel_save_worker(uid, state, count):
+async def _channel_save_worker(client, uid, state, count, operation_id):
     """Background owner for the complete private-channel save lifecycle."""
-    client = self_clients.get(uid)
     controller = _ChannelProgressController(state)
     current_task = asyncio.current_task()
 
@@ -2579,8 +2593,8 @@ async def _channel_save_worker(uid, state, count):
             )
     finally:
         # Never let an older worker clear a newer operation's state/task.
-        current_state = self_channel_save_state(uid)
-        if current_state.get("operation_id") == state.get("operation_id"):
+        saved_state = self_channel_save_state(uid)
+        if saved_state.get("operation_id") == operation_id:
             self_clear_channel_save_state(uid)
         if _channel_save_tasks.get(uid) is current_task:
             _channel_save_tasks.pop(uid, None)
