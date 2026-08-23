@@ -622,26 +622,12 @@ def self_panel_buttons(uid):
 
 
 def self_panel_text(uid):
-    def st(k):
-        return "🟢 روشن" if self_get(uid, k, "off") == "on" else "🔴 خاموش"
-
     return (
-        "╭━━━━━━━ ✦ پنل سلف ✦ ━━━━━━━╮\n\n"
-        f"🕐 ساعت ایران: {st('time_name')}  •  <code>{self_clock(uid)}</code>\n"
-        f"🔤 فونت ساعت: <b>{_font_label('clock', self_get(uid,'clock_font','normal'))}</b>\n"
-        f"🅱 بولد: {st('bold')}\n"
-        f"🅵 فونت فارسی: {st('persian_font')}\n"
-        f"🔤 فونت انگلیسی: <b>{_font_label('english', self_get(uid,'english_font','normal'))}</b>\n"
-        f"🌐 ترجمه: {st('translate')}\n"
-        f"❤️ ریاکشن: <b>{len(self_reaction_targets(uid))}</b> کاربر\n"
-        f"👁 سین: {st('auto_read')}\n"
-        f"⌨️ تایپینگ: {st('typing')}\n"
-        f"🎮 بازی: {st('game_mode')}\n"
-        f"🤖 تبچی: {st('auto_reply')}\n"
-        f"🔒 قفل چت: <b>{len(self_chat_lock_targets(uid))}</b> کاربر\n"
-        f"🧹 پاکسازی: {self_get(uid, 'cleanup_progress', 'آماده') or 'آماده'}\n\n"
-        "با دکمه‌های پایین تنظیمات را مستقیم تغییر بده.\n"
-        "╰━━━━━━━━HusteRIX━━━━━━━━╯"
+        "╭━━━━━━━ ◈ 𝗛𝘂𝘀𝘁𝗲𝗥𝗜𝗫 ◈ ━━━━━━━╮\n\n"
+        "                 𝙎𝙀𝙇𝙁\n\n"
+        "          𝙎𝙀𝙏𝙏𝙄𝙉𝙂𝙎\n\n"
+        "      تنظیمات و شخصی‌سازی سلف\n\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
     )
 
 
