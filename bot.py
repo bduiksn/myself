@@ -607,15 +607,15 @@ def self_panel_buttons(uid):
         ],
         [
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
-            btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
-        ],        [
+            btn("💾 ذخیره چنل", _self_cb(uid, "channel_save"), "primary"),
+        ],
+        [
             btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
             btn("🎨 لوگوساز", _self_cb(uid, "logo"), "primary"),
         ],
-        [btn("🖼️ افکت تصویر", _self_cb(uid, "effect"), "primary")],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
-            btn("💾 ذخیره چنل", _self_cb(uid, "channel_save"), "primary"),
+            btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
         [btn("❌ بستن", _self_cb(uid, "close"), "danger")],
     ]
@@ -747,9 +747,6 @@ def self_guide_text(page=1):
             "🎨 <b>لوگوساز</b>\n"
             "<code>لوگو 12 HusteRIX</code>\n"
             "۱۲ قالب داخلی و رایگان.\n\n"
-            "🖼️ <b>افکت تصویر</b>\n"
-            "<code>افکت 12 https://...</code>\n"
-            "۱۲ افکت داخلی و رایگان روی لینک مستقیم تصویر."
         ),
         (
             "📚 <b>راهنمای سلف</b>\n"
@@ -1233,15 +1230,6 @@ async def handle_self_panel_callback(event):
         )
         return True
 
-    if action == "effect":
-        await event.edit(
-            "🖼️ <b>افکت تصویر</b>\n\n"
-            f"۱۲ افکت داخلی و رایگان در دسترس است.\n"
-            "<code>افکت 12 https://example.com/photo.jpg</code>",
-            parse_mode="html",
-            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
-        )
-        return True
 
     if action.startswith("guide_page:"):
         try:
@@ -2839,22 +2827,6 @@ LOGO_TEMPLATES = {
     10: ("terminal", "ترمینال"), 11: ("stamp", "مهر"), 12: ("diamond", "الماس"),
 }
 
-# Local image effects. Every entry corresponds to an actual Pillow operation.
-EFFECTS = {
-    1: ("grayscale", "سیاه‌وسفید"),
-    2: ("sepia", "سپیا"),
-    3: ("invert", "معکوس"),
-    4: ("contrast", "کنتراست"),
-    5: ("brightness", "روشنایی"),
-    6: ("blur", "محو"),
-    7: ("sharpen", "شارپ"),
-    8: ("edge", "لبه‌ها"),
-    9: ("emboss", "برجسته"),
-    10: ("posterize", "پوستری"),
-    11: ("solarize", "سولاریزه"),
-    12: ("mirror", "آینه‌ای"),
-}
-
 def _fa_digits(text):
     return str(text).translate(str.maketrans(
         "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
@@ -3114,74 +3086,6 @@ async def generate_logo(template_id: int, text: str):
         raise ValueError("empty_logo_text")
     return await asyncio.to_thread(_logo_render_sync, int(template_id), text.strip())
 
-def _apply_effect_sync(image_bytes: bytes, effect_id: int):
-    from io import BytesIO
-    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-
-    if effect_id not in EFFECTS:
-        raise ValueError("invalid_effect")
-    with Image.open(BytesIO(image_bytes)) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-        name = EFFECTS[effect_id][0]
-        if name == "grayscale":
-            image = ImageOps.grayscale(image).convert("RGB")
-        elif name == "sepia":
-            gray = ImageOps.grayscale(image)
-            image = ImageOps.colorize(gray, black=(45, 25, 10), white=(245, 220, 165))
-        elif name == "invert":
-            image = ImageOps.invert(image)
-        elif name == "contrast":
-            image = ImageEnhance.Contrast(image).enhance(1.8)
-        elif name == "brightness":
-            image = ImageEnhance.Brightness(image).enhance(1.35)
-        elif name == "blur":
-            image = image.filter(ImageFilter.GaussianBlur(6))
-        elif name == "sharpen":
-            image = image.filter(ImageFilter.UnsharpMask(radius=2, percent=180, threshold=3))
-        elif name == "edge":
-            image = image.filter(ImageFilter.FIND_EDGES)
-        elif name == "emboss":
-            image = image.filter(ImageFilter.EMBOSS)
-        elif name == "posterize":
-            image = ImageOps.posterize(image, 3)
-        elif name == "solarize":
-            image = ImageOps.solarize(image, threshold=128)
-        elif name == "mirror":
-            image = ImageOps.mirror(image)
-        output = BytesIO()
-        image.save(output, format="JPEG", quality=92, optimize=True)
-        return output.getvalue()
-
-def _download_image_bytes_sync(image_url: str, timeout=20, max_bytes=10 * 1024 * 1024):
-    req = urllib.request.Request(
-        image_url,
-        headers={"User-Agent": "HusteRIX-Diamond-Self/3.0", "Accept": "image/*,*/*;q=0.8"},
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        status = int(getattr(response, "status", response.getcode()))
-        if status < 200 or status >= 300:
-            raise urllib.error.HTTPError(image_url, status, "HTTP error", response.headers, None)
-        content_type = (response.headers.get("Content-Type") or "").casefold()
-        if content_type and not content_type.startswith("image/"):
-            raise ValueError("not_image")
-        data = response.read(max_bytes + 1)
-        if len(data) > max_bytes:
-            raise ValueError("image_too_large")
-        if not data:
-            raise ValueError("empty_image")
-        return data
-
-async def generate_effect(effect_id: int, image_url: str):
-    if effect_id not in EFFECTS:
-        raise ValueError("invalid_effect")
-    image_url = _valid_http_url(image_url)
-    if not image_url:
-        raise ValueError("invalid_url")
-    raw = await asyncio.to_thread(_download_image_bytes_sync, image_url)
-    return await asyncio.to_thread(_apply_effect_sync, raw, int(effect_id))
-
 async def send_generated_image(event, media, caption, filename="generated.jpg"):
     """Shared Telegram media layer for generated bytes."""
     from io import BytesIO
@@ -3228,49 +3132,6 @@ async def _self_logo_command(event, uid, text):
         await event.edit("❌ <b>ساخت لوگو ناموفق بود؛ دوباره تلاش کن.</b>", parse_mode="html")
     return True
 
-async def _self_effect_command(event, uid, text):
-    m = re.fullmatch(r"افکت\s+([0-9۰-۹]{1,2})\s+(https?://\S+)", text.strip(), flags=re.S | re.I)
-    if not m:
-        return False
-    effect_id = int(_fa_digits(m.group(1)))
-    image_url = m.group(2).strip()
-    if effect_id not in EFFECTS:
-        await event.edit(
-            f"❌ شماره افکت باید بین <b>۱ تا {len(EFFECTS)}</b> باشد.",
-            parse_mode="html",
-        )
-        return True
-    if not _valid_http_url(image_url):
-        await event.edit("❌ لینک تصویر معتبر نیست.", parse_mode="html")
-        return True
-    with contextlib.suppress(Exception):
-        await event.edit("🖼️ <b>در حال اعمال افکت…</b>", parse_mode="html")
-    try:
-        media = await generate_effect(effect_id, image_url)
-        caption = (
-            "🖼️ <b>Effect Generator</b>\n\n"
-            f"✦ <b>افکت:</b> #{effect_id} • {html.escape(EFFECTS[effect_id][1])}"
-        )
-        await send_generated_image(event, media, caption, f"effect_{effect_id}.jpg")
-        with contextlib.suppress(Exception):
-            await event.delete()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        await event.edit("❌ <b>دریافت تصویر ناموفق بود؛ لینک را بررسی کن.</b>", parse_mode="html")
-    except ValueError as exc:
-        message = {
-            "invalid_url": "❌ لینک تصویر معتبر نیست.",
-            "not_image": "❌ لینک داده‌شده تصویر مستقیم نیست.",
-            "image_too_large": "❌ حجم تصویر بیش از حد مجاز است.",
-            "empty_image": "❌ تصویر خالی یا نامعتبر است.",
-        }.get(str(exc), "❌ اعمال افکت ناموفق بود؛ دوباره تلاش کن.")
-        await event.edit(message, parse_mode="html")
-    except ImportError:
-        await event.edit("❌ برای اعمال افکت نصب Pillow لازم است.", parse_mode="html")
-    except Exception:
-        await event.edit("❌ اعمال افکت ناموفق بود؛ دوباره تلاش کن.", parse_mode="html")
-    return True
-
-
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
@@ -3281,8 +3142,6 @@ async def self_handle_outgoing(event, uid):
     if await _self_currency_command(event, uid, text):
         return
     if await _self_logo_command(event, uid, text):
-        return
-    if await _self_effect_command(event, uid, text):
         return
 
     # Interactive private-channel saver.  The bot panel stores only the
@@ -4276,7 +4135,7 @@ async def inline_query_handler(event):
     if query == "راهنما":
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز، لوگوساز و افکت تصویر.",
+            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز و لوگوساز.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
