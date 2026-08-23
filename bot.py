@@ -77,25 +77,13 @@ DIAMOND_PRICE_TOMAN = 40
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
 
-# Fast-Creat APIs
-# ENV always has priority.  The *_CONFIG values intentionally capture any
-# pre-existing project configuration before ENV resolution so an older
-# hard-coded/configured key is not accidentally discarded during upgrades.
-_FAST_CREAT_NOBITEX_CONFIG_KEY = str(globals().get("FAST_CREAT_NOBITEX_API_KEY", "") or "").strip()
-_FAST_CREAT_LOGO_CONFIG_KEY = str(globals().get("FAST_CREAT_LOGO_API_KEY", "") or "").strip()
-_FAST_CREAT_SHARED_CONFIG_KEY = str(
-    globals().get("FAST_CREAT_API_KEY", "")
-    or globals().get("FAST_CREAT_APIKEY", "")
-    or ""
-).strip()
+# Free providers for currency and local media features
+# Currency uses CoinMarketCap's current keyless public endpoint first and
+# CoinGecko's public endpoint as a fallback. No API key is required.
+CMC_PUBLIC_BASE_URL = "https://pro-api.coinmarketcap.com/public-api"
+COINGECKO_PUBLIC_BASE_URL = "https://api.coingecko.com/api/v3"
+CRYPTO_PROVIDER_TIMEOUT = 12
 
-FAST_CREAT_NOBITEX_API_KEY = os.getenv("FAST_CREAT_NOBITEX_API_KEY", "").strip() or _FAST_CREAT_NOBITEX_CONFIG_KEY or _FAST_CREAT_SHARED_CONFIG_KEY
-FAST_CREAT_LOGO_API_KEY = os.getenv("FAST_CREAT_LOGO_API_KEY", "").strip() or _FAST_CREAT_LOGO_CONFIG_KEY or _FAST_CREAT_SHARED_CONFIG_KEY
-FAST_CREAT_NOBITEX_URL = os.getenv("FAST_CREAT_NOBITEX_URL", "http://api.fast-creat.ir/nobitex/v2").strip()
-FAST_CREAT_LOGO_URL = os.getenv("FAST_CREAT_LOGO_URL", "http://api.fast-creat.ir/logo").strip()
-
-FAST_CREAT_DEBUG = os.getenv("FAST_CREAT_DEBUG", "0").strip().casefold() in {"1", "true", "yes", "on", "debug"}
-FAST_CREAT_LOGGER = logging.getLogger("fast_creat")
 TRANSFER_TAX = 0.10
 GAME_TAX = 0.05
 GAME_TIMEOUT = 300
@@ -624,6 +612,7 @@ def self_panel_buttons(uid):
             btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
             btn("🎨 لوگوساز", _self_cb(uid, "logo"), "primary"),
         ],
+        [btn("🖼️ افکت تصویر", _self_cb(uid, "effect"), "primary")],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
             btn("💾 ذخیره چنل", _self_cb(uid, "channel_save"), "primary"),
@@ -749,17 +738,18 @@ def self_guide_text(page=1):
         (
             "📚 <b>راهنمای سلف</b>\n"
             "<i>صفحه ۸ از ۹</i>\n\n"
-            "💱 <b>نرخ لحظه‌ای ارز</b>\n"
+            "💱 <b>نرخ ارز</b>\n"
             "<code>قیمت BTC</code>\n"
-            "<code>قیمت SOL</code>\n"
             "<code>قیمت ETH</code>\n"
-            "قیمت ارز از سرویس لحظه‌ای نوبیتکس دریافت می‌شود و همان پیام با نتیجه جابه‌جا می‌شود.\n\n"
+            "<code>قیمت SOL</code>\n"
+            "<code>قیمت USDT</code>\n"
+            "قیمت لحظه‌ای از سرویس عمومی بدون API Key دریافت می‌شود.\n\n"
             "🎨 <b>لوگوساز</b>\n"
             "<code>لوگو 12 HusteRIX</code>\n"
-            "ساخت لوگو از بین ۱۴۰ قالب.\n\n"
-            "🖼️ <b>افکت‌ساز</b>\n"
+            "۱۲ قالب داخلی و رایگان.\n\n"
+            "🖼️ <b>افکت تصویر</b>\n"
             "<code>افکت 12 https://...</code>\n"
-            "اعمال افکت از بین ۸۰ قالب روی لینک مستقیم تصویر."
+            "۱۲ افکت داخلی و رایگان روی لینک مستقیم تصویر."
         ),
         (
             "📚 <b>راهنمای سلف</b>\n"
@@ -1228,17 +1218,26 @@ async def handle_self_panel_callback(event):
         await event.edit(
             "💱 <b>نرخ لحظه‌ای ارز</b>\n\n"
             "قیمت را با این دستور بگیر:\n\n"
-            "<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>\n\n"
-            "⚡ پاسخ از سرویس لحظه‌ای نوبیتکس دریافت می‌شود.",
+            "<code>قیمت BTC</code>\n<code>قیمت ETH</code>\n<code>قیمت SOL</code>\n<code>قیمت USDT</code>\n\n"
+            "⚡ دریافت مستقیم از سرویس عمومی بدون API Key؛ در صورت خطا fallback فعال است.",
             parse_mode="html",
             buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
         )
         return True
     if action == "logo":
         await event.edit(
-            "🎨 <b>لوگوساز و افکت‌ساز</b>\n\n"
-            "ساخت لوگو از ۱۴۰ قالب:\n<code>لوگو 12 HusteRIX</code>\n\n"
-            "اعمال افکت از ۸۰ قالب روی لینک مستقیم عکس:\n<code>افکت 12 https://example.com/photo.jpg</code>",
+            "🎨 <b>لوگوساز</b>\n\n"
+            "ساخت لوگو با ۱۲ قالب داخلی و رایگان:\n<code>لوگو 12 HusteRIX</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+
+    if action == "effect":
+        await event.edit(
+            "🖼️ <b>افکت تصویر</b>\n\n"
+            f"۱۲ افکت داخلی و رایگان در دسترس است.\n"
+            "<code>افکت 12 https://example.com/photo.jpg</code>",
             parse_mode="html",
             buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
         )
@@ -2808,7 +2807,7 @@ async def _self_unzip_reply(event, uid):
 
 
 # ============================================================
-# FAST-CREAT: LIVE CRYPTO PRICE + LOGO/EFFECT
+# FREE MEDIA / CRYPTO FEATURES
 # ============================================================
 
 _CRYPTO_ALIASES = {
@@ -2824,898 +2823,452 @@ _CRYPTO_ALIASES = {
     "dot": ("DOT", "پولکادات"), "avax": ("AVAX", "آوالانچ"), "shib": ("SHIB", "شیبا"),
 }
 
+_CRYPTO_GECKO_IDS = {
+    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "USDT": "tether",
+    "TON": "the-open-network", "TRX": "tron", "XRP": "ripple", "DOGE": "dogecoin",
+    "BNB": "binancecoin", "ADA": "cardano", "DOT": "polkadot", "AVAX": "avalanche-2",
+    "SHIB": "shiba-inu",
+}
+
+# Local logo templates. These are real rendering templates, not a fake remote
+# template-id mapping. The supported range is exactly the templates below.
+LOGO_TEMPLATES = {
+    1: ("classic", "کلاسیک"), 2: ("neon", "نئون"), 3: ("minimal", "مینیمال"),
+    4: ("badge", "نشان"), 5: ("shadow", "سایه"), 6: ("gradient", "گرادیان"),
+    7: ("outline", "خطی"), 8: ("split", "دو رنگ"), 9: ("glow", "درخشش"),
+    10: ("terminal", "ترمینال"), 11: ("stamp", "مهر"), 12: ("diamond", "الماس"),
+}
+
+# Local image effects. Every entry corresponds to an actual Pillow operation.
+EFFECTS = {
+    1: ("grayscale", "سیاه‌وسفید"),
+    2: ("sepia", "سپیا"),
+    3: ("invert", "معکوس"),
+    4: ("contrast", "کنتراست"),
+    5: ("brightness", "روشنایی"),
+    6: ("blur", "محو"),
+    7: ("sharpen", "شارپ"),
+    8: ("edge", "لبه‌ها"),
+    9: ("emboss", "برجسته"),
+    10: ("posterize", "پوستری"),
+    11: ("solarize", "سولاریزه"),
+    12: ("mirror", "آینه‌ای"),
+}
+
 def _fa_digits(text):
     return str(text).translate(str.maketrans(
         "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
         "01234567890123456789"
     ))
 
-
-def _fast_creat_debug(message: str):
-    """DEBUG-only logging. Disabled by default in production."""
-    if FAST_CREAT_DEBUG:
-        FAST_CREAT_LOGGER.debug("[FAST-CREAT] %s", message)
-
-
-def _fast_creat_secret_values():
-    values = []
-    for value in (
-        os.getenv("FAST_CREAT_NOBITEX_API_KEY", ""),
-        os.getenv("FAST_CREAT_LOGO_API_KEY", ""),
-        FAST_CREAT_NOBITEX_API_KEY,
-        FAST_CREAT_LOGO_API_KEY,
-    ):
-        value = str(value or "").strip()
-        if value and value not in values:
-            values.append(value)
-    return values
-
-
-def _fast_creat_redact_text(value) -> str:
-    text = str(value or "")
-    for secret in _fast_creat_secret_values():
-        text = text.replace(secret, "***REDACTED***")
-    # Defensive redaction for query-style key names even when the key value
-    # came from an exception/debug string rather than our own request builder.
-    text = re.sub(r"(?i)(apikey\s*=\s*)[^&\s]+", r"\1***REDACTED***", text)
-    text = re.sub(r'''(?i)(['\"]apikey['\"]\s*[:=]\s*['\"])[^'\"]+(['\"])''', r"\1***REDACTED***\2", text)
-    return text
-
-
-def _fast_creat_redact_url(url: str) -> str:
-    """Hide API keys from debug output without changing the actual request."""
-    try:
-        parsed = urllib.parse.urlsplit(str(url))
-        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        safe_query = []
-        for key, value in query:
-            safe_query.append(
-                (key, "***REDACTED***" if str(key).casefold() in {"apikey", "api_key", "token"} else value)
-            )
-        return urllib.parse.urlunsplit((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            urllib.parse.urlencode(safe_query),
-            parsed.fragment,
-        ))
-    except Exception:
-        return "<redacted-url>"
-
-
-def _fast_creat_debug_body(body: bytes, content_type: str, limit: int = 12000) -> str:
-    """Return a useful raw-body preview, never exposing secrets."""
-    raw = bytes(body or b"")[:limit]
-    charset = "utf-8"
-    m = re.search(r'''charset\s*=\s*['\"]?([\w.-]+)''', content_type or "", flags=re.I)
-    if m:
-        charset = m.group(1)
-    try:
-        text = raw.decode(charset, errors="replace")
-    except Exception:
-        text = raw.decode("utf-8", errors="replace")
-    return _fast_creat_redact_text(text)
-
-
-def _fast_creat_api_key(kind: str):
-    """Resolve ENV first, then the configuration captured at import time."""
-    if kind == "nobitex":
-        return (
-            os.getenv("FAST_CREAT_NOBITEX_API_KEY", "").strip()
-            or _FAST_CREAT_NOBITEX_CONFIG_KEY
-            or os.getenv("FAST_CREAT_API_KEY", "").strip()
-            or _FAST_CREAT_SHARED_CONFIG_KEY
-        )
-    return (
-        os.getenv("FAST_CREAT_LOGO_API_KEY", "").strip()
-        or _FAST_CREAT_LOGO_CONFIG_KEY
-        or os.getenv("FAST_CREAT_API_KEY", "").strip()
-        or _FAST_CREAT_SHARED_CONFIG_KEY
-    )
-
-
-def _fast_creat_request(url, params, timeout=25):
-    """
-    HTTP worker. It is always called through asyncio.to_thread() by async
-    handlers, so urllib cannot block the Telegram event loop.
-
-    The response is returned even for HTTP 4xx/5xx so the real status,
-    Content-Type and body can be parsed consistently.
-    """
-    query = urllib.parse.urlencode(params, doseq=True, quote_via=urllib.parse.quote)
-    full_url = f"{url}{'&' if '?' in url else '?'}{query}"
-    req = urllib.request.Request(
-        full_url,
-        headers={
-            "User-Agent": "HusteRIX-Diamond-Self/2.0",
-            "Accept": "application/json, image/png, image/jpeg, image/webp, */*",
-        },
-        method="GET",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            content_type = response.headers.get("Content-Type", "")
-            body = response.read()
-            final_url = response.geturl()
-            _fast_creat_debug(
-                f"status={status} content-type={content_type!r} "
-                f"body-bytes={len(body)} url={_fast_creat_redact_url(final_url)}"
-            )
-            _fast_creat_debug(
-                f"raw-body={_fast_creat_debug_body(body, content_type)}"
-            )
-            return {
-                "status": status,
-                "content_type": content_type,
-                "body": body,
-                "final_url": final_url,
-            }
-
-    except urllib.error.HTTPError as exc:
-        body = exc.read() if hasattr(exc, "read") else b""
-        content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
-        _fast_creat_debug(
-            f"status={exc.code} content-type={content_type!r} "
-            f"body-bytes={len(body)} url={_fast_creat_redact_url(full_url)}"
-        )
-        _fast_creat_debug(
-            f"raw-body={_fast_creat_debug_body(body, content_type)}"
-        )
-        return {
-            "status": int(exc.code),
-            "content_type": content_type,
-            "body": body,
-            "final_url": getattr(exc, "url", full_url),
-        }
-
-    except Exception as exc:
-        _fast_creat_debug(
-            f"connection-error type={type(exc).__name__} "
-            f"error={_fast_creat_redact_text(exc)} "
-            f"url={_fast_creat_redact_url(full_url)}"
-        )
-        raise
-
-
-def _fast_creat_parse_response(response):
-    """
-    Shared HTTP response parser.
-
-    Result kind:
-      JSON  -> parsed Python object
-      URL   -> validated URL
-      BYTES -> image/file bytes
-      TEXT  -> plain text
-      ERROR -> parser error metadata
-    """
-    body = bytes(response.get("body") or b"")
-    content_type = str(response.get("content_type") or "").casefold().strip()
-    status = int(response.get("status") or 0)
-
-    if not body:
-        return {
-            "kind": "ERROR",
-            "value": "empty_response",
-            "content_type": content_type,
-            "status": status,
-        }
-
-    # Content-Type wins: never try JSON parsing for an actual image response.
-    image_types = ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif")
-    if any(x in content_type for x in image_types):
-        return {
-            "kind": "BYTES",
-            "value": body,
-            "content_type": content_type,
-            "status": status,
-        }
-
-    # Also recognize image bytes when the server omitted/wrongly labelled CT.
-    if body.startswith(b"\x89PNG\r\n\x1a\n"):
-        return {"kind": "BYTES", "value": body, "content_type": "image/png", "status": status}
-    if body.startswith(b"\xff\xd8\xff"):
-        return {"kind": "BYTES", "value": body, "content_type": "image/jpeg", "status": status}
-    if body.startswith(b"RIFF") and len(body) >= 12 and body[8:12] == b"WEBP":
-        return {"kind": "BYTES", "value": body, "content_type": "image/webp", "status": status}
-    if body.startswith(b"GIF87a") or body.startswith(b"GIF89a"):
-        return {"kind": "BYTES", "value": body, "content_type": "image/gif", "status": status}
-
-    stripped = body.lstrip()
-    looks_json = (
-        "json" in content_type
-        or stripped.startswith((b"{", b"[", b'"'))
-    )
-    if looks_json:
-        try:
-            decoded = body.decode("utf-8-sig")
-            return {
-                "kind": "JSON",
-                "value": json.loads(decoded),
-                "content_type": content_type,
-                "status": status,
-            }
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            _fast_creat_debug(
-                f"json-decode-failed type={type(exc).__name__} "
-                f"content-type={content_type!r}"
-            )
-            # Do not treat a bad JSON label as an image; inspect it as text/binary below.
-
-    try:
-        text = body.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return {
-            "kind": "BYTES",
-            "value": body,
-            "content_type": content_type or "application/octet-stream",
-            "status": status,
-        }
-
-    return {
-        "kind": "TEXT",
-        "value": text,
-        "content_type": content_type,
-        "status": status,
-    }
-
-
-def _fast_creat_json_or_text(response):
-    parsed = _fast_creat_parse_response(response)
-    if parsed["kind"] == "JSON":
-        return parsed["value"], None
-    if parsed["kind"] == "TEXT":
-        text = parsed["value"].strip()
-        if text:
-            try:
-                return json.loads(text), None
-            except json.JSONDecodeError:
-                return None, text
-    return None, None
-
-
-def _numeric_value(value):
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, (int, float)):
-        return True
-    if isinstance(value, str):
-        value = value.strip().replace(",", "")
-        return bool(re.fullmatch(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value))
-    return False
-
-
-_PRICE_FIELDS = (
-    "lastTradePrice", "last", "last_price", "lastPrice",
-    "latest", "price", "value", "close", "current",
-)
-
-_MARKET_KEYS = {
-    "symbol", "base", "market", "pair",
-    "symbol_name", "market_symbol", "marketpair", "market_pair",
-}
-
-_QUOTE_KEYS = {
-    "quote", "quoteasset", "quote_asset", "quote_currency",
-    "currency", "counter", "counterasset", "settlementasset",
-}
-
-
-def _norm_market(value):
-    if value is None:
-        return ""
-    return re.sub(r"[^A-Za-z0-9]", "", str(value)).upper()
-
-
-def _market_rank(value, target):
-    """
-    Prefer an exact target/IRT market over broader matches.
-    This prevents a BTC/USDT record from winning when a BTC/IRT record exists.
-    """
-    norm = _norm_market(value)
-    target = str(target).upper()
-    if norm == f"{target}IRT" or norm == f"{target}IRR":
-        return 0
-    if norm == target:
-        return 1
-    if norm == f"{target}USDT":
-        return 2
-    if norm.startswith(target):
-        return 3
-    return 99
-
-
-def _find_crypto_price(payload, symbol):
-    """
-    Recursive extractor for the actual market record.
-
-    Supported market representations:
-      BTC, BTCIRT, BTC/IRT, BTC-IRT, BTC_IRT
-      symbol/base/market/pair = BTC...
-
-    Price fields:
-      lastTradePrice, last, last_price, lastPrice, latest,
-      price, value, close, current
-
-    No Rial/Toman conversion is performed.
-    """
-    target = str(symbol).upper()
-    candidates = []
-
-    def inspect_record(node, path):
-        if not isinstance(node, dict):
-            return
-
-        market_values = []
-        quote_values = []
-        for key, value in node.items():
-            k = str(key).casefold()
-            if k in _MARKET_KEYS and isinstance(value, (str, int, float)):
-                market_values.append(str(value))
-            if k in _QUOTE_KEYS and isinstance(value, (str, int, float)):
-                quote_values.append(str(value))
-
-        # A record with explicit symbol/market/pair has the strongest evidence.
-        explicit_ranks = [_market_rank(v, target) for v in market_values]
-        explicit_match = [r for r in explicit_ranks if r < 99]
-
-        # base=BTC is explicitly supported. If a quote exists, prefer IRT/IRR.
-        base_match = any(
-            _norm_market(v) == target
-            for v in market_values
-        )
-        if explicit_match:
-            rank = min(explicit_match)
-        elif base_match:
-            rank = 1
-            if quote_values:
-                quote_norms = {_norm_market(v) for v in quote_values}
-                if quote_norms & {"IRT", "IRR"}:
-                    rank = 0
-                elif quote_norms & {"USDT"}:
-                    rank = 2
-        else:
-            rank = 99
-
-        if rank < 99:
-            for field in _PRICE_FIELDS:
-                for key, value in node.items():
-                    if str(key).casefold() == field.casefold() and _numeric_value(value):
-                        candidates.append((
-                            rank,
-                            path,
-                            value,
-                            {
-                                "path": path,
-                                "market": market_values,
-                                "quote": quote_values,
-                                "price_field": key,
-                                "record": node,
-                            },
-                        ))
-                        return
-
-    def walk(node, path=()):
-        if isinstance(node, dict):
-            inspect_record(node, path)
-            for key, value in node.items():
-                key_norm = _norm_market(key)
-                if _market_rank(key_norm, target) < 99 and isinstance(value, dict):
-                    record = dict(value)
-                    record.setdefault("symbol", str(key))
-                    inspect_record(record, path + (str(key),))
-                walk(value, path + (str(key),))
-        elif isinstance(node, list):
-            for index, value in enumerate(node):
-                walk(value, path + (index,))
-
-    walk(payload)
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: (item[0], len(item[1])))
-    _, _, value, details = candidates[0]
-    return value, details
-
-
-def _format_price_number(value):
-    # Display the API value exactly; no comma insertion, rounding, scaling,
-    # float formatting, Rial/Toman conversion, or other transformation.
-    return str(value).strip()
-
-
-def _fast_creat_valid_url(value):
+def _valid_http_url(value: str):
     if not isinstance(value, str):
         return None
-    text = value.strip()
+    value = value.strip()
     try:
-        parsed = urllib.parse.urlsplit(text)
+        parsed = urllib.parse.urlsplit(value)
         if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
             return None
-        return text
+        return value
     except Exception:
         return None
 
-
-def _fast_creat_extract_url(payload):
-    """Recursive extraction of validated HTTP(S) URLs."""
-    preferred_keys = {
-        "url", "link", "image", "image_url", "imageurl", "output",
-        "result_url", "image_link", "src", "download_url",
-    }
-
-    if isinstance(payload, str):
-        direct = _fast_creat_valid_url(payload)
-        if direct:
-            return direct
-        match = re.search(r'''https?://[^\s\"'<>]+''', payload, flags=re.I)
-        return _fast_creat_valid_url(match.group(0).rstrip(").,]}\"'")) if match else None
-
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if str(key).casefold() in preferred_keys:
-                found = _fast_creat_extract_url(value)
-                if found:
-                    return found
-        for value in payload.values():
-            found = _fast_creat_extract_url(value)
-            if found:
-                return found
-
-    elif isinstance(payload, list):
-        for value in payload:
-            found = _fast_creat_extract_url(value)
-            if found:
-                return found
-
-    return None
-
-
-def _fast_creat_image_bytes_valid(data: bytes) -> bool:
-    if not data:
-        return False
-    return (
-        data.startswith(b"\x89PNG\r\n\x1a\n")
-        or data.startswith(b"\xff\xd8\xff")
-        or (data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP")
-        or data.startswith(b"GIF87a")
-        or data.startswith(b"GIF89a")
+def _http_json_get(url: str, params=None, timeout=CRYPTO_PROVIDER_TIMEOUT):
+    query = urllib.parse.urlencode(params or {}, doseq=True)
+    full_url = f"{url}{'&' if '?' in url else '?'}{query}" if query else url
+    req = urllib.request.Request(
+        full_url,
+        headers={"Accept": "application/json", "User-Agent": "HusteRIX-Diamond-Self/3.0"},
+        method="GET",
     )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        status = int(getattr(response, "status", response.getcode()))
+        body = response.read()
+        if status < 200 or status >= 300:
+            raise urllib.error.HTTPError(full_url, status, "HTTP error", response.headers, None)
+        if not body:
+            raise ValueError("empty_response")
+        try:
+            return json.loads(body.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid_json") from exc
 
+def _cmc_price_from_payload(payload, symbol):
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_json")
+    status = payload.get("status") or {}
+    if str(status.get("error_code", "0")) != "0":
+        raise ValueError(str(status.get("error_message") or "provider_error"))
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise ValueError("missing_price")
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol", "")).upper() != symbol.upper():
+            continue
+        quotes = item.get("quotes")
+        if not isinstance(quotes, list):
+            continue
+        for quote in quotes:
+            if isinstance(quote, dict) and str(quote.get("symbol", "")).upper() == "USD":
+                price = quote.get("price")
+                if price is not None:
+                    return str(price), quote.get("last_updated")
+    raise ValueError("missing_price")
 
-def _fast_creat_decode_base64(payload):
-    """Recursive base64/Data-URI image extraction with magic-byte validation."""
-    base64_keys = {
-        "base64", "image_base64", "imagebase64", "data_base64",
-        "file", "content", "image_data", "data",
+async def _get_crypto_price_cmc(symbol: str):
+    payload = await asyncio.to_thread(
+        _http_json_get,
+        f"{CMC_PUBLIC_BASE_URL}/v2/simple/price",
+        {"symbol": symbol.upper(), "convert": "USD", "skip_invalid": "true"},
+        CRYPTO_PROVIDER_TIMEOUT,
+    )
+    price, updated = _cmc_price_from_payload(payload, symbol)
+    return {"symbol": symbol.upper(), "price": price, "updated": updated, "provider": "CoinMarketCap"}
+
+async def _get_crypto_price_coingecko(symbol: str):
+    coin_id = _CRYPTO_GECKO_IDS.get(symbol.upper())
+    if not coin_id:
+        raise ValueError("missing_price")
+    payload = await asyncio.to_thread(
+        _http_json_get,
+        f"{COINGECKO_PUBLIC_BASE_URL}/simple/price",
+        {"ids": coin_id, "vs_currencies": "usd", "include_last_updated_at": "true"},
+        CRYPTO_PROVIDER_TIMEOUT,
+    )
+    item = payload.get(coin_id) if isinstance(payload, dict) else None
+    if not isinstance(item, dict) or "usd" not in item:
+        raise ValueError("missing_price")
+    return {
+        "symbol": symbol.upper(),
+        "price": str(item["usd"]),
+        "updated": item.get("last_updated_at"),
+        "provider": "CoinGecko",
     }
 
-    def decode_string(text, mime_hint=None):
-        text = str(text or "").strip()
-        if text.startswith("data:image/") and ";base64," in text:
-            header, encoded = text.split(",", 1)
-            mime_hint = header[5:].split(";", 1)[0]
-        else:
-            encoded = text
-
-        compact = re.sub(r"\s+", "", encoded)
-        if len(compact) < 32 or not re.fullmatch(r"[A-Za-z0-9+/=_-]+", compact):
-            return None
-
-        try:
-            padded = compact.replace("-", "+").replace("_", "/")
-            padded += "=" * (-len(padded) % 4)
-            data = base64.b64decode(padded, validate=True)
-        except Exception:
-            return None
-
-        if not _fast_creat_image_bytes_valid(data):
-            return None
-        return data, mime_hint
-
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if str(key).casefold() in base64_keys and isinstance(value, str):
-                found = decode_string(value)
-                if found:
-                    return found
-        for value in payload.values():
-            found = _fast_creat_decode_base64(value)
-            if found:
-                return found
-
-    elif isinstance(payload, list):
-        for value in payload:
-            found = _fast_creat_decode_base64(value)
-            if found:
-                return found
-
-    elif isinstance(payload, str):
-        found = decode_string(payload)
-        if found:
-            return found
-
-    return None
-
-
-def _fast_creat_guess_image_ext(content_type="", body=b""):
-    ct = (content_type or "").casefold()
-    if "image/png" in ct or body.startswith(b"\x89PNG"):
-        return ".png"
-    if "image/webp" in ct or (body.startswith(b"RIFF") and len(body) >= 12 and body[8:12] == b"WEBP"):
-        return ".webp"
-    if "image/gif" in ct or body.startswith(b"GIF8"):
-        return ".gif"
-    return ".jpg"
-
-
-def _fast_creat_extract_error(payload):
-    if isinstance(payload, str):
-        return payload.strip()[:800]
-    if isinstance(payload, dict):
-        for key in ("error", "message", "msg", "detail", "description", "error_message"):
-            value = payload.get(key)
-            if value not in (None, ""):
-                if isinstance(value, (dict, list)):
-                    return _fast_creat_redact_text(json.dumps(value, ensure_ascii=False))[:800]
-                return _fast_creat_redact_text(value)[:800]
-        for value in payload.values():
-            found = _fast_creat_extract_error(value)
-            if found:
-                return found
-    elif isinstance(payload, list):
-        for value in payload:
-            found = _fast_creat_extract_error(value)
-            if found:
-                return found
-    return None
-
-
-def _fast_creat_parse_media_response(response):
-    """
-    Shared Logo/Effect normalizer.
-
-    Returns:
-      ("url", URL, None)
-      ("bytes", image_bytes, extension)
-      ("json", JSON object, None)
-      ("error", detail, None)
-    """
-    status = int(response.get("status") or 0)
-    parsed = _fast_creat_parse_response(response)
-
-    if parsed["kind"] == "BYTES":
-        body = parsed["value"]
-        if not body:
-            return "error", "empty_response", None
-        return "bytes", body, _fast_creat_guess_image_ext(parsed["content_type"], body)
-
-    if parsed["kind"] == "JSON":
-        payload = parsed["value"]
-        url = _fast_creat_extract_url(payload)
-        if url:
-            return "url", url, None
-
-        decoded = _fast_creat_decode_base64(payload)
-        if decoded:
-            body, mime_hint = decoded
-            return "bytes", body, _fast_creat_guess_image_ext(mime_hint, body)
-
-        error = _fast_creat_extract_error(payload)
-        if status < 200 or status >= 300:
-            return "error", f"HTTP {status}" + (f" — {error}" if error else ""), None
-        return "json", payload, None
-
-    if parsed["kind"] == "TEXT":
-        text = parsed["value"].strip()
-        if text:
-            url = _fast_creat_extract_url(text)
-            if url:
-                return "url", url, None
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                payload = None
-            if payload is not None:
-                url = _fast_creat_extract_url(payload)
-                if url:
-                    return "url", url, None
-                decoded = _fast_creat_decode_base64(payload)
-                if decoded:
-                    body, mime_hint = decoded
-                    return "bytes", body, _fast_creat_guess_image_ext(mime_hint, body)
-        return "error", _fast_creat_redact_text(text)[:800] or "empty_response", None
-
-    if parsed["kind"] == "ERROR":
-        return "error", parsed["value"], None
-
-    return "error", "unsupported_response", None
-
-
-def _fast_creat_fetch_media(params):
-    response = _fast_creat_request(FAST_CREAT_LOGO_URL, params, timeout=25)
-    kind, result, extra = _fast_creat_parse_media_response(response)
-    if kind in {"url", "bytes"}:
-        return kind, result, extra
-
-    status = int(response.get("status") or 0)
-    if status < 200 or status >= 300:
-        return "error", str(result or f"HTTP {status}"), None
-    return "error", str(result or "ساختار پاسخ سرویس قابل شناسایی نیست."), None
-
-
-async def _fast_creat_currency_result(symbol):
-    api_key = _fast_creat_api_key("nobitex")
-    if not api_key:
-        return None, "❌ کلید API نرخ ارز در ENV تنظیم نشده است."
-
+async def get_crypto_price(symbol: str):
+    """Provider layer: CMC keyless first, CoinGecko public fallback."""
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        raise ValueError("missing_symbol")
     try:
-        response = await asyncio.to_thread(
-            _fast_creat_request,
-            FAST_CREAT_NOBITEX_URL,
-            {"apikey": api_key},
-            15,
-        )
-        status = int(response.get("status") or 0)
-        parsed = _fast_creat_parse_response(response)
+        return await _get_crypto_price_cmc(symbol)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, OSError) as first_exc:
+        try:
+            return await _get_crypto_price_coingecko(symbol)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, OSError) as second_exc:
+            raise RuntimeError(
+                f"crypto_provider_failed: {type(first_exc).__name__}/{type(second_exc).__name__}"
+            ) from second_exc
 
-        if status < 200 or status >= 300:
-            detail = _fast_creat_extract_error(
-                parsed.get("value") if parsed["kind"] in {"JSON", "TEXT"} else None
-            )
-            return None, (
-                f"❌ سرویس نرخ ارز خطا داد: <b>HTTP {status}</b>"
-                + (f"\n<code>{html.escape(str(detail)[:500])}</code>" if detail else "")
-            )
+def _format_price_number(value):
+    # Provider value is displayed verbatim. No Rial/Toman conversion or rounding.
+    return str(value).strip()
 
-        if parsed["kind"] == "BYTES":
-            return None, "❌ پاسخ سرویس نرخ ارز قابل پردازش نیست."
-
-        payload = parsed.get("value") if parsed["kind"] == "JSON" else None
-        if payload is None and parsed["kind"] == "TEXT":
-            text = str(parsed.get("value") or "").strip()
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                _fast_creat_debug("currency-json-decode-failed after TEXT fallback")
-                return None, "❌ پاسخ سرویس نرخ ارز JSON معتبر نیست."
-
-        if payload is None:
-            return None, "❌ پاسخ سرویس نرخ ارز JSON معتبر نیست."
-
-        found = _find_crypto_price(payload, symbol)
-        if not found:
-            _fast_creat_debug(
-                f"currency-price-not-found symbol={symbol} payload-type={type(payload).__name__}"
-            )
-            return None, f"❌ نماد <b>{html.escape(symbol)}</b> در پاسخ واقعی سرویس پیدا نشد."
-
-        value, details = found
-        _fast_creat_debug(
-            f"currency-match symbol={symbol} market={details.get('market')} "
-            f"quote={details.get('quote')} price-field={details.get('price_field')} "
-            f"path={details.get('path')}"
-        )
-        return {
-            "symbol": symbol,
-            "price": _format_price_number(value),
-            "raw": details,
-        }, None
-
-    except urllib.error.URLError as exc:
-        _fast_creat_debug(f"currency-connection-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}")
-        return None, "❌ اتصال به سرویس نرخ ارز برقرار نشد."
-    except TimeoutError as exc:
-        _fast_creat_debug(f"currency-timeout error={_fast_creat_redact_text(exc)}")
-        return None, "❌ زمان پاسخ سرویس نرخ ارز تمام شد."
-    except Exception as exc:
-        _fast_creat_debug(
-            f"currency-unexpected-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}"
-        )
-        return None, "❌ دریافت نرخ ارز ناموفق بود؛ چند لحظه بعد دوباره تلاش کن."
-
+def _format_crypto_updated(value):
+    if not value:
+        return "همین حالا"
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M UTC")
+        return str(value).replace("T", " ").replace("Z", " UTC")
+    except Exception:
+        return str(value)
 
 def _currency_ui(data, fa_name):
-    # The API's numeric value is displayed verbatim.  No Rial/Toman
-    # conversion is performed because the wrapper response must define its unit.
     return (
-        "╭━━━━━━━ 💱 <b>نرخ لحظه‌ای ارز</b> ━━━━━━━╮\n\n"
+        "╭━━━━━━━ 💱 <b>قیمت ارز</b> ━━━━━━━╮\n\n"
         f"🪙 <b>{html.escape(fa_name)}</b>  •  <code>{html.escape(data['symbol'])}</code>\n\n"
-        f"💰 <b>{html.escape(data['price'])}</b>\n\n"
-        "⚡ <i>منبع: Fast-Creat / نوبیتکس • بروزرسانی لحظه‌ای</i>\n"
+        f"💵 <b>قیمت:</b> <b>{html.escape(_format_price_number(data['price']))} USD</b>\n\n"
+        f"🕒 <b>آخرین بروزرسانی:</b> {html.escape(_format_crypto_updated(data.get('updated')))}\n\n"
+        "━━━━━━━━━━━━\n"
+        f"⚡ <b>Live Crypto Price</b> • {html.escape(data.get('provider', 'Public API'))}\n"
         "╰━━━━━━━━HusteRIX━━━━━━━━╯"
     )
-
 
 async def _self_currency_command(event, uid, text):
     m = re.fullmatch(r"قیمت\s+(.+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
-
     raw = _fa_digits(m.group(1).strip()).casefold()
     if raw not in _CRYPTO_ALIASES:
         await event.edit(
             "❌ <b>ارز شناخته نشد.</b>\n\n"
-            "مثال:\n<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n<code>قیمت ETH</code>",
+            "مثال:\n<code>قیمت BTC</code>\n<code>قیمت SOL</code>\n"
+            "<code>قیمت ETH</code>\n<code>قیمت USDT</code>",
             parse_mode="html",
         )
         return True
-
     symbol, fa_name = _CRYPTO_ALIASES[raw]
     with contextlib.suppress(Exception):
         await event.edit(
             f"💱 <b>در حال دریافت نرخ {html.escape(symbol)}...</b>",
             parse_mode="html",
         )
-
-    data, error = await _fast_creat_currency_result(symbol)
-    await event.edit(error if error else _currency_ui(data, fa_name), parse_mode="html")
+    try:
+        data = await get_crypto_price(symbol)
+        await event.edit(_currency_ui(data, fa_name), parse_mode="html")
+    except urllib.error.HTTPError as exc:
+        await event.edit(f"❌ <b>سرویس نرخ ارز خطا داد؛ HTTP {exc.code}.</b>", parse_mode="html")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        await event.edit("❌ <b>اتصال به سرویس نرخ ارز برقرار نشد.</b>", parse_mode="html")
+    except ValueError:
+        await event.edit("❌ <b>پاسخ سرویس نرخ ارز معتبر نبود یا قیمت پیدا نشد.</b>", parse_mode="html")
+    except Exception:
+        await event.edit("❌ <b>دریافت نرخ ارز ناموفق بود؛ دوباره تلاش کن.</b>", parse_mode="html")
     return True
 
+def _logo_render_sync(template_id: int, text_value: str):
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-async def _send_fast_creat_media(event, kind, result, extra, caption, operation):
-    """Send normalized bytes/URL through the existing Telethon client."""
+    template = LOGO_TEMPLATES[template_id][0]
+    canvas = Image.new("RGB", (1200, 700), (18, 18, 24))
+    draw = ImageDraw.Draw(canvas)
+    font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ]
+    font_path = next((x for x in font_candidates if Path(x).exists()), None)
     try:
-        if kind == "bytes":
-            from io import BytesIO
-            media = BytesIO(result)
-            media.name = f"{operation}{extra or '.jpg'}"
-            await event.client.send_file(
-                event.chat_id,
-                media,
-                caption=caption,
-                parse_mode="html",
-            )
-        elif kind == "url":
-            await event.client.send_file(
-                event.chat_id,
-                result,
-                caption=caption,
-                parse_mode="html",
-            )
-        else:
-            return False
-        return True
-    except Exception as exc:
-        _fast_creat_debug(
-            f"telegram-upload-error operation={operation} "
-            f"type={type(exc).__name__} error={_fast_creat_redact_text(exc)}"
-        )
-        raise
+        font = ImageFont.truetype(font_path, 110) if font_path else ImageFont.load_default()
+        small = ImageFont.truetype(font_path, 34) if font_path else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+        small = font
 
+    bbox = draw.textbbox((0, 0), text_value, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    x, y = (1200 - tw) // 2, (700 - th) // 2 - 20
+
+    if template == "classic":
+        draw.rounded_rectangle((100, 100, 1100, 600), radius=45, outline=(240, 240, 240), width=6)
+        fill = (245, 245, 245)
+    elif template == "neon":
+        fill = (80, 220, 255)
+        for width, alpha in ((40, 40), (24, 70), (12, 110)):
+            glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            gd = ImageDraw.Draw(glow)
+            gd.text((x, y), text_value, font=font, fill=(*fill, alpha))
+            glow = glow.filter(ImageFilter.GaussianBlur(width))
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
+            draw = ImageDraw.Draw(canvas)
+    elif template == "minimal":
+        fill = (250, 250, 250)
+        draw.line((160, 530, 1040, 530), fill=fill, width=4)
+    elif template == "badge":
+        draw.ellipse((120, 120, 1080, 580), outline=(240, 190, 70), width=10)
+        fill = (240, 190, 70)
+    elif template == "shadow":
+        fill = (255, 255, 255)
+        shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shadow)
+        sd.text((x + 18, y + 18), text_value, font=font, fill=(0, 0, 0, 180))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), shadow).convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+    elif template == "gradient":
+        for i in range(canvas.height):
+            c = int(40 + (i / canvas.height) * 150)
+            draw.line((0, i, canvas.width, i), fill=(c, 70, 180))
+        fill = (255, 255, 255)
+    elif template == "outline":
+        fill = (18, 18, 24)
+        stroke = (255, 255, 255)
+        draw.text((x, y), text_value, font=font, fill=fill, stroke_width=5, stroke_fill=stroke)
+        fill = None
+    elif template == "split":
+        draw.rectangle((0, 0, 600, 700), fill=(35, 110, 210))
+        draw.rectangle((600, 0, 1200, 700), fill=(220, 70, 100))
+        fill = (255, 255, 255)
+    elif template == "glow":
+        fill = (255, 210, 80)
+        glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.text((x, y), text_value, font=font, fill=(255, 210, 80, 210))
+        glow = glow.filter(ImageFilter.GaussianBlur(28))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+    elif template == "terminal":
+        fill = (80, 255, 130)
+        draw.rectangle((80, 90, 1120, 610), outline=fill, width=4)
+        draw.text((120, 120), "$ logo", font=small, fill=fill)
+    elif template == "stamp":
+        fill = (235, 235, 235)
+        draw.rectangle((120, 120, 1080, 580), outline=fill, width=12)
+        draw.text((160, 540), "HusteRIX", font=small, fill=fill)
+    else:  # diamond
+        fill = (240, 210, 80)
+        draw.polygon([(600, 80), (1080, 350), (600, 620), (120, 350)], outline=fill, width=10)
+
+    if fill is not None:
+        draw.text((x, y), text_value, font=font, fill=fill)
+    output = BytesIO()
+    canvas.save(output, format="PNG")
+    return output.getvalue()
+
+async def generate_logo(template_id: int, text: str):
+    if template_id not in LOGO_TEMPLATES:
+        raise ValueError("invalid_logo_template")
+    if not text.strip():
+        raise ValueError("empty_logo_text")
+    return await asyncio.to_thread(_logo_render_sync, int(template_id), text.strip())
+
+def _apply_effect_sync(image_bytes: bytes, effect_id: int):
+    from io import BytesIO
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    if effect_id not in EFFECTS:
+        raise ValueError("invalid_effect")
+    with Image.open(BytesIO(image_bytes)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        name = EFFECTS[effect_id][0]
+        if name == "grayscale":
+            image = ImageOps.grayscale(image).convert("RGB")
+        elif name == "sepia":
+            gray = ImageOps.grayscale(image)
+            image = ImageOps.colorize(gray, black=(45, 25, 10), white=(245, 220, 165))
+        elif name == "invert":
+            image = ImageOps.invert(image)
+        elif name == "contrast":
+            image = ImageEnhance.Contrast(image).enhance(1.8)
+        elif name == "brightness":
+            image = ImageEnhance.Brightness(image).enhance(1.35)
+        elif name == "blur":
+            image = image.filter(ImageFilter.GaussianBlur(6))
+        elif name == "sharpen":
+            image = image.filter(ImageFilter.UnsharpMask(radius=2, percent=180, threshold=3))
+        elif name == "edge":
+            image = image.filter(ImageFilter.FIND_EDGES)
+        elif name == "emboss":
+            image = image.filter(ImageFilter.EMBOSS)
+        elif name == "posterize":
+            image = ImageOps.posterize(image, 3)
+        elif name == "solarize":
+            image = ImageOps.solarize(image, threshold=128)
+        elif name == "mirror":
+            image = ImageOps.mirror(image)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=92, optimize=True)
+        return output.getvalue()
+
+def _download_image_bytes_sync(image_url: str, timeout=20, max_bytes=10 * 1024 * 1024):
+    req = urllib.request.Request(
+        image_url,
+        headers={"User-Agent": "HusteRIX-Diamond-Self/3.0", "Accept": "image/*,*/*;q=0.8"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        status = int(getattr(response, "status", response.getcode()))
+        if status < 200 or status >= 300:
+            raise urllib.error.HTTPError(image_url, status, "HTTP error", response.headers, None)
+        content_type = (response.headers.get("Content-Type") or "").casefold()
+        if content_type and not content_type.startswith("image/"):
+            raise ValueError("not_image")
+        data = response.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError("image_too_large")
+        if not data:
+            raise ValueError("empty_image")
+        return data
+
+async def generate_effect(effect_id: int, image_url: str):
+    if effect_id not in EFFECTS:
+        raise ValueError("invalid_effect")
+    image_url = _valid_http_url(image_url)
+    if not image_url:
+        raise ValueError("invalid_url")
+    raw = await asyncio.to_thread(_download_image_bytes_sync, image_url)
+    return await asyncio.to_thread(_apply_effect_sync, raw, int(effect_id))
+
+async def send_generated_image(event, media, caption, filename="generated.jpg"):
+    """Shared Telegram media layer for generated bytes."""
+    from io import BytesIO
+    if isinstance(media, (bytes, bytearray)):
+        stream = BytesIO(media)
+        stream.name = filename
+        await event.client.send_file(event.chat_id, stream, caption=caption, parse_mode="html")
+        return True
+    if isinstance(media, (str, Path)):
+        await event.client.send_file(event.chat_id, str(media), caption=caption, parse_mode="html")
+        return True
+    if _valid_http_url(media):
+        await event.client.send_file(event.chat_id, media, caption=caption, parse_mode="html")
+        return True
+    raise ValueError("unsupported_media")
 
 async def _self_logo_command(event, uid, text):
     m = re.fullmatch(r"لوگو\s+([0-9۰-۹]{1,3})\s+(.+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
-
-    api_key = _fast_creat_api_key("logo")
-    if not api_key:
-        await event.edit("❌ کلید API لوگوساز در ENV تنظیم نشده است.", parse_mode="html")
-        return True
-
     logo_id = int(_fa_digits(m.group(1)))
     logo_text = m.group(2).strip()
-    if not 1 <= logo_id <= 140:
-        await event.edit("❌ شماره لوگو باید بین <b>۱ تا ۱۴۰</b> باشد.", parse_mode="html")
+    if logo_id not in LOGO_TEMPLATES:
+        await event.edit(
+            f"❌ شماره لوگو باید بین <b>۱ تا {len(LOGO_TEMPLATES)}</b> باشد.",
+            parse_mode="html",
+        )
         return True
-
     with contextlib.suppress(Exception):
-        await event.edit("🎨 <b>در حال ساخت لوگو...</b>", parse_mode="html")
-
+        await event.edit("🎨 <b>در حال ساخت لوگو…</b>", parse_mode="html")
     try:
-        kind, result, extra = await asyncio.to_thread(
-            _fast_creat_fetch_media,
-            {
-                "apikey": api_key,
-                "type": "logo",
-                "id": logo_id,
-                "text": logo_text,
-            },
-        )
-
-        if kind not in {"bytes", "url"}:
-            await event.edit(
-                f"❌ <b>ساخت لوگو ناموفق بود.</b>\n\n"
-                f"<code>{html.escape(str(result)[:700])}</code>",
-                parse_mode="html",
-            )
-            return True
-
+        media = await generate_logo(logo_id, logo_text)
         caption = (
-            f"🎨 <b>لوگو آماده شد</b>\n\n"
-            f"🆔 قالب: <b>{logo_id}</b>\n"
-            f"✏️ متن: <b>{html.escape(logo_text)}</b>"
+            "🎨 <b>Logo Generator</b>\n\n"
+            f"✦ <b>متن:</b> {html.escape(logo_text)}\n"
+            f"✦ <b>طرح:</b> #{logo_id}"
         )
-        await _send_fast_creat_media(
-            event, kind, result, extra, caption, f"logo_{logo_id}"
-        )
+        await send_generated_image(event, media, caption, f"logo_{logo_id}.png")
         with contextlib.suppress(Exception):
             await event.delete()
-        return True
-
-    except urllib.error.URLError as exc:
-        _fast_creat_debug(f"logo-connection-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}")
-        await event.edit("❌ <b>اتصال به سرویس لوگوساز برقرار نشد.</b>", parse_mode="html")
-        return True
-    except TimeoutError as exc:
-        _fast_creat_debug(f"logo-timeout error={_fast_creat_redact_text(exc)}")
-        await event.edit("❌ <b>اتصال به سرویس لوگوساز برقرار نشد.</b>", parse_mode="html")
-        return True
-    except Exception as exc:
-        _fast_creat_debug(
-            f"logo-unexpected-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}"
-        )
-        await event.edit("❌ <b>ساخت لوگو ناموفق بود؛ پاسخ سرویس قابل پردازش نبود.</b>", parse_mode="html")
-        return True
-
+    except ImportError:
+        await event.edit("❌ برای ساخت لوگو نصب Pillow لازم است.", parse_mode="html")
+    except Exception:
+        await event.edit("❌ <b>ساخت لوگو ناموفق بود؛ دوباره تلاش کن.</b>", parse_mode="html")
+    return True
 
 async def _self_effect_command(event, uid, text):
     m = re.fullmatch(r"افکت\s+([0-9۰-۹]{1,2})\s+(https?://\S+)", text.strip(), flags=re.S | re.I)
     if not m:
         return False
-
-    api_key = _fast_creat_api_key("logo")
-    if not api_key:
-        await event.edit("❌ کلید API افکت‌ساز در ENV تنظیم نشده است.", parse_mode="html")
-        return True
-
     effect_id = int(_fa_digits(m.group(1)))
     image_url = m.group(2).strip()
-    if not 1 <= effect_id <= 80:
-        await event.edit("❌ شماره افکت باید بین <b>۱ تا ۸۰</b> باشد.", parse_mode="html")
+    if effect_id not in EFFECTS:
+        await event.edit(
+            f"❌ شماره افکت باید بین <b>۱ تا {len(EFFECTS)}</b> باشد.",
+            parse_mode="html",
+        )
         return True
-
-    if not _fast_creat_valid_url(image_url):
-        await event.edit("❌ لینک تصویر نامعتبر است.", parse_mode="html")
+    if not _valid_http_url(image_url):
+        await event.edit("❌ لینک تصویر معتبر نیست.", parse_mode="html")
         return True
-
     with contextlib.suppress(Exception):
-        await event.edit("🖼️ <b>در حال اعمال افکت...</b>", parse_mode="html")
-
+        await event.edit("🖼️ <b>در حال اعمال افکت…</b>", parse_mode="html")
     try:
-        kind, result, extra = await asyncio.to_thread(
-            _fast_creat_fetch_media,
-            {
-                "apikey": api_key,
-                "type": "effect",
-                "id": effect_id,
-                "url": image_url,
-            },
+        media = await generate_effect(effect_id, image_url)
+        caption = (
+            "🖼️ <b>Effect Generator</b>\n\n"
+            f"✦ <b>افکت:</b> #{effect_id} • {html.escape(EFFECTS[effect_id][1])}"
         )
-
-        if kind not in {"bytes", "url"}:
-            await event.edit(
-                f"❌ <b>ساخت افکت ناموفق بود.</b>\n\n"
-                f"<code>{html.escape(str(result)[:700])}</code>",
-                parse_mode="html",
-            )
-            return True
-
-        caption = f"🖼️ <b>افکت آماده شد</b>\n\n🆔 افکت: <b>{effect_id}</b>"
-        await _send_fast_creat_media(
-            event, kind, result, extra, caption, f"effect_{effect_id}"
-        )
+        await send_generated_image(event, media, caption, f"effect_{effect_id}.jpg")
         with contextlib.suppress(Exception):
             await event.delete()
-        return True
-
-    except urllib.error.URLError as exc:
-        _fast_creat_debug(f"effect-connection-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}")
-        await event.edit("❌ <b>اتصال به سرویس افکت‌ساز برقرار نشد.</b>", parse_mode="html")
-        return True
-    except TimeoutError as exc:
-        _fast_creat_debug(f"effect-timeout error={_fast_creat_redact_text(exc)}")
-        await event.edit("❌ <b>اتصال به سرویس افکت‌ساز برقرار نشد.</b>", parse_mode="html")
-        return True
-    except Exception as exc:
-        _fast_creat_debug(
-            f"effect-unexpected-error type={type(exc).__name__} error={_fast_creat_redact_text(exc)}"
-        )
-        await event.edit("❌ <b>ساخت افکت ناموفق بود؛ پاسخ سرویس قابل پردازش نبود.</b>", parse_mode="html")
-        return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        await event.edit("❌ <b>دریافت تصویر ناموفق بود؛ لینک را بررسی کن.</b>", parse_mode="html")
+    except ValueError as exc:
+        message = {
+            "invalid_url": "❌ لینک تصویر معتبر نیست.",
+            "not_image": "❌ لینک داده‌شده تصویر مستقیم نیست.",
+            "image_too_large": "❌ حجم تصویر بیش از حد مجاز است.",
+            "empty_image": "❌ تصویر خالی یا نامعتبر است.",
+        }.get(str(exc), "❌ اعمال افکت ناموفق بود؛ دوباره تلاش کن.")
+        await event.edit(message, parse_mode="html")
+    except ImportError:
+        await event.edit("❌ برای اعمال افکت نصب Pillow لازم است.", parse_mode="html")
+    except Exception:
+        await event.edit("❌ اعمال افکت ناموفق بود؛ دوباره تلاش کن.", parse_mode="html")
+    return True
 
 
 async def self_handle_outgoing(event, uid):
@@ -3724,7 +3277,7 @@ async def self_handle_outgoing(event, uid):
     if not text:
         return
 
-    # FAST-CREAT: live prices, logo builder and image effects.
+    # Feature commands must run before the general outgoing-message logic.
     if await _self_currency_command(event, uid, text):
         return
     if await _self_logo_command(event, uid, text):
@@ -4723,7 +4276,7 @@ async def inline_query_handler(event):
     if query == "راهنما":
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز و لوگوساز.",
+            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز، لوگوساز و افکت تصویر.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
