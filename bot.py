@@ -1369,6 +1369,99 @@ async def handle_self_panel_callback(event):
                 )
         return True
 
+    if action.startswith("channel_count:"):
+        state = self_channel_save_state(uid)
+        if state.get("step") != "count" or not state.get("channel_id"):
+            await safe_answer(event, "❌ این مرحله دیگر فعال نیست.", True)
+            return True
+
+        command = action.split(":", 1)[1]
+        current = str(state.get("count_input") or "0")
+
+        if command == "back_media":
+            state.update({"step": "media"})
+            state.pop("count_input", None)
+            self_set_channel_save_state(uid, state)
+            await event.edit(
+                f"📢 <b>{html.escape(str(state.get('channel_title') or 'چنل'))}</b>\n\nنوع مدیا را انتخاب کن:",
+                parse_mode="html",
+                buttons=self_channel_media_buttons(uid),
+            )
+            return True
+
+        if command == "clear":
+            state["count_input"] = "0"
+        elif command == "back":
+            state["count_input"] = current[:-1] or "0"
+        elif command == "confirm":
+            try:
+                count = int(current)
+            except ValueError:
+                count = 0
+            if count < 1 or count > 1000:
+                await safe_answer(event, "⚠️ تعداد باید بین 1 تا 1000 باشد.", True)
+                return True
+
+            state.update({
+                "step": "processing",
+                "uid": int(uid),
+                "requested": int(count),
+                "processing_started": time.monotonic(),
+            })
+            self_set_channel_save_state(uid, state)
+            controller = _ChannelProgressController(state).set_back_callback(_self_cb(uid, "panel"))
+
+            # Deliberate five-second delay before the progress animation starts.
+            await controller._edit(_channel_progress_text(0, "درحال ذخیره سازی…"), buttons=None)
+            await asyncio.sleep(5)
+
+            try:
+                result = await _self_save_channel_media(
+                    event.client, uid, state, count, progress_cb=controller.update
+                )
+                if result.get("error") and result.get("processed", 0) == 0:
+                    await controller._edit(result["error"], buttons=None)
+                else:
+                    await _channel_progress_done(
+                        state,
+                        successful=result["saved"],
+                        failed=result["failed"],
+                        requested=count,
+                        available=result["available"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
+                await controller._edit(
+                    f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+                    buttons=None,
+                )
+            finally:
+                self_clear_channel_save_state(uid)
+            return True
+        else:
+            digit = command
+            if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "00"}:
+                return True
+            if current == "0":
+                candidate = digit.lstrip("0") or "0"
+            else:
+                candidate = current + digit
+            candidate = candidate.lstrip("0") or "0"
+            if len(candidate) > 4 or int(candidate) > 1000:
+                await safe_answer(event, "⚠️ حداکثر تعداد ۱۰۰۰ مورد است.", True)
+                return True
+            state["count_input"] = candidate
+
+        self_set_channel_save_state(uid, state)
+        await event.edit(
+            _channel_count_text(state),
+            parse_mode="html",
+            buttons=_channel_count_buttons(uid, state.get("count_input", "0")),
+        )
+        return True
+
     if action == "channel_cancel":
         self_clear_channel_save_state(uid)
         await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
@@ -1389,15 +1482,15 @@ async def handle_self_panel_callback(event):
         state.update({
             "step": "count",
             "media": media_kind,
+            "count_input": "0",
             "panel_chat_id": int(event.chat_id),
             "panel_message_id": int(event.message_id),
         })
         self_set_channel_save_state(uid, state)
         await event.edit(
-            f"💾 <b>{labels[media_kind]}</b>\n\nچند مورد آخر را ذخیره کنم؟\nمثال: <code>10</code>",
+            _channel_count_text(state),
             parse_mode="html",
-            buttons=[[btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
-                     [btn("↩️ برگشت", _self_cb(uid, "channel_save"), "primary")]],
+            buttons=_channel_count_buttons(uid, "0"),
         )
         return True
 
@@ -1972,22 +2065,45 @@ async def _self_roll_guaranteed_six(event, uid):
 
 def self_channel_media_buttons(uid):
     return [
-        [btn("🖼 تصاویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیوها", _self_cb(uid, "channel_media:videos"))],
-        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس ها", _self_cb(uid, "channel_media:voice"))],
-        [btn("📝 متن ها", _self_cb(uid, "channel_media:text")), btn("📦 کل مدیا ها", _self_cb(uid, "channel_media:all"))],
+        [btn("🖼 تصویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیو", _self_cb(uid, "channel_media:videos"))],
+        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس", _self_cb(uid, "channel_media:voice"))],
+        [btn("📝 متن", _self_cb(uid, "channel_media:text")), btn("📦 همه", _self_cb(uid, "channel_media:all"))],
         [btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
     ]
 
 
-def _channel_progress_text(percent, label="در حال ذخیره مدیا…", processed=None, total=None):
+def _channel_count_buttons(uid, value="0"):
+    return [
+        [btn("1", _self_cb(uid, "channel_count:1")), btn("2", _self_cb(uid, "channel_count:2")), btn("3", _self_cb(uid, "channel_count:3"))],
+        [btn("4", _self_cb(uid, "channel_count:4")), btn("5", _self_cb(uid, "channel_count:5")), btn("6", _self_cb(uid, "channel_count:6"))],
+        [btn("7", _self_cb(uid, "channel_count:7")), btn("8", _self_cb(uid, "channel_count:8")), btn("9", _self_cb(uid, "channel_count:9"))],
+        [btn("0", _self_cb(uid, "channel_count:0")), btn("00", _self_cb(uid, "channel_count:00")), btn("⌫", _self_cb(uid, "channel_count:back"), "danger")],
+        [btn("🗑 پاک کردن", _self_cb(uid, "channel_count:clear"), "danger"), btn("✅ تأیید", _self_cb(uid, "channel_count:confirm"), "success")],
+        [btn("↩️ برگشت", _self_cb(uid, "channel_count:back_media"), "primary")],
+    ]
+
+
+def _channel_count_text(state):
+    labels = {
+        "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
+        "voice": "ویس", "text": "متن", "all": "کل مدیاها"
+    }
+    media = labels.get(state.get("media"), "مدیا")
+    value = str(state.get("count_input") or "0")
+    return (
+        f"💾 <b>{media}</b>\n\n"
+        "چند مورد آخر را ذخیره کنم؟\n\n"
+        f"🔢 <b>{value}</b>\n\n"
+        "مقدار را با دکمه‌های زیر انتخاب کن و سپس «تأیید» را بزن."
+    )
+
+
+def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None):
     percent = max(0, min(100, int(percent)))
-    slots = 20
+    slots = 24
     filled = round(slots * percent / 100)
     bar = "▰" * filled + "▱" * (slots - filled)
-    counter = ""
-    if processed is not None and total is not None:
-        counter = f"\n📦 پردازش: <b>{int(processed)}</b> از <b>{int(total)}</b>"
-    return f"💾 <b>{html.escape(label)}</b>\n\n<code>{bar}</code> <b>{percent}%</b>{counter}"
+    return f"💾 <b>ذخیره مدیا</b> {bar} <i>{html.escape(label)}</i>"
 
 
 class _ChannelProgressController:
@@ -2056,17 +2172,13 @@ class _ChannelProgressController:
         )
 
         if successful == requested and failed == 0 and available >= requested:
-            text = "✅ <b>مدیا مورد نظر با موفقیت ذخیره شد!</b>"
+            text = "✅ <b>ذخیره مدیا با موفقیت انجام شد.</b>"
         elif successful == 0 and failed == 0:
             text = "❌ <b>هیچ مدیای قابل ذخیره‌سازی پیدا نشد.</b>"
         else:
-            text = (
-                "⚠️ <b>عملیات تکمیل شد.</b>\n"
-                f"✅ موفق: {successful}\n"
-                f"❌ ناموفق: {failed}"
-            )
+            text = f"⚠️ <b>ذخیره مدیا تکمیل شد</b> • موفق: {successful} • ناموفق: {failed}"
             if available < requested:
-                text += f"\n📦 پیدا/پردازش‌شده: {available} از {requested}"
+                text += f" • {available} از {requested}"
 
         await self._edit(
             text,
@@ -3226,105 +3338,9 @@ async def self_handle_outgoing(event, uid):
             return
 
         if step == "count":
-            normalized_count = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")).strip()
-
-            # A stale channel-save panel must not consume unrelated commands.
-            if not re.fullmatch(r"\d+", normalized_count):
-                self_clear_channel_save_state(uid)
-                channel_state = {}
-            else:
-                count = int(normalized_count)
-                if count < 1 or count > 1000:
-                    await event.edit(f"❌ تعداد نامعتبر است: تعداد باید بین 1 تا 1000 باشد")
-                    return
-
-                # Enter PROCESSING before doing any real Telegram work. The panel
-                # message becomes the single progress UI and all old buttons vanish.
-                channel_state.update({
-                    "step": "processing",
-                    "uid": int(uid),
-                    "requested": int(count),
-                    "processing_started": time.monotonic(),
-                })
-                self_set_channel_save_state(uid, channel_state)
-
-                controller = _ChannelProgressController(channel_state).set_back_callback(
-                    _self_cb(uid, "panel")
-                )
-
-                # The existing bot panel is the single progress UI. Do not edit
-                # the user's numeric input into a second progress message.
-                await controller.update(0, count, force=True)
-
-                with contextlib.suppress(Exception):
-                    await event.delete()
-
-                try:
-                    result = await _self_save_channel_media(
-                        event.client,
-                        uid,
-                        channel_state,
-                        count,
-                        progress_cb=controller.update,
-                    )
-
-                    if result.get("error"):
-                        # No fake progress is added after a real fatal error.
-                        # If no item was processed, show the clear failure directly.
-                        if result.get("processed", 0) == 0:
-                            try:
-                                await bot.edit_message(
-                                    int(controller.chat_id),
-                                    int(controller.message_id),
-                                    result["error"],
-                                    parse_mode="html",
-                                    buttons=None,
-                                )
-                            except Exception as ui_exc:
-                                print(f"[CHANNEL_SAVE UI] fatal-error edit failed: {ui_exc}")
-                        else:
-                            elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
-                            if elapsed < 3.0:
-                                await asyncio.sleep(3.0 - elapsed)
-                            await _channel_progress_done(
-                                channel_state,
-                                successful=result["saved"],
-                                failed=result["failed"],
-                                requested=count,
-                                available=result["available"],
-                            )
-                    else:
-                        # Keep the processing/progress message visible for at least
-                        # three seconds, even when Telegram returns the selected
-                        # messages very quickly. This makes the progress UI visible
-                        # instead of flashing past instantly.
-                        elapsed = time.monotonic() - float(channel_state.get("processing_started", time.monotonic()))
-                        if elapsed < 3.0:
-                            await asyncio.sleep(3.0 - elapsed)
-                        await _channel_progress_done(
-                            channel_state,
-                            successful=result["saved"],
-                            failed=result["failed"],
-                            requested=count,
-                            available=result["available"],
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    print(f"[CHANNEL_SAVE {uid}] unexpected processing failure: {exc}")
-                    with contextlib.suppress(Exception):
-                        await bot.edit_message(
-                            int(controller.chat_id),
-                            int(controller.message_id),
-                            f"❌ ذخیره مدیا انجام نشد.\n<code>{html.escape(str(exc))}</code>",
-                            parse_mode="html",
-                            buttons=None,
-                        )
-                finally:
-                    # Never leave the user stuck in PROCESSING, even after an
-                    # unexpected exception or cancellation.
-                    self_clear_channel_save_state(uid)
-                return
+            # Count is selected only from the inline numeric keypad.
+            # Typed messages must never start the channel-save operation.
+            return
 
     if low in _UNZIP_COMMANDS:
         result = await _self_unzip_reply(event, uid)
