@@ -624,10 +624,10 @@ def self_panel_buttons(uid):
 def self_panel_text(uid):
     return (
         "╭━━━━━━━ ◈ 𝗛𝘂𝘀𝘁𝗲𝗥𝗜𝗫 ◈ ━━━━━━━╮\n\n"
-        "                 𝙎𝙀𝙇𝙁\n\n"
-        "          𝙎𝙀𝙏𝙏𝙄𝙉𝙂𝙎\n\n"
-        "      تنظیمات و شخصی‌سازی سلف\n\n"
-        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+        "𝙎𝙀𝙇𝙁  \n\n"
+        "      𝙎𝙀𝙏𝙏𝙄𝙉𝙂𝙎\n\n"
+        "  تنظیمات و شخصی‌سازی سلف\n\n"
+        "╰━━━━━━━━━━━━━━━━━━━━━━━━╯"
     )
 
 
@@ -1411,9 +1411,10 @@ async def handle_self_panel_callback(event):
             self_set_channel_save_state(uid, state)
             controller = _ChannelProgressController(state).set_back_callback(_self_cb(uid, "panel"))
 
-            # Deliberate five-second delay before the progress animation starts.
-            await controller._edit(_channel_progress_text(0, "درحال ذخیره سازی…"), buttons=None)
-            await asyncio.sleep(5)
+            # Show progress immediately. Never delay the actual save operation:
+            # the old five-second sleep made the flow look stuck and also delayed
+            # the first real progress update.
+            await controller._edit(_channel_progress_text(0, "درحال آماده‌سازی…"), buttons=None)
 
             try:
                 result = await _self_save_channel_media(
