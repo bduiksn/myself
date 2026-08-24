@@ -355,6 +355,9 @@ _channel_save_sessions = {}
 _channel_save_tasks = {}
 # Independent state for media conversions; never shares channel-save state.
 media_convert_state = {}
+# Independent state for voice -> text jobs.  Kept separate from media conversion
+# so a slow Whisper/OpenAI request can never leave a stale "processing" flag.
+stt_state = {}
 # Last five incoming private messages per chat.  Used only as a short-lived
 # deletion snapshot so a user-cleared chat can be archived without scanning
 # the whole conversation.
@@ -2676,30 +2679,77 @@ def _openai_transcribe_sync(path: str):
 
 
 async def _self_transcribe_reply(event, uid):
-    """Voice/audio -> accurate Persian text.
+    """Voice/audio -> accurate Persian text without blocking Telethon.
 
-    Primary path: OpenAI transcription API when OPENAI_API_KEY is configured.
-    Fallback: local faster-whisper with a stronger default model.
+    Cloud transcription runs in a worker thread.  The local faster-whisper
+    model is ALSO loaded/transcribed in a worker thread; loading large-v3 in
+    the event loop was the main cause of the UI becoming stuck at "processing".
     """
     if not event.is_reply:
         return "❌ روی ویس یا فایل صوتی ریپلای کن و «متن» را بفرست."
+
     replied = await event.get_reply_message()
     if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
         return "❌ ویس یا فایل صوتی پیدا نشد."
 
+    state = stt_state.setdefault(uid, {
+        "status": "processing",
+        "started": time.monotonic(),
+        "last_ui": 0.0,
+        "percent": 0,
+    })
+
+    async def progress_loop():
+        # STT providers do not expose a reliable per-file percentage.
+        # Show a live heartbeat instead of pretending a frozen percentage is
+        # real progress.  This task is always cancelled in finally.
+        phases = (
+            "🎙️ ویس دانلود شد…",
+            "🔊 در حال آماده‌سازی صدا…",
+            "🧠 در حال تشخیص گفتار فارسی…",
+            "✍️ در حال ساخت متن نهایی…",
+        )
+        idx = 0
+        while True:
+            text = phases[idx % len(phases)]
+            idx += 1
+            with contextlib.suppress(Exception):
+                await event.edit(
+                    f"{text}\\n\\n"
+                    "⏳ هنوز در حال پردازش است؛ پنجره را نبند.\n"
+                    "▰▱▱▱▱  در حال انجام",
+                    parse_mode="html",
+                )
+            await asyncio.sleep(2.5)
+
+    progress_task = asyncio.create_task(progress_loop())
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
     try:
-        path = await replied.download_media(file=str(tmp_dir))
+        try:
+            path = await asyncio.wait_for(
+                replied.download_media(file=str(tmp_dir)),
+                timeout=float(os.getenv("STT_DOWNLOAD_TIMEOUT_SECONDS", "300")),
+            )
+        except asyncio.TimeoutError:
+            return "❌ دانلود ویس بیش از حد طول کشید؛ دوباره تلاش کن."
+        except Exception as exc:
+            print(f"[SELF {uid}] STT download failed: {exc}")
+            return "❌ دانلود ویس ناموفق بود."
+
         if not path:
             return "❌ دانلود ویس ناموفق بود."
 
-        # Cloud transcription is much more reliable for Persian and does not
-        # choke on normal 1–2 minute Telegram voice messages.
+        # Prefer OpenAI when configured.  It is executed off the event loop.
         if OPENAI_API_KEY:
             try:
-                result = await asyncio.to_thread(_openai_transcribe_sync, str(path))
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_openai_transcribe_sync, str(path)),
+                    timeout=float(os.getenv("STT_OPENAI_TIMEOUT_SECONDS", "240")),
+                )
                 if result:
                     return f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
+            except asyncio.TimeoutError:
+                print(f"[SELF {uid}] OpenAI STT timed out; using local fallback.")
             except Exception as exc:
                 print(f"[SELF {uid}] OpenAI transcription failed, using local fallback: {exc}")
 
@@ -2708,39 +2758,64 @@ async def _self_transcribe_reply(event, uid):
         except ImportError:
             if OPENAI_API_KEY:
                 return "❌ سرویس تبدیل صدا موقتاً در دسترس نیست و موتور محلی هم نصب نشده است."
-            return "❌ برای دقت بالاتر، `OPENAI_API_KEY` را تنظیم کن؛ در حالت محلی هم نصب `faster-whisper` لازم است."
+            return "❌ برای تبدیل محلی، `faster-whisper` را نصب کن یا `OPENAI_API_KEY` را تنظیم کن."
 
-        model = getattr(_self_transcribe_reply, "_model", None)
-        if model is None:
-            model_name = os.getenv("WHISPER_MODEL", "large-v3")
-            device = os.getenv("WHISPER_DEVICE", "cpu")
-            compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-            model = WhisperModel(model_name, device=device, compute_type=compute_type)
-            _self_transcribe_reply._model = model
+        # IMPORTANT: model construction must be in the worker thread too.
+        # WhisperModel("large-v3") can take a long time and otherwise freezes
+        # the asyncio event loop before the first transcription update.
+        def load_and_transcribe():
+            model = getattr(_self_transcribe_reply, "_model", None)
+            if model is None:
+                model_name = os.getenv("WHISPER_MODEL", "large-v3")
+                device = os.getenv("WHISPER_DEVICE", "cpu")
+                compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+                model = WhisperModel(
+                    model_name,
+                    device=device,
+                    compute_type=compute_type,
+                )
+                _self_transcribe_reply._model = model
 
-        def run_transcription():
             segments, _ = model.transcribe(
                 str(path),
-                language="fa",
+                language=os.getenv("WHISPER_LANGUAGE", "fa"),
                 task="transcribe",
-                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "8")),
-                best_of=int(os.getenv("WHISPER_BEST_OF", "8")),
+                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "5")),
+                best_of=int(os.getenv("WHISPER_BEST_OF", "5")),
                 temperature=0,
                 vad_filter=True,
                 condition_on_previous_text=True,
             )
-            return " ".join(seg.text.strip() for seg in segments).strip()
+            return " ".join(
+                seg.text.strip() for seg in segments if seg.text and seg.text.strip()
+            ).strip()
 
-        result = await asyncio.to_thread(run_transcription)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(load_and_transcribe),
+                timeout=float(os.getenv("STT_LOCAL_TIMEOUT_SECONDS", "900")),
+            )
+        except asyncio.TimeoutError:
+            return "❌ تبدیل ویس به متن بیش از حد طول کشید؛ دوباره تلاش کن."
+        except Exception as exc:
+            print(f"[SELF {uid}] local transcription failed: {exc}")
+            return "❌ موتور تبدیل ویس خطا داد؛ لاگ سرور را بررسی کن."
+
         return (
             f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
             if result
             else "❌ صدایی برای تبدیل به متن پیدا نشد."
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         print(f"[SELF {uid}] transcription failed: {exc}")
         return "❌ تبدیل ویس به متن انجام نشد؛ دوباره تلاش کن."
     finally:
+        progress_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await progress_task
+        stt_state.pop(uid, None)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
@@ -4295,28 +4370,110 @@ async def _spam_replied(event, uid, count):
 
 
 async def _maybe_first_comment(event, uid):
-    """If an outgoing forwarded channel post is sent into a configured discussion group,
-    immediately post the configured first comment as a reply to that forwarded post."""
+    """Send the configured first comment under a forwarded channel post.
+
+    A Telegram channel comment is actually a reply in the channel's linked
+    discussion supergroup.  The old implementation assumed the current group
+    was always that discussion group and silently failed otherwise.  This
+    version verifies the link, uses the real discussion peer, and retries the
+    actual reply operation after FloodWait.
+    """
     if not event.is_group:
         return
+
     text = _first_comment_text(uid).strip()
     channels = _first_comment_channels(uid)
     if not text or not channels:
         return
+
     msg = event.message
+    source_id = None
     fwd = getattr(msg, "fwd_from", None)
-    from_id = getattr(fwd, "from_id", None)
-    source_id = getattr(from_id, "channel_id", None)
+
+    for peer in (
+        getattr(fwd, "from_id", None),
+        getattr(fwd, "saved_from_peer", None),
+        getattr(getattr(msg, "forward", None), "from_id", None),
+    ):
+        candidate = getattr(peer, "channel_id", None)
+        if candidate is not None:
+            source_id = int(candidate)
+            break
+
+    if source_id is None:
+        forward = getattr(msg, "forward", None)
+        candidate = getattr(forward, "channel_id", None)
+        if candidate is not None:
+            source_id = int(candidate)
+
     if source_id is None:
         return
-    source_id = int(source_id)
-    configured = {int(x.get("id")) for x in channels if x.get("id") is not None}
+
+    configured = {
+        int(x.get("id"))
+        for x in channels
+        if x.get("id") is not None
+    }
     if source_id not in configured:
         return
+
+    client = event.client
+    discussion_id = None
+
+    # Resolve the source channel's linked discussion group.  This prevents
+    # sending an ordinary group reply when the current group is not the
+    # channel's real comments thread.
     try:
-        await event.client.send_message(event.chat_id, text, reply_to=msg.id)
+        channel_entity = await client.get_entity(source_id)
+        full = await client(functions.channels.GetFullChannelRequest(
+            channel=channel_entity
+        ))
+        discussion_id = getattr(
+            getattr(full, "full_chat", None),
+            "linked_chat_id",
+            None,
+        )
+        if discussion_id is not None:
+            discussion_id = int(discussion_id)
     except Exception as exc:
-        print(f"[COMMENT {uid}] failed for channel {source_id}: {exc}")
+        print(f"[COMMENT {uid}] discussion lookup failed for {source_id}: {exc}")
+
+    # If Telegram did not expose a linked discussion, the channel has no
+    # native comment thread and there is nowhere valid to post a comment.
+    if not discussion_id:
+        print(f"[COMMENT {uid}] channel {source_id} has no linked discussion group")
+        return
+
+    current_chat = int(event.chat_id) if event.chat_id is not None else None
+    if current_chat != discussion_id:
+        # The forwarded post was not delivered into the channel's linked
+        # discussion group.  Do not create a fake/unrelated comment elsewhere.
+        print(
+            f"[COMMENT {uid}] forwarded post is in chat {current_chat}, "
+            f"but channel {source_id} discussion is {discussion_id}"
+        )
+        return
+
+    async def send_comment():
+        # reply_to is the real Telegram comment/thread relation.
+        return await client.send_message(
+            entity=discussion_id,
+            message=text[:4096],
+            reply_to=int(msg.id),
+        )
+
+    try:
+        await _tg_call_with_flood_retry(
+            send_comment,
+            label="first comment",
+            max_retries=5,
+        )
+        print(f"[COMMENT {uid}] comment sent for channel {source_id}")
+    except Exception as exc:
+        print(
+            f"[COMMENT {uid}] failed for channel {source_id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
 
 
 async def _handle_group_command(event, uid, text):
@@ -4650,10 +4807,15 @@ async def self_handle_outgoing(event, uid):
         try:
             result = await asyncio.wait_for(
                 _self_transcribe_reply(event, uid),
-                timeout=float(os.getenv("STT_TIMEOUT_SECONDS", "600")),
+                timeout=float(os.getenv("STT_TIMEOUT_SECONDS", "1200")),
             )
         except asyncio.TimeoutError:
-            result = "❌ تبدیل ویس به متن زمان‌بر شد؛ دوباره تلاش کن."
+            stt_state.pop(uid, None)
+            result = "❌ تبدیل ویس به متن بیش از حد طول کشید؛ دوباره تلاش کن."
+        except Exception as exc:
+            stt_state.pop(uid, None)
+            print(f"[SELF {uid}] STT command failed: {exc}")
+            result = "❌ تبدیل ویس به متن با خطا متوقف شد؛ دوباره تلاش کن."
         with contextlib.suppress(Exception):
             await event.edit(result, parse_mode="html")
         return
@@ -5052,9 +5214,12 @@ async def self_handle_outgoing(event, uid):
     reaction_match = re.fullmatch(r"ریاکشن(?:\s+(.+?))?", text)
     if reaction_match:
         emoji = (reaction_match.group(1) or "❤️").strip()
-        allowed = {"❤️","❤","🧡","💛","💚","💙","💜","🖤","🤍","🤎","🔥","✨","⭐","👍","👎","😂","🤣","😍","🥰","😎","😢","😡","👏","🙏","🎉","💯","⚡","🌹","😈","🕊"}
-        if emoji not in allowed:
-            await event.edit("❌ این ریاکشن پشتیبانی نمی‌شود. مثال: ریاکشن 🔥")
+        # Telegram's supported reaction set changes over time.  Never keep a
+        # small hard-coded whitelist here.  Accept the complete user-supplied
+        # emoji sequence and let Telegram validate whether it is a reaction.
+        emoji = re.sub(r"\\s+", "", emoji)
+        if not emoji or len(emoji) > 32:
+            await event.edit("❌ ایموجی ریاکشن نامعتبر است. مثال: ریاکشن 🔥")
             return
         if not event.is_reply:
             await event.edit("❌ روی پیام کاربر ریپلای کن و سپس «ریاکشن 🔥» را بفرست.")
@@ -5067,8 +5232,36 @@ async def self_handle_outgoing(event, uid):
         targets = self_reaction_targets(uid)
         targets.add(target)
         self_save_reaction_targets(uid, targets)
-        self_set_reaction(uid, target, "❤️" if emoji == "❤" else emoji)
-        await event.edit(f"✅ ریاکشن {emoji} برای کاربر `{target}` فعال شد.")
+        normalized_emoji = "❤️" if emoji == "❤" else emoji
+        self_set_reaction(uid, target, normalized_emoji)
+
+        # Validate immediately instead of waiting for the next incoming message.
+        try:
+            await _tg_call_with_flood_retry(
+                lambda: event.client(
+                    SendReactionRequest(
+                        peer=event.chat_id,
+                        msg_id=int(replied.id),
+                        reaction=[ReactionEmoji(emoticon=normalized_emoji)],
+                    )
+                ),
+                label="reaction test",
+                max_retries=3,
+            )
+        except Exception as exc:
+            # Keep the configuration only if Telegram accepts the reaction.
+            # Otherwise roll it back so a bad emoji cannot poison future jobs.
+            self_remove_reaction(uid, target)
+            await event.edit(
+                "❌ این ایموجی در ریاکشن‌های قابل‌استفاده تلگرام نیست یا "
+                f"تلگرام آن را نپذیرفت: {html.escape(str(exc))}"
+            )
+            return
+
+        await event.edit(
+            f"✅ ریاکشن {normalized_emoji} برای کاربر `{target}` فعال شد.\n"
+            "از این به بعد پیام‌های او با همین ریاکشن پاسخ داده می‌شوند."
+        )
         return
 
     if low in {"حذف ریاکشن", "ریاکشن خاموش", "حذف ریاکشن ❤️", "حذف ریاکشن + ریپلای"}:
@@ -5288,13 +5481,30 @@ async def self_handle_incoming(event, uid):
             await client.send_read_acknowledge(event.chat_id, max_id=event.id)
 
     if event.sender_id and int(event.sender_id) in self_reaction_targets(uid):
-        emoji = self_reaction_map(uid).get(int(event.sender_id), "❤️")
-        with contextlib.suppress(Exception):
-            await client(SendReactionRequest(
-                peer=event.peer_id,
-                msg_id=event.id,
-                reaction=[ReactionEmoji(emoticon=emoji)],
-            ))
+        target_sender = int(event.sender_id)
+        emoji = self_reaction_map(uid).get(target_sender, "❤️")
+        try:
+            await _tg_call_with_flood_retry(
+                lambda: client(SendReactionRequest(
+                    peer=event.peer_id,
+                    msg_id=event.id,
+                    reaction=[ReactionEmoji(emoticon=emoji)],
+                )),
+                label="automatic reaction",
+                max_retries=3,
+            )
+        except Exception as exc:
+            # A reaction can become unavailable after it was configured.
+            # Disable only that broken mapping instead of breaking all
+            # incoming-message processing.
+            print(
+                f"[REACTION {uid}] emoji {emoji!r} failed for {target_sender}: {exc}"
+            )
+            self_remove_reaction(uid, target_sender)
+            self_save_reaction_targets(
+                uid,
+                self_reaction_targets(uid) - {target_sender},
+            )
 
     if event.is_private and self_get(uid, SECRETARY_ENABLED_KEY, "off") == "on" and event.sender_id and int(event.sender_id) != int(uid):
         sender = int(event.sender_id)
