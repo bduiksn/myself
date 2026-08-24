@@ -635,127 +635,115 @@ def self_panel_text(uid):
 def self_guide_text(page=1):
     pages = [
         (
-            "📚 <b>راهنمای سلف</b>\n"
-            "<i>صفحه ۱ از ۸</i>\n\n"
-            "<blockquote>🧭 <b>شروع سریع</b>\n"
-            "این راهنما قابلیت‌ها را کوتاه و مرحله‌به‌مرحله توضیح می‌دهد.</blockquote>\n\n"
+            "📚 <b>راهنمای سلف • شروع سریع</b>\n"
+            "<i>صفحه ۱ از ۹</i>\n\n"
+            "<blockquote>🧭 همه قابلیت‌ها از پنل «سلف» در دسترس‌اند.\n"
+            "دستورها را دقیقاً مثل نمونه‌ها بنویس و اگر گفته شده، روی پیام موردنظر ریپلای کن.</blockquote>\n\n"
             "🕐 <b>ساعت روی نام</b>\n"
-            "فعال/غیرفعال‌کردن ساعت ایران روی نام پروفایل.\n\n"
+            "ساعت ایران را روی نام پروفایل روشن/خاموش می‌کند.\n\n"
             "🔤 <b>فونت ساعت</b>\n"
-            "ظاهر اعداد ساعت را از پنل تغییر بده.\n\n"
-            "🅱 <b>بولد</b>\n"
-            "برای پررنگ‌کردن متن‌های ارسالی.\n\n"
-            "🅵 <b>فونت فارسی</b>\n"
-            "برای ظاهر کشیده و متفاوت متن فارسی."
+            "با هر بار لمس، فونت ساعت عوض می‌شود و تغییر فوراً اعمال می‌شود.\n\n"
+            "🅱 <b>بولد</b> • 🅵 <b>فونت فارسی</b>\n"
+            "برای تغییر ظاهر متن‌های ارسالی استفاده می‌شوند."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
+            "📚 <b>راهنمای سلف • ظاهر و وضعیت</b>\n"
             "<i>صفحه ۲ از ۹</i>\n\n"
             "🌐 <b>ترجمه</b>\n"
-            "<blockquote>متن‌های ارسالی را به انگلیسی ترجمه می‌کند.</blockquote>\n\n"
+            "متن‌های ارسالی را به انگلیسی ترجمه می‌کند.\n\n"
+            "🔤 <b>فونت انگلیسی</b>\n"
+            "استایل حروف انگلیسی پیام‌های ارسالی را تغییر می‌دهد.\n\n"
             "👁 <b>سین</b>\n"
-            "پیام‌های دریافتی را به‌عنوان خوانده‌شده علامت می‌زند.\n\n"
+            "پیام‌های دریافتی را خوانده‌شده می‌کند.\n\n"
             "⌨️ <b>تایپینگ</b>\n"
-            "وضعیت تایپ‌کردن را در گفتگو نمایش می‌دهد.\n\n"
+            "وضعیت تایپ‌کردن را در گفتگو نشان می‌دهد.\n\n"
             "🎮 <b>حالت بازی</b>\n"
             "به‌جای تایپینگ، وضعیت بازی را نمایش می‌دهد."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
+            "📚 <b>راهنمای سلف • تبچی و ریاکشن</b>\n"
             "<i>صفحه ۳ از ۹</i>\n\n"
             "🤖 <b>تبچی</b>\n"
-            "پاسخ خودکار را روشن یا خاموش کن.\n\n"
-            "<code>تبچی متن سلام، فعلاً در دسترس نیستم.</code>\n"
-            "متن پاسخ خودکار را تغییر می‌دهد.\n\n"
+            "با دکمه «تبچی» پاسخ خودکار را روشن یا خاموش کن.\n\n"
+            "✏️ <b>تغییر متن تبچی</b>\n"
+            "این دستور را بفرست: \n"
+            "<code>تبچی متن سلام! الان در دسترسم.</code>\n"
+            "هر متنی بعد از «تبچی متن» نوشته شود، متن پاسخ خودکار می‌شود و تبچی هم فعال می‌شود.\n\n"
             "❤️ <b>ریاکشن خودکار</b>\n"
-            "<blockquote>روی پیام کاربر ریپلای کن و ریاکشن دلخواه را تنظیم کن.</blockquote>\n\n"
-            "<u>حذف ریاکشن</u> یا <u>ریاکشن خاموش</u>\n"
-            "تنظیم ریاکشن آن کاربر را پاک می‌کند."
+            "روی پیام کاربر ریپلای کن و دستور ریاکشن را بفرست تا برای همان کاربر تنظیم شود.\n"
+            "برای حذف تنظیم همان کاربر، «حذف ریاکشن» یا «ریاکشن خاموش» را استفاده کن."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
+            "📚 <b>راهنمای سلف • ویس و OCR</b>\n"
             "<i>صفحه ۴ از ۹</i>\n\n"
-            "🎙️ <b>ویس → متن</b>\n\n"
-            "<code>متن</code>\n"
-            "روی ویس یا فایل صوتی ریپلای کن.\n\n"
-            "<code>متن + ریپلی</code>\n"
-            "یا\n"
-            "<code>متن + ریپلای</code>\n"
-            "نتیجه را روی همان ویس ریپلای می‌کند.\n\n"
-            "✨ <i>برای فارسی، در صورت تنظیم API، موتور دقیق ابری استفاده می‌شود.</i>"
-        ),
-        (
-            "📚 <b>راهنمای سلف</b>\n"
-            "<i>صفحه ۵ از ۹</i>\n\n"
-            "🎵 <b>تبدیل رسانه</b>\n\n"
-            "<code>ویس به mp3</code>\n"
-            "ویس را به MP3 تبدیل می‌کند.\n\n"
-            "<code>mp3 به ویس</code>\n"
-            "MP3 را به ویس تلگرام تبدیل می‌کند.\n\n"
-            "<code>ویدیو به ویس</code>\n"
-            "صدای ویدیو را جدا و به‌صورت ویس ارسال می‌کند.\n\n"
-            "<code>ویدیو به mp3</code>\n"
-            "صدای ویدیو را به MP3 تبدیل می‌کند."
-        ),
-        (
-            "📚 <b>راهنمای سلف</b>\n"
-            "<i>صفحه ۶ از ۹</i>\n\n"
-            "📦 <b>استخراج آرشیو</b>\n\n"
-            "<code>unzip + ریپلی</code>\n"
-            "یا\n"
-            "<code>استخراج + ریپلای</code>\n\n"
-            "روی ZIP/RAR ریپلای کن.\n"
-            "فایل‌های استخراج‌شده یکی‌یکی ارسال می‌شوند.\n\n"
-            "📊 <b>پیشرفت</b>\n"
-            "<blockquote>نمایش درصد به‌صورت ساده و خلوت؛ بدون نوار شلوغ.</blockquote>\n\n"
+            "🎙️ <b>ویس → متن</b>\n"
+            "روی ویس یا فایل صوتی ریپلای کن و بنویس: <code>متن</code>\n\n"
+            "برای اینکه نتیجه روی همان ویس ریپلای شود: <code>متن + ریپلای</code>\n"
+            "یا <code>متن + ریپلی</code>\n\n"
             "🖼️ <b>OCR</b>\n"
             "روی تصویر ریپلای کن و <code>OCR</code> یا <code>او سی آر</code> بفرست."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
-            "<i>صفحه ۷ از ۹</i>\n\n"
-            "💾 <b>ذخیره چنل</b>\n"
-            "از پنل، «ذخیره چنل» را انتخاب کن و چنل خصوصی را انتخاب کن.\n\n"
-            "📢 فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n\n"
-            "🎯 <b>تعداد</b>\n"
-            "از ۱ تا ۱۰۰۰ مورد را انتخاب و «تأیید» کن.\n"
-            "بعد از تأیید، پیام انتخاب تعداد حذف می‌شود و یک پیام جدید برای وضعیت ذخیره‌سازی ساخته می‌شود؛ نوار پیشرفت فقط روی همان پیام جدید آپدیت می‌شود.\n\n"
-            "🗑️ <b>آرشیو حذف‌شده‌ها</b>\n"
-            "پیام‌های حذف‌شده در پیوی به‌صورت خودکار آرشیو می‌شوند."
+            "📚 <b>راهنمای سلف • تبدیل رسانه</b>\n"
+            "<i>صفحه ۵ از ۹</i>\n\n"
+            "🎵 <b>دستورها</b>\n"
+            "<code>ویس به mp3</code> → ویس را به MP3 تبدیل می‌کند.\n"
+            "<code>mp3 به ویس</code> → MP3 را به ویس تلگرام تبدیل می‌کند.\n"
+            "<code>ویدیو به ویس</code> → صدای ویدیو را به ویس تبدیل می‌کند.\n"
+            "<code>ویدیو به mp3</code> → صدای ویدیو را به MP3 تبدیل می‌کند.\n\n"
+            "📌 برای تبدیل، دستور را روی فایل موردنظر ریپلای کن."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
+            "📚 <b>راهنمای سلف • فایل و پاکسازی</b>\n"
+            "<i>صفحه ۶ از ۹</i>\n\n"
+            "📦 <b>استخراج ZIP/RAR</b>\n"
+            "روی فایل ZIP/RAR ریپلای کن و <code>unzip + ریپلی</code> یا <code>استخراج + ریپلای</code> بفرست.\n\n"
+            "📥 <b>دانلود</b>\n"
+            "روی پیام موردنظر ریپلای کن و <code>دانلود</code> بفرست.\n\n"
+            "🧹 <b>پاکسازی</b>\n"
+            "از پنل، نوع پاکسازی را انتخاب کن؛ هر بخش مستقل اجرا می‌شود.\n\n"
+            "🔒 <b>قفل چت</b>\n"
+            "روی پیام کاربر ریپلای کن و <code>قفل چت</code> بفرست."
+        ),
+        (
+            "📚 <b>راهنمای سلف • ذخیره چنل</b>\n"
+            "<i>صفحه ۷ از ۹</i>\n\n"
+            "💾 <b>ذخیره چنل، مرحله‌به‌مرحله</b>\n"
+            "۱) از پنل «💾 ذخیره چنل» را بزن.\n"
+            "۲) فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
+            "۳) کانال را انتخاب کن.\n"
+            "۴) نوع مدیا را انتخاب کن: تصویر، ویدیو، موسیقی، ویس، متن یا همه.\n"
+            "۵) تعداد را با کیپد انتخاب کن؛ از <b>۱ تا ۱۰۰۰</b>.\n"
+            "۶) «✅ تأیید» را بزن.\n\n"
+            "🚀 بعد از تأیید، پیام انتخاب تعداد حذف می‌شود و یک پیام جدید با نوار پیشرفت ساخته می‌شود؛ ذخیره در Saved Messages انجام می‌شود و نتیجه در همان پیام جدید نمایش داده می‌شود."
+        ),
+        (
+            "📚 <b>راهنمای سلف • ارز و لوگو</b>\n"
             "<i>صفحه ۸ از ۹</i>\n\n"
             "💱 <b>نرخ ارز</b>\n"
-            "<code>قیمت BTC</code>\n"
-            "<code>قیمت ETH</code>\n"
-            "<code>قیمت SOL</code>\n"
-            "<code>قیمت USDT</code>\n"
-            "قیمت لحظه‌ای از سرویس عمومی بدون API Key دریافت می‌شود.\n\n"
+            "قیمت لحظه‌ای را با این دستورها بگیر: \n"
+            "<code>قیمت BTC</code> • <code>قیمت ETH</code> • <code>قیمت SOL</code> • <code>قیمت USDT</code>\n\n"
             "🎨 <b>لوگوساز</b>\n"
-            "<code>لوگو 12 HusteRIX</code>\n"
-            "۱۲ قالب داخلی و رایگان.\n\n"
+            "نمونه: <code>لوگو 12 HusteRIX</code>\n"
+            "۱۲ قالب داخلی برای ساخت لوگو در نظر گرفته شده است."
         ),
         (
-            "📚 <b>راهنمای سلف</b>\n"
+            "📚 <b>راهنمای سلف • تاس و سرگرمی</b>\n"
             "<i>صفحه ۹ از ۹</i>\n\n"
-            "🧹 <b>پاکسازی</b>\n"
-            "چت‌ها، گپ‌ها، کانال‌ها، مخاطبین و ربات‌ها را جداگانه پاکسازی کن.\n\n"
-            "🔒 <b>قفل چت</b>\n"
-            "روی پیام کاربر ریپلای کن و <code>قفل چت</code> بفرست.\n\n"
-            "💎 <b>انتقال الماس</b>\n"
-            "<code>انتقال ۵۰۰</code>\n\n"
             "🎲 <b>تاس</b>\n"
-            "مقدار تاس را مشخص کن: <code>تاس ۱</code> تا <code>تاس ۶</code>\n\n"
-            "🎭 <b>سرگرمی</b>\n"
-            "همه دستورهای سرگرمی روی پیام کاربر و با ریپلای اجرا می‌شوند:\n"
-            "<code>هک</code> • <code>گلیچ</code> • <code>ماتریکس</code> • <code>اسکن</code> • <code>زیبایی</code>\n"
-            "پیام دستور بعد از اجرا خودکار حذف می‌شود. 😈\n\n"
-            "<blockquote>✨ برای برگشت به پنل، دکمه «بازگشت» را بزن.</blockquote>"
+            "دستورهای مجاز: <code>تاس ۱</code> تا <code>تاس ۶</code>\n"
+            "عدد انتخابی با تاس واقعی تلگرام تولید می‌شود.\n\n"
+            "🎭 <b>هک نمایشی</b>\n"
+            "روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.\n"
+            "پیام دستور حذف می‌شود و یک سناریوی هک کاملاً نمایشی با نوار پیشرفت نمایش داده می‌شود.\n\n"
+            "💎 <b>انتقال الماس</b>\n"
+            "نمونه: <code>انتقال ۵۰۰</code>\n\n"
+            "<blockquote>✨ برای برگشت، دکمه «🔙 بازگشت» را بزن.</blockquote>"
         ),
     ]
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
+
 
 def self_guide_buttons(uid, page=1):
     total_pages = 9
@@ -1496,37 +1484,21 @@ async def handle_self_panel_callback(event):
                 return True
 
             operation_id = secrets.token_hex(12)
-            # HARD UI BOUNDARY:
-            # The old inline/count message is deleted first. From this point on,
-            # every progress update belongs to a completely NEW message sent by
-            # the logged-in self account. No edit of the old panel is possible.
-            target_chat_id = getattr(event, "chat_id", None)
-            if target_chat_id is None:
-                target_chat_id = uid
-            target_chat_id = int(target_chat_id)
 
-            try:
-                # Delete the old bot/inline panel. Try both callback deletion and
-                # normal bot deletion because inline callbacks vary by Telegram
-                # client/version.
-                with contextlib.suppress(Exception):
-                    await event.delete()
-                with contextlib.suppress(Exception):
-                    if getattr(event, "message_id", None) is not None:
-                        await bot.delete_messages(target_chat_id, int(event.message_id))
-            except Exception as exc:
-                print(f"[CHANNEL_SAVE UI] old panel deletion warning: {exc}")
+            # The old keypad/panel message is deliberately NOT reused.
+            # Create a fresh message with the self account; this message is the
+            # only UI that the long-running save operation is allowed to edit.
+            target_chat = getattr(event, "chat_id", None)
+            if target_chat is None:
+                peer = getattr(event, "peer_id", None)
+                channel_peer_id = getattr(peer, "channel_id", None)
+                if channel_peer_id is not None:
+                    target_chat = -1000000000000 - int(channel_peer_id)
+                else:
+                    target_chat = getattr(peer, "user_id", None) or getattr(peer, "chat_id", None)
 
-            try:
-                progress_message = await client.send_message(
-                    target_chat_id,
-                    "⏳ <b>در حال آماده‌سازی ذخیره‌سازی…</b>",
-                    parse_mode="html",
-                )
-            except Exception as exc:
-                print(f"[CHANNEL_SAVE UI] fresh progress message failed: {exc}")
-                self_clear_channel_save_state(uid)
-                await safe_answer(event, "❌ ارسال پیام جدید برای شروع ذخیره‌سازی ناموفق بود.", True)
+            if target_chat is None:
+                await safe_answer(event, "❌ مقصد پیام پیشرفت پیدا نشد.", True)
                 return True
 
             state.update({
@@ -1537,18 +1509,36 @@ async def handle_self_panel_callback(event):
                 "channel_id": int(state["channel_id"]),
                 "channel_access_hash": state.get("channel_access_hash"),
                 "channel_title": str(state.get("channel_title") or "چنل"),
-                "progress_chat_id": target_chat_id,
-                "progress_message_id": int(progress_message.id),
+                "progress_chat_id": int(target_chat),
+                "progress_message_id": None,
                 "processing_started": time.time(),
                 "operation_id": operation_id,
             })
-            # Explicitly remove every legacy UI identity so an old state can never
-            # route a later update back to the deleted inline message.
-            for legacy_key in ("panel_chat_id", "panel_message_id", "inline_message_id"):
-                state.pop(legacy_key, None)
 
-            self_set_channel_save_state(uid, state)
-            worker_state = dict(state)
+            try:
+                progress_message = await client.send_message(
+                    int(target_chat),
+                    "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
+                    parse_mode="html",
+                )
+                state["progress_message_id"] = int(progress_message.id)
+                self_set_channel_save_state(uid, state)
+                worker_state = dict(state)
+
+                # Delete the old keypad/panel completely. If one Telegram API
+                # path refuses, the second path is attempted as a fallback.
+                with contextlib.suppress(Exception):
+                    await event.delete()
+                if getattr(event, "chat_id", None) is not None and getattr(event, "message_id", None) is not None:
+                    with contextlib.suppress(Exception):
+                        await bot.delete_messages(int(event.chat_id), int(event.message_id))
+
+            except Exception as exc:
+                print(f"[CHANNEL_SAVE UI] failed to create replacement message: {exc}")
+                if self_channel_save_state(uid).get("operation_id") == operation_id:
+                    self_clear_channel_save_state(uid)
+                await safe_answer(event, "❌ شروع ذخیره‌سازی ناموفق بود.", True)
+                return True
 
             task = asyncio.create_task(
                 _channel_save_worker(
@@ -1605,6 +1595,9 @@ async def handle_self_panel_callback(event):
             "step": "count",
             "media": media_kind,
             "count_input": "0",
+            "panel_chat_id": (int(event.chat_id) if getattr(event, "chat_id", None) is not None else None),
+            "panel_message_id": (int(event.message_id) if getattr(event, "message_id", None) is not None else None),
+            "inline_message_id": _serialize_inline_message_id(_event_inline_message_id(event)),
         })
         self_set_channel_save_state(uid, state)
         await event.edit(
@@ -2218,41 +2211,31 @@ def _channel_count_text(state):
     )
 
 
-def _channel_progress_text(
-    percent,
-    label="در حال ذخیره…",
-    processed=None,
-    total=None,
-    successful=None,
-    failed=None,
-):
+def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None, successful=None, failed=None):
     percent = max(0, min(100, int(percent)))
-    slots = 20
+    slots = 10
     filled = round(slots * percent / 100)
     bar = "▰" * filled + "▱" * (slots - filled)
-    progress = f"💾 <b>{percent}%</b> <code>{bar}</code>"
+    progress = f"💾 <b>{percent}%</b> {bar}"
     if total is not None:
-        progress += f"\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
+        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
+    counts = ""
     if successful is not None or failed is not None:
-        progress += f"  •  ✅ {int(successful or 0)}   ❌ {int(failed or 0)}"
-    return f"{progress}\n\n<i>{html.escape(label)}</i>"
+        counts = f"  •  ✅{int(successful or 0)} ❌{int(failed or 0)}"
+    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
 
 
-async def _channel_progress_edit(client, state, text, buttons=None, *, retries=3):
-    """
-    Edit ONLY the fresh message created for the current save operation.
-
-    Important:
-    - The old inline panel is never edited after confirmation.
-    - The progress message belongs to the logged-in self client.
-    - No inline-message identity is used here.
-    """
+async def _channel_save_ui_edit(state, text, buttons=None, *, retries=2, client=None):
+    """Edit the NEW progress message only. Never edit the old channel panel."""
+    client = client or self_clients.get(int(state.get("uid", 0)))
     chat_id = state.get("progress_chat_id")
     message_id = state.get("progress_message_id")
-    if chat_id is None or message_id is None:
+    uid = state.get("uid", "?")
+
+    if client is None or chat_id is None or message_id is None:
         raise RuntimeError(
-            f"channel-save progress message identity missing: "
-            f"chat_id={chat_id} message_id={message_id}"
+            f"channel-save progress identity missing: chat_id={chat_id} "
+            f"message_id={message_id} client={bool(client)}"
         )
 
     last_exc = None
@@ -2266,56 +2249,60 @@ async def _channel_progress_edit(client, state, text, buttons=None, *, retries=3
                     parse_mode="html",
                     buttons=buttons,
                 ),
-                label=f"channel-save progress edit uid={state.get('uid', '?')}",
+                label=f"channel-save progress edit uid={uid}",
             )
             return True
         except Exception as exc:
             last_exc = exc
             print(
-                f"[CHANNEL_SAVE UI] progress edit failed: "
-                f"uid={state.get('uid', '?')} chat_id={chat_id} "
-                f"message_id={message_id} attempt={attempt + 1} error={exc}"
+                f"[CHANNEL_SAVE UI] progress edit failed: uid={uid} "
+                f"chat_id={chat_id} message_id={message_id} "
+                f"attempt={attempt + 1}/{max(1, int(retries))} error={exc}"
             )
             if attempt + 1 < max(1, int(retries)):
-                await asyncio.sleep(0.2)
-
+                await asyncio.sleep(0.15)
     raise last_exc
 
 
+def _channel_progress_text(
+    percent,
+    label="در حال ذخیره…",
+    processed=None,
+    total=None,
+    successful=None,
+    failed=None,
+):
+    percent = max(0, min(100, int(percent)))
+    slots = 12
+    filled = round(slots * percent / 100)
+    bar = "▰" * filled + "▱" * (slots - filled)
+    progress = f"💾 <b>{percent}%</b> <code>{bar}</code>"
+    if total is not None:
+        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
+    counts = ""
+    if successful is not None or failed is not None:
+        counts = f"  •  ✅{int(successful or 0)}  ❌{int(failed or 0)}"
+    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
+
+
 class _ChannelProgressController:
-    """
-    Owns the NEW progress message for one channel-save operation.
+    """Owns the replacement progress message created after confirmation."""
 
-    This intentionally has no knowledge of the original panel/inline message.
-    The original panel is deleted before the worker starts.
-    """
-
-    def __init__(self, client, state, *, min_interval=0.55):
-        self.client = client
+    def __init__(self, state, client, *, min_interval=0.5):
         self.state = state
+        self.client = client
         self.min_interval = float(min_interval)
         self.last_edit = 0.0
         self.last_percent = None
-        self.last_processed = -1
-        self.last_successful = -1
         self.last_failed = -1
 
     async def edit(self, text, buttons=None):
-        return await _channel_progress_edit(
-            self.client,
-            self.state,
-            text,
-            buttons=buttons,
+        return await _channel_save_ui_edit(
+            self.state, text, buttons=buttons, client=self.client
         )
 
     async def update(
-        self,
-        processed,
-        total,
-        *,
-        successful=0,
-        failed=0,
-        force=False,
+        self, processed, total, *, successful=0, failed=0, force=False,
         label="در حال ذخیره…",
     ):
         total = max(0, int(total))
@@ -2325,33 +2312,22 @@ class _ChannelProgressController:
         now = time.monotonic()
 
         important = (
-            force
-            or processed == 0
-            or processed == 1
-            or (total > 0 and processed == total)
-            or failed != self.last_failed
+            force or processed == 0 or processed == 1 or
+            (total > 0 and processed == total) or failed != self.last_failed
         )
         if not important:
-            if percent == self.last_percent:
-                return
-            if (now - self.last_edit) < self.min_interval:
+            if percent == self.last_percent or (now - self.last_edit) < self.min_interval:
                 return
 
         await self.edit(
             _channel_progress_text(
-                percent,
-                label=label,
-                processed=processed,
-                total=total,
-                successful=successful,
-                failed=failed,
+                percent, label=label, processed=processed, total=total,
+                successful=successful, failed=failed,
             ),
             buttons=None,
         )
         self.last_edit = time.monotonic()
         self.last_percent = percent
-        self.last_processed = processed
-        self.last_successful = successful
         self.last_failed = failed
 
     async def phase(self, text):
@@ -2361,50 +2337,48 @@ class _ChannelProgressController:
     async def finish(self, *, successful, failed, requested, available):
         if available <= 0:
             await self.edit(
-                "❌ <b>مدیای قابل ذخیره پیدا نشد.</b>\n\n"
-                "موردی مطابق نوع مدیا و تعداد انتخاب‌شده پیدا نشد.",
-                buttons=None,
+                "❌ <b>مدیای قابل ذخیره پیدا نشد.</b>",
+                buttons=[[btn("🔙 بازگشت به پنل", _self_cb(int(self.state["uid"]), "panel"), "primary")]],
             )
             return
 
-        # The terminal 100% state is always visible before the summary.
         await self.update(
-            available,
-            available,
-            successful=successful,
-            failed=failed,
-            force=True,
-            label="ذخیره کامل شد",
+            available, available, successful=successful, failed=failed,
+            force=True, label="ذخیره کامل شد",
         )
 
         if successful == requested and failed == 0 and available >= requested:
             text = (
                 "✅ <b>ذخیره مدیا تکمیل شد</b>\n\n"
-                f"📦 درخواست: <b>{requested}</b>\n"
-                f"✅ موفق: <b>{successful}</b>\n"
-                f"❌ ناموفق: <b>{failed}</b>"
+                f"📦 درخواست: {requested}\n"
+                f"✅ موفق: {successful}\n"
+                f"❌ ناموفق: {failed}"
             )
         else:
             text = (
                 "⚠️ <b>ذخیره مدیا تکمیل شد</b>\n\n"
-                f"📦 درخواست: <b>{requested}</b>\n"
-                f"✅ موفق: <b>{successful}</b>\n"
-                f"❌ ناموفق: <b>{failed}</b>"
+                f"📦 درخواست: {requested}\n"
+                f"✅ موفق: {successful}\n"
+                f"❌ ناموفق: {failed}"
             )
             if available < requested:
-                text += f"\nℹ️ مدیای پیدا شده: <b>{available}</b>"
+                text += f"\nℹ️ مدیای پیدا شده: {available}"
 
-        await self.edit(text, buttons=None)
+        await self.edit(
+            text,
+            buttons=[[btn("🔙 بازگشت به پنل", _self_cb(int(self.state["uid"]), "panel"), "primary")]],
+        )
 
 
-async def _channel_progress_done(client, state, *, successful, failed, requested, available):
-    controller = _ChannelProgressController(client, state)
+async def _channel_progress_done(state, *, successful, failed, requested, available):
+    controller = _ChannelProgressController(state, self_clients.get(int(state.get("uid", 0))))
     await controller.finish(
         successful=successful,
         failed=failed,
         requested=requested,
         available=available,
     )
+
 
 
 async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
@@ -2684,7 +2658,7 @@ async def _channel_save_worker(client, uid, state, count, operation_id):
     All heavy Telegram work happens here, so the callback never freezes
     while channel history/media is being processed.
     """
-    controller = _ChannelProgressController(client, state)
+    controller = _ChannelProgressController(state, client)
     current_task = asyncio.current_task()
 
     async def progress(processed, total, *, successful=0, failed=0,
@@ -3758,256 +3732,100 @@ async def _self_logo_command(event, uid, text):
     return True
 
 
-async def _entertainment_prepare(event, command):
-    """Delete the command and create a fresh message for the animation."""
+async def _fake_hack_prank(event, uid):
+    """Purely visual entertainment; no real access or data operations occur."""
+    chat_id = event.chat_id
+
     if not event.is_reply:
         with contextlib.suppress(Exception):
-            await event.edit(
-                f"🎭 <b>سرگرمی</b>\n\n"
-                f"روی پیام یک کاربر ریپلای کن و <code>{html.escape(command)}</code> را بفرست.",
-                parse_mode="html",
-            )
-        return None, None
+            await event.delete()
+        await event.client.send_message(
+            chat_id,
+            "🎭 <b>سرگرمی</b>\n\nبرای اجرای هک، روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.",
+            parse_mode="html",
+        )
+        return
 
     replied = await event.get_reply_message()
     if not replied:
         with contextlib.suppress(Exception):
-            await event.edit("❌ پیام هدف پیدا نشد.", parse_mode="html")
-        return None, None
+            await event.delete()
+        await event.client.send_message(
+            chat_id,
+            "❌ پیام هدف پیدا نشد؛ روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.",
+            parse_mode="html",
+        )
+        return
 
-    # The typed command must disappear immediately.
+    # The command itself should disappear; the target message remains untouched.
     with contextlib.suppress(Exception):
         await event.delete()
 
-    try:
-        animation_message = await event.client.send_message(
-            event.chat_id,
-            "⏳ <b>در حال آماده‌سازی…</b>",
-            parse_mode="html",
-        )
-    except Exception as exc:
-        print(f"[ENTERTAINMENT] fresh message failed: {exc}")
-        return replied, None
-
-    return replied, animation_message
-
-
-async def _target_label(event, replied):
-    try:
-        sender = await event.client.get_entity(int(replied.sender_id))
-        username = getattr(sender, "username", None)
-        if username:
-            return f"@{username}"
-        name = getattr(sender, "first_name", None) or getattr(sender, "title", None) or "TARGET"
-        return str(name)[:30]
-    except Exception:
-        return "TARGET"
-
-
-async def _fake_hack_prank(event, uid):
-    replied, animation_message = await _entertainment_prepare(event, "هک")
-    if not replied or not animation_message:
-        return
-
-    target = await _target_label(event, replied)
     stages = [
-        "INITIALIZING SECURE CHANNEL",
-        "RESOLVING TARGET SIGNATURE",
-        "BYPASSING FIREWALL LAYER",
-        "NEGOTIATING ACCESS TOKEN",
-        "ENUMERATING DATA NODES",
-        "DECRYPTING INDEX TABLES",
-        "MOUNTING ARCHIVE SHARDS",
-        "EXTRACTING TARGET RECORDS",
-        "VERIFYING INTEGRITY HASH",
-        "COMPRESSING SECURE ARCHIVE",
-        "FINALIZING TRANSFER",
+        "INITIALIZING SECURE CHANNEL...",
+        "RESOLVING TARGET SESSION...",
+        "BYPASSING FIREWALL...",
+        "NEGOTIATING ENCRYPTED HANDSHAKE...",
+        "ENUMERATING DATABASE NODES...",
+        "VERIFYING ACCESS TOKENS...",
+        "MOUNTING ARCHIVE INDEX...",
+        "DECRYPTING RECORD MAP...",
+        "EXTRACTING RECORD BLOCKS...",
+        "REBUILDING DATA SHARDS...",
+        "COMPRESSING ARCHIVE...",
+        "FINALIZING SECURE TRANSFER...",
     ]
+    slots = 14
     started = time.monotonic()
-    total_steps = 16
 
-    for step in range(total_steps):
-        percent = min(99, int((step + 1) * 99 / total_steps))
-        filled = round(18 * percent / 100)
-        bar = "▰" * filled + "▱" * (18 - filled)
-        stage = stages[min(step, len(stages) - 1)]
+    # Keep this explicitly simulated: the loop only edits a normal Telegram
+    # message and performs no network/database/file access beyond Telegram.
+    status_message = await event.client.send_message(
+        chat_id,
+        "🛰️ <b>HACKING TARGET</b>\n\n<code>▱" + "▱" * (slots - 1) + "</code> <b>0%</b>\n\n<i>INITIALIZING SECURE CHANNEL...</i>",
+        parse_mode="html",
+        reply_to=int(replied.id),
+    )
+
+    for step in range(len(stages)):
+        percent = min(99, int(((step + 1) / len(stages)) * 99))
+        filled = round(slots * percent / 100)
+        bar = "▰" * filled + "▱" * (slots - filled)
         elapsed = time.monotonic() - started
-        remaining = max(0.0, 16.0 - elapsed)
+        remaining = max(0.0, 12.0 - elapsed)
         text = (
-            "🛰️ <b>HACKING ALL DATABASES</b>\n\n"
-            f"🎯 TARGET: <code>{html.escape(target)}</code>\n"
+            "🛰️ <b>HACKING TARGET</b>\n\n"
             f"<code>{bar}</code> <b>{percent}%</b>\n\n"
-            f"▸ <b>{stage}</b>\n"
-            f"▸ CHANNEL: <code>ENCRYPTED</code>\n"
-            f"▸ TRACE: <code>MASKED</code>\n"
-            f"▸ ETA: <code>{remaining:04.1f}s</code>"
+            f"<code>NODE: {step + 1:02d}/{len(stages):02d}</code>\n"
+            f"<i>{stages[step]}</i>\n"
+            f"<code>ETA {remaining:04.1f}s</code>"
         )
         with contextlib.suppress(Exception):
-            await event.client.edit_message(
-                event.chat_id,
-                event.id,
-                text,
-                parse_mode="html",
-            )
+            await status_message.edit(text, parse_mode="html")
         await asyncio.sleep(1.0)
 
     size_gb = round(random.uniform(18.0, 42.0), 2)
-    file_name = f"system_archive_{secrets.token_hex(3).upper()}_{size_gb:.2f}GB.zip"
+    size_text = f"{size_gb:.2f}GB"
+    file_name = f"target_archive_{size_gb:.2f}GB.zip"
     final_text = (
-        "🟢 <b>HACKING ALL DATABASES</b>\n\n"
+        "🟢 <b>ACCESS SEQUENCE COMPLETE</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
+        "✓ TARGET IDENTIFIED\n"
         "✓ FIREWALL BYPASSED\n"
-        "✓ TARGET SIGNATURE LOCKED\n"
-        "✓ DATABASE NODES ACCESSED\n"
-        "✓ ACCESS TOKENS VERIFIED\n"
-        "✓ RECORDS EXTRACTED\n"
-        "✓ INTEGRITY HASH VERIFIED\n"
-        "✓ ARCHIVE SEALED\n"
-        "✓ TRANSFER COMPLETE\n"
+        "✓ ENCRYPTED SESSION OPENED\n"
+        "✓ DATABASE INDEX MAPPED\n"
+        "✓ RECORD BLOCKS EXTRACTED\n"
+        "✓ ARCHIVE ASSEMBLED\n"
+        "✓ TRANSFER CHANNEL CLOSED\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🎯 <b>TARGET:</b> <code>{html.escape(target)}</code>\n"
-        f"📦 <b>ARCHIVE:</b> <code>{file_name}</code>\n"
-        f"💾 <b>SIZE:</b> <code>{size_gb:.2f} GB</code>\n"
-        "🔐 <b>STATUS:</b> <code>ACCESS GRANTED</code>\n"
-        "📡 <b>CHANNEL:</b> <code>SECURE / HIDDEN</code>\n"
-        "⚠️ <b>TRACE:</b> <code>0.00%</code>"
+        "<b>STATUS:</b> <code>SUCCESS</code>\n"
+        f"<b>ARCHIVE:</b> <code>{file_name}</code>\n"
+        f"<b>SIZE:</b> <code>{size_text}</code>\n"
+        "<b>INTEGRITY:</b> <code>100%</code>\n"
+        "<b>SESSION:</b> <code>TERMINATED</code>"
     )
     with contextlib.suppress(Exception):
-        await event.client.edit_message(event.chat_id, animation_message.id, final_text, parse_mode="html")
-
-
-async def _fake_glitch_prank(event, uid):
-    replied, animation_message = await _entertainment_prepare(event, "گلیچ")
-    if not replied or not animation_message:
-        return
-    target = await _target_label(event, replied)
-    frames = [
-        "█▒▒▒▒▒▒▒▒▒ 09%  SIGNAL DESYNC",
-        "██▒▒▒▒▒▒▒▒ 18%  MEMORY SHIFT",
-        "████▒▒▒▒▒▒ 37%  FRAME CORRUPTION",
-        "██████▒▒▒▒ 61%  DISPLAY OVERRIDE",
-        "████████▒▒ 83%  SYSTEM GLITCH",
-        "██████████ 100%  REALITY_PATCHED",
-    ]
-    for frame in frames:
-        with contextlib.suppress(Exception):
-            await event.client.edit_message(
-                event.chat_id, animation_message.id,
-                f"🧬 <b>GLITCH ENGINE</b>\n\n"
-                f"🎯 TARGET: <code>{html.escape(target)}</code>\n"
-                f"<code>{frame}</code>\n\n"
-                "<i>rebuilding visual layer…</i>",
-                parse_mode="html",
-            )
-        await asyncio.sleep(0.45)
-    with contextlib.suppress(Exception):
-        await event.client.edit_message(
-            event.chat_id, animation_message.id,
-            f"✨ <b>GLITCH COMPLETE</b>\n\n"
-            f"🎯 <code>{html.escape(target)}</code>\n"
-            "Visual layer restored.",
-            parse_mode="html",
-        )
-
-
-async def _fake_matrix_prank(event, uid):
-    replied, animation_message = await _entertainment_prepare(event, "ماتریکس")
-    if not replied or not animation_message:
-        return
-    target = await _target_label(event, replied)
-    frames = [
-        "010101 110001 001011",
-        "110010 001101 111000",
-        "001111 101010 010101",
-        "101101 011010 110011",
-        "011001 111100 001110",
-        "100000 010101 111111",
-    ]
-    for i, code in enumerate(frames, 1):
-        with contextlib.suppress(Exception):
-            await event.client.edit_message(
-                event.chat_id, animation_message.id,
-                "🟩 <b>MATRIX STREAM</b>\n\n"
-                f"TARGET :: <code>{html.escape(target)}</code>\n\n"
-                f"<code>{code}\n{code[::-1]}\n{code[3:]} {i:02d}</code>\n\n"
-                "<i>decrypting visual stream…</i>",
-                parse_mode="html",
-            )
-        await asyncio.sleep(0.5)
-    with contextlib.suppress(Exception):
-        await event.client.edit_message(
-            event.chat_id, animation_message.id,
-            f"🟩 <b>MATRIX STREAM LOCKED</b>\n\nTARGET: <code>{html.escape(target)}</code>",
-            parse_mode="html",
-        )
-
-
-async def _fake_scan_prank(event, uid):
-    replied, animation_message = await _entertainment_prepare(event, "اسکن")
-    if not replied or not animation_message:
-        return
-    target = await _target_label(event, replied)
-    checks = [
-        "IDENTITY", "MESSAGES", "MEDIA", "LINKS",
-        "ACTIVITY", "NETWORK", "PROFILE", "FINAL HASH",
-    ]
-    for i, check in enumerate(checks, 1):
-        percent = int(i * 100 / len(checks))
-        bar = "█" * i + "░" * (len(checks) - i)
-        with contextlib.suppress(Exception):
-            await event.client.edit_message(
-                event.chat_id, animation_message.id,
-                "🔎 <b>TARGET SCANNER</b>\n\n"
-                f"TARGET: <code>{html.escape(target)}</code>\n"
-                f"<code>{bar}</code> {percent}%\n\n"
-                f"✓ {check} CHECKED",
-                parse_mode="html",
-            )
-        await asyncio.sleep(0.55)
-    with contextlib.suppress(Exception):
-        await event.client.edit_message(
-            event.chat_id, animation_message.id,
-            "🔎 <b>SCAN COMPLETE</b>\n\n"
-            f"TARGET: <code>{html.escape(target)}</code>\n"
-            "SIGNAL: <code>STABLE</code>\n"
-            "VISUAL REPORT: <code>GENERATED</code>",
-            parse_mode="html",
-        )
-
-
-async def _fake_beauty_prank(event, uid):
-    replied, animation_message = await _entertainment_prepare(event, "زیبایی")
-    if not replied or not animation_message:
-        return
-    target = await _target_label(event, replied)
-    frames = [
-        "◌  LOADING BEAUTY ENGINE",
-        "◌  BALANCING LIGHT",
-        "◌  TUNING CONTRAST",
-        "◌  SMOOTHING DETAILS",
-        "◌  ADDING CINEMATIC GLOW",
-        "✦  FINAL LOOK READY",
-    ]
-    for i, frame in enumerate(frames, 1):
-        stars = "✦" * i
-        with contextlib.suppress(Exception):
-            await event.client.edit_message(
-                event.chat_id, animation_message.id,
-                "💎 <b>BEAUTY ENGINE</b>\n\n"
-                f"👤 TARGET: <code>{html.escape(target)}</code>\n\n"
-                f"{frame}\n"
-                f"<code>{stars}</code>",
-                parse_mode="html",
-            )
-        await asyncio.sleep(0.55)
-    with contextlib.suppress(Exception):
-        await event.client.edit_message(
-            event.chat_id, animation_message.id,
-            "💎 <b>BEAUTY ENGINE COMPLETE</b>\n\n"
-            f"👤 <code>{html.escape(target)}</code>\n"
-            "✨ CINEMATIC MODE: <code>ON</code>",
-            parse_mode="html",
-        )
+        await status_message.edit(final_text, parse_mode="html")
 
 
 async def self_handle_outgoing(event, uid):
@@ -4132,18 +3950,8 @@ async def self_handle_outgoing(event, uid):
             )
         return
 
-    # Entertainment commands. All are reply-based and the command message
-    # itself is removed before the visual animation starts.
-    entertainment = {
-        "هک": _fake_hack_prank,
-        "گلیچ": _fake_glitch_prank,
-        "ماتریکس": _fake_matrix_prank,
-        "اسکن": _fake_scan_prank,
-        "زیبایی": _fake_beauty_prank,
-    }
-    prank_handler = entertainment.get(low)
-    if prank_handler is not None:
-        await prank_handler(event, uid)
+    if low == "هک":
+        await _fake_hack_prank(event, uid)
         return
 
     if low == "پنل":
