@@ -2083,17 +2083,16 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
-    if action == "comment_setup":
-        # Real panel entry: let the SELF account choose an actual broadcast
-        # channel from its dialogs instead of relying on a manually typed ID.
+    if action == "comment_setup" or action.startswith("comment_page:"):
+        # IMPORTANT: Telegram has a hard limit on the size of inline reply
+        # markup.  Never render every channel in one keyboard.  Paginate the
+        # list so large accounts can never hit "data embedded in reply markup
+        # buttons was too much".
         try:
-            # IMPORTANT: this callback is handled by the BOT client, but the
-            # channel list belongs to the logged-in SELF account. Using
-            # event.client here returns the bot's dialogs and can make the
-            # channel list fail even when SELF is correctly configured.
-            client = self_clients.get(uid)
+            client = self_clients.get(int(uid))
             if client is None:
-                raise RuntimeError("SELF client is not active")
+                raise RuntimeError("SELF session is not connected")
+
             channels = await _cs_channels(client)
             if not channels:
                 await event.edit(
@@ -2102,29 +2101,59 @@ async def handle_self_panel_callback(event):
                     buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]],
                 )
                 return True
+
+            try:
+                page = int(action.split(":", 1)[1]) if action.startswith("comment_page:") else 0
+            except Exception:
+                page = 0
+
+            page_size = 8
+            total_pages = max(1, (len(channels) + page_size - 1) // page_size)
+            page = max(0, min(page, total_pages - 1))
+            start = page * page_size
+            current = channels[start:start + page_size]
+
             rows = []
-            for item in channels:
-                title = html.escape(item["title"][:45])
-                rows.append([btn(f"📢 {title}", _self_cb(uid, f"comment_channel:{item['id']}"), "primary")])
+            for item in current:
+                title = html.escape(item["title"][:42])
+                # Keep callback data tiny: the channel id is enough.
+                rows.append([
+                    btn(f"📢 {title}", _self_cb(uid, f"comment_channel:{item['id']}"), "primary")
+                ])
+
+            nav = []
+            if page > 0:
+                nav.append(btn("⬅️ قبلی", _self_cb(uid, f"comment_page:{page-1}"), "primary"))
+            if page < total_pages - 1:
+                nav.append(btn("➡️ بعدی", _self_cb(uid, f"comment_page:{page+1}"), "primary"))
+            if nav:
+                rows.append(nav)
+
             rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")])
+
             await event.edit(
                 "💬 <b>تنظیم کامنت اول</b>\n\n"
-                "کانال موردنظر را از لیست واقعی کانال‌های SELF انتخاب کن:",
-                parse_mode="html", buttons=rows
+                f"کانال موردنظر را از لیست کانال‌های SELF انتخاب کن.\n"
+                f"📄 صفحه {page + 1} از {total_pages}",
+                parse_mode="html",
+                buttons=rows,
             )
         except Exception as exc:
             print(f"[COMMENT {uid}] setup menu failed: {type(exc).__name__}: {exc}")
-            await event.edit(f"❌ دریافت لیست کانال‌ها ناموفق بود.\n\n<code>{html.escape(str(exc))}</code>", parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]])
+            await event.edit(
+                f"❌ <b>دریافت لیست کانال‌ها ناموفق بود.</b>\n\n"
+                f"<code>{html.escape(str(exc))}</code>",
+                parse_mode="html",
+                buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]],
+            )
         return True
 
     if action.startswith("comment_channel:"):
         try:
             channel_id = int(action.split(":", 1)[1])
-            # Callback events are received by the BOT, while channel entities
-            # and linked discussions must be resolved through the SELF session.
-            client = self_clients.get(uid)
+            client = self_clients.get(int(uid))
             if client is None:
-                raise RuntimeError("SELF client is not active")
+                raise RuntimeError("SELF session is not connected")
             entity = await client.get_entity(channel_id)
             if not isinstance(entity, types.Channel) or getattr(entity, "megagroup", False):
                 await safe_answer(event, "❌ این مورد کانال پخش نیست.", True)
