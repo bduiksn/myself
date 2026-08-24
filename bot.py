@@ -1190,7 +1190,7 @@ async def _cs_edit(editor, text, buttons=None):
     )
 
 
-def _cs_progress_bar(done, total, width=18):
+def _cs_progress_bar(done, total, width=16):
     if total <= 0:
         return "░" * width, 0
     ratio = max(0.0, min(1.0, done / total))
@@ -1259,7 +1259,7 @@ def _cs_count_buttons(uid, value):
         [btn("1", _self_cb(uid, "cs_num:1")), btn("2", _self_cb(uid, "cs_num:2")), btn("3", _self_cb(uid, "cs_num:3"))],
         [btn("4", _self_cb(uid, "cs_num:4")), btn("5", _self_cb(uid, "cs_num:5")), btn("6", _self_cb(uid, "cs_num:6"))],
         [btn("7", _self_cb(uid, "cs_num:7")), btn("8", _self_cb(uid, "cs_num:8")), btn("9", _self_cb(uid, "cs_num:9"))],
-        [btn("0", _self_cb(uid, "cs_num:0")), btn("⌫", _self_cb(uid, "cs_back"), "danger"), btn("🗑", _self_cb(uid, "cs_clear"), "danger")],
+        [btn("⌫", _self_cb(uid, "cs_back"), "danger"), btn("0", _self_cb(uid, "cs_num:0")), btn("🗑", _self_cb(uid, "cs_clear"), "danger")],
         [btn("✅ تأیید و شروع", _self_cb(uid, "cs_confirm"), "success")],
         [btn("🔙 بازگشت", _self_cb(uid, "cs_media_back"), "primary")],
     ]
@@ -1387,7 +1387,7 @@ async def _cs_worker(uid, client, state, editor):
         await update(
             f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
             f"🔄 شروع ذخیره <b>{total}</b> مورد...\n"
-            f"{_cs_progress_bar(0, total)[0]} 0%\n\n"
+            f"<code>{_cs_progress_bar(0, total)[0]}</code> <b>0%</b>\n\n"
             "✅ موفق: 0\n❌ ناموفق: 0"
         )
 
@@ -1408,7 +1408,7 @@ async def _cs_worker(uid, client, state, editor):
                 bar, percent = _cs_progress_bar(index, total)
                 await update(
                     f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
-                    f"{bar} <b>{percent}%</b>\n\n"
+                    f"<code>{bar}</code> <b>{percent}%</b>\n\n"
                     f"📦 پیشرفت: <b>{index}/{total}</b>\n"
                     f"✅ موفق: <b>{success}</b>\n"
                     f"❌ ناموفق: <b>{failed}</b>"
@@ -1585,27 +1585,26 @@ async def handle_self_panel_callback(event):
                 _cs_clear(uid)
                 return True
 
-            # CRITICAL: capture this exact message identity BEFORE starting the
-            # worker. The worker edits this same message for its entire life.
+            # Capture the exact message identity once. The same message is edited
+            # for the whole lifecycle; a UI edit failure must never cancel saving.
             editor = _cs_editor_from_event(event)
             session["step"] = "processing"
             session["count"] = count
             session["editor"] = editor
-            try:
-                await _cs_edit(
-                    editor,
+            worker_state = dict(session)
+
+            # Give the user immediate feedback when possible, but never make this
+            # cosmetic edit a prerequisite for the actual save worker.
+            with contextlib.suppress(Exception):
+                await event.edit(
                     f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(session['channel_title'])}</b>\n\n"
                     "⏳ در حال آماده‌سازی...\n"
-                    "░░░░░░░░░░░░░░░░░░ 0%",
+                    "<code>░░░░░░░░░░░░░░░░</code> <b>0%</b>",
+                    parse_mode="html",
                     buttons=None,
                 )
-            except Exception as exc:
-                logging.exception("initial channel progress edit failed")
-                session["step"] = "count"
-                await safe_answer(event, "❌ پیام پنل قابل بروزرسانی نیست؛ عملیات شروع نشد.", True)
-                return True
 
-            task = asyncio.create_task(_cs_worker(uid, client, dict(session), editor))
+            task = asyncio.create_task(_cs_worker(uid, client, worker_state, editor))
             _channel_save_tasks[uid] = task
             return True
 
@@ -2431,9 +2430,9 @@ def _media_progress_text(percent, operation):
         "video_to_mp3": "🎬 ➜ 🎵 تبدیل ویدیو به MP3",
     }
     percent = max(0, min(100, int(percent)))
-    slots = 10
+    slots = 16
     filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
+    bar = "█" * filled + "░" * (slots - filled)
     return f"{labels.get(operation, '🎵 در حال تبدیل فایل')}\n\n🔄 در حال پردازش...\n\n<code>{bar}</code> {percent}%"
 
 
@@ -2797,12 +2796,12 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
-    slots = 24
+    slots = 16
     filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
+    bar = "█" * filled + "░" * (slots - filled)
     counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
     return (
-        f"📦 <b>استخراج آرشیو</b>\n\n"
+        f"📦 استخراج آرشیو"
         f"<code>{bar}</code> <b>{percent}%</b>{counter}\n"
         f"<i>{html.escape(phase)}</i>"
     )
