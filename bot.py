@@ -704,11 +704,43 @@ def self_save_auto_reply_map(uid, mapping):
     self_set(uid, "auto_reply_keywords", json.dumps(mapping, ensure_ascii=False))
 
 def self_banners(uid):
+    """Load and normalize persisted banners."""
     try:
         raw = json.loads(self_get(uid, "banners", "[]"))
-        return raw if isinstance(raw, list) else []
+        if not isinstance(raw, list):
+            return []
     except Exception:
         return []
+    normalized = []
+    changed = False
+    for item in raw:
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        try:
+            item["id"] = int(item.get("id", 0))
+            if item["id"] < 1:
+                changed = True
+                continue
+            item["interval"] = max(1, int(item.get("interval", 60)))
+            clean_targets = set()
+            for raw_target in (item.get("targets") or []):
+                try:
+                    target_id = int(raw_target)
+                    if target_id != 0:
+                        clean_targets.add(target_id)
+                except (TypeError, ValueError):
+                    changed = True
+            item["targets"] = sorted(clean_targets)
+            item["enabled"] = item.get("enabled", True) not in {False, 0, "0", "off", "false"}
+            item["last_sent"] = float(item.get("last_sent", 0) or 0)
+        except (TypeError, ValueError):
+            changed = True
+            continue
+        normalized.append(item)
+    if changed:
+        self_set(uid, "banners", json.dumps(normalized, ensure_ascii=False))
+    return normalized
 
 def self_save_banners(uid, banners):
     self_set(uid, "banners", json.dumps(banners, ensure_ascii=False))
@@ -716,11 +748,17 @@ def self_save_banners(uid, banners):
 def _next_banner_id(banners):
     return max([int(b.get("id", 0)) for b in banners] or [0]) + 1
 
-def _banner_by_id(uid, banner_id):
-    for banner in self_banners(uid):
-        if int(banner.get("id", 0)) == int(banner_id):
-            return banner
+def _banner_from_list(banners, banner_id):
+    for banner in banners:
+        try:
+            if int(banner.get("id", 0)) == int(banner_id):
+                return banner
+        except (TypeError, ValueError):
+            continue
     return None
+
+def _banner_by_id(uid, banner_id):
+    return _banner_from_list(self_banners(uid), banner_id)
 
 def _banner_media_dir(uid):
     path = BASE_DIR / "banner_media" / str(int(uid))
@@ -778,8 +816,11 @@ async def _banner_dispatch_configured_now(client, uid, banner):
         except (TypeError, ValueError):
             print(f"[BANNER {uid}] invalid target id: {raw_gid!r}")
             continue
+        if gid == 0:
+            continue
         if gid not in target_ids:
             target_ids.append(gid)
+    banner["targets"] = target_ids
 
     if not target_ids:
         return 0, 0
@@ -2055,18 +2096,22 @@ async def handle_self_panel_callback(event):
 
     if action == "banners":
         banners = self_banners(uid)
-        status = "روشن ✅" if self_get(uid, "banner_auto", "off") == "on" else "خاموش ❌"
-        body = [f"📢 <b>مدیریت بنرها</b>\\n\\n🔘 ارسال خودکار: {status}"]
-        for b in banners:
-            body.append(f"\\n<b>#{b['id']}</b> • {'فوروارد' if b.get('mode') == 'forward' else 'کپی'} • هر {int(b.get('interval', 60))} دقیقه • مقصد: {len(b.get('targets', []))}")
-        if not banners:
-            body.append("\\nهنوز بنری ثبت نشده است.")
         value = self_get(uid, "banner_auto", "off")
+        status = "روشن ✅" if value == "on" else "خاموش ❌"
+        body = [f"📢 <b>مدیریت بنرها</b>\n\n🔘 ارسال خودکار: {status}"]
+        for b in banners:
+            body.append(
+                f"\n<b>#{int(b['id'])}</b> • "
+                f"{'فوروارد' if b.get('mode') == 'forward' else 'کپی'} • "
+                f"هر {int(b.get('interval', 60))} دقیقه • "
+                f"مقصد: {len(b.get('targets', []))}"
+            )
+        if not banners:
+            body.append("\nهنوز بنری ثبت نشده است.")
         await event.edit(
-            "".join(body),
-            parse_mode="html",
+            "".join(body), parse_mode="html",
             buttons=[
-                [btn("🟢 بنر روشن" if value != "on" else "🔴 بنر خاموش", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
+                [btn("🟢 روشن کردن تبچی" if value != "on" else "🔴 خاموش کردن تبچی", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
                 [btn("📚 راهنمای دستورات بنر", _self_cb(uid, "banner_help"), "primary")],
                 [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
             ],
@@ -2076,20 +2121,21 @@ async def handle_self_panel_callback(event):
     if action == "banner_toggle":
         value = "off" if self_get(uid, "banner_auto", "off") == "on" else "on"
         self_set(uid, "banner_auto", value)
-
-        # Turning the feature on must be immediately reflected in the same
-        # banner-management screen and must not wait for the worker's next tick.
+        sent = failed = 0
         if value == "on":
-            client = self_clients.get(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
-                await _banner_dispatch_all_configured(client, uid)
-
+                sent, failed = await _banner_dispatch_all_configured(client, uid)
         banners = self_banners(uid)
         status = "روشن ✅" if value == "on" else "خاموش ❌"
         body = [f"📢 <b>مدیریت بنرها</b>\n\n🔘 ارسال خودکار: {status}"]
+        if value == "on" and (sent or failed):
+            body.append(f"\n📨 ارسال فوری: {sent} مقصد")
+            if failed:
+                body.append(f"\n⚠️ ناموفق: {failed}")
         for b in banners:
             body.append(
-                f"\n<b>#{b['id']}</b> • "
+                f"\n<b>#{int(b['id'])}</b> • "
                 f"{'فوروارد' if b.get('mode') == 'forward' else 'کپی'} • "
                 f"هر {int(b.get('interval', 60))} دقیقه • "
                 f"مقصد: {len(b.get('targets', []))}"
@@ -2097,12 +2143,9 @@ async def handle_self_panel_callback(event):
         if not banners:
             body.append("\nهنوز بنری ثبت نشده است.")
         await event.edit(
-            "".join(body),
-            parse_mode="html",
+            "".join(body), parse_mode="html",
             buttons=[
-                [btn("🟢 بنر روشن" if value != "on" else "🔴 بنر خاموش",
-                     _self_cb(uid, "banner_toggle"),
-                     "success" if value != "on" else "danger")],
+                [btn("🟢 روشن کردن تبچی" if value != "on" else "🔴 خاموش کردن تبچی", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
                 [btn("📚 راهنمای دستورات بنر", _self_cb(uid, "banner_help"), "primary")],
                 [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
             ],
@@ -4267,78 +4310,92 @@ async def self_handle_outgoing(event, uid):
     m = re.fullmatch(r"تنظیم عدد بنر\s+(\d+)\s+دقیقه", _fa_digits(text))
     if m:
         bid, minutes = int(m.group(1)), int(m.group(2))
-        banner = _banner_by_id(uid, bid)
+        banners = self_banners(uid)
+        banner = _banner_from_list(banners, bid)
         if not banner or minutes < 1:
             await event.edit("❌ بنر یا زمان نامعتبر است.")
             return
         banner["interval"] = minutes
-
-        # Changing the interval is also a configuration event.  If Tabchi is
-        # already ON and this banner has targets, send the first copy now.
-        sent = 0
+        self_save_banners(uid, banners)
+        sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
             client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
-                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
-
-        self_save_banners(uid, self_banners(uid))
+                sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
+                self_save_banners(uid, banners)
         extra = f"\n📨 ارسال فوری: {sent} مقصد" if sent else ""
+        if failed:
+            extra += f"\n⚠️ ناموفق: {failed} مقصد"
         await event.edit(f"✅ فاصله ارسال بنر #{bid} روی {minutes} دقیقه تنظیم شد.{extra}")
         return
 
     m = re.fullmatch(r"تنظیم گپ هدف بنر\s+(\d+)", _fa_digits(text))
     if m:
         bid = int(m.group(1))
-        banner = _banner_by_id(uid, bid)
+        banners = self_banners(uid)
+        banner = _banner_from_list(banners, bid)
         if not banner or event.chat_id is None or not event.is_group:
             await event.edit("❌ این دستور را داخل گروه هدف اجرا کن.")
             return
-        if int(event.chat_id) not in [int(x) for x in banner.get("targets", [])]:
-            banner.setdefault("targets", []).append(int(event.chat_id))
-
-        sent = 0
+        chat_id = int(event.chat_id)
+        targets = {int(x) for x in banner.get("targets", []) if int(x) != 0}
+        targets.add(chat_id)
+        banner["targets"] = sorted(targets)
+        self_save_banners(uid, banners)
+        sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on":
             client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
-                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
-
-        self_save_banners(uid, self_banners(uid))
-        extra = f"\n📨 ارسال فوری انجام شد." if sent else ""
-        await event.edit(f"✅ این گپ به مقصدهای بنر #{bid} اضافه شد.{extra}")
+                sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
+                self_save_banners(uid, banners)
+        extra = f"\n📨 ارسال فوری: {sent} مقصد" if sent else ""
+        if failed:
+            extra += f"\n⚠️ ناموفق: {failed} مقصد"
+        await event.edit(f"✅ این گپ به مقصدهای بنر #{bid} اضافه شد.\n🎯 تعداد مقصدها: {len(banner['targets'])}{extra}")
         return
 
     m = re.fullmatch(r"حذف گپ هدف بنر\s+(\d+)", _fa_digits(text))
     if m:
         bid = int(m.group(1))
-        banner = _banner_by_id(uid, bid)
+        banners = self_banners(uid)
+        banner = _banner_from_list(banners, bid)
         if not banner or event.chat_id is None or not event.is_group:
             await event.edit("❌ این دستور را داخل گروه هدف اجرا کن.")
             return
-        banner["targets"] = [int(x) for x in banner.get("targets", []) if int(x) != int(event.chat_id)]
-        self_save_banners(uid, self_banners(uid))
-        await event.edit(f"✅ این گپ از مقصدهای بنر #{bid} حذف شد.")
+        chat_id = int(event.chat_id)
+        banner["targets"] = [int(x) for x in banner.get("targets", []) if int(x) not in {0, chat_id}]
+        self_save_banners(uid, banners)
+        await event.edit(f"✅ این گپ از مقصدهای بنر #{bid} حذف شد.\n🎯 تعداد مقصدها: {len(banner['targets'])}")
         return
 
     m = re.fullmatch(r"تنظیم هدف بنر\s+(\d+)\s+تمام گپ ها", _fa_digits(text))
     if m:
         bid = int(m.group(1))
-        banner = _banner_by_id(uid, bid)
+        banners = self_banners(uid)
+        banner = _banner_from_list(banners, bid)
         if not banner:
             await event.edit("❌ بنر موردنظر پیدا نشد.")
             return
-        targets = []
+        targets = set()
         async for dialog in event.client.iter_dialogs():
-            if getattr(dialog, "is_group", False):
-                targets.append(int(dialog.id))
-        banner["targets"] = sorted(set(targets))
-        sent = 0
+            entity = getattr(dialog, "entity", None)
+            if getattr(dialog, "is_group", False) and not getattr(entity, "broadcast", False):
+                try:
+                    targets.add(int(dialog.id))
+                except (TypeError, ValueError):
+                    pass
+        banner["targets"] = sorted(x for x in targets if x != 0)
+        self_save_banners(uid, banners)
+        sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
             client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
-                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
-        self_save_banners(uid, self_banners(uid))
+                sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
+                self_save_banners(uid, banners)
         extra = f"\n📨 ارسال فوری: {sent} مقصد" if sent else ""
-        await event.edit(f"✅ بنر #{bid} برای {len(targets)} گپ تنظیم شد.{extra}")
+        if failed:
+            extra += f"\n⚠️ ناموفق: {failed} مقصد"
+        await event.edit(f"✅ بنر #{bid} برای {len(banner['targets'])} گپ تنظیم شد.{extra}")
         return
 
     m = re.fullmatch(r"فور بنر در\s+(\d+)\s+پیوی اخیر", _fa_digits(text))
@@ -4357,8 +4414,8 @@ async def self_handle_outgoing(event, uid):
         status = "روشن ✅" if self_get(uid, "banner_auto", "off") == "on" else "خاموش ❌"
         banners = self_banners(uid)
         await event.edit(
-            f"📢 <b>وضعیت تبچی</b>\\n\\n"
-            f"🔘 ارسال خودکار بنرها: {status}\\n"
+            f"📢 <b>وضعیت تبچی</b>\n\n"
+            f"🔘 ارسال خودکار بنرها: {status}\n"
             f"📦 تعداد بنرهای ثبت‌شده: {len(banners)}"
         )
         return
@@ -4368,10 +4425,10 @@ async def self_handle_outgoing(event, uid):
         if not banners:
             await event.edit("📢 <b>لیست بنرها خالی است.</b>", parse_mode="html")
             return
-        body = ["📢 <b>بنرهای فعال</b>\\n"]
+        body = ["📢 <b>بنرهای فعال</b>\n"]
         for b in banners:
             body.append(
-                f"\\n<b>#{b['id']}</b> • {'فوروارد' if b.get('mode') == 'forward' else 'کپی'}"
+                f"\n<b>#{b['id']}</b> • {'فوروارد' if b.get('mode') == 'forward' else 'کپی'}"
                 f" • هر {int(b.get('interval', 60))} دقیقه • مقصد: {len(b.get('targets', []))}"
             )
         await event.edit("".join(body), parse_mode="html")
@@ -4888,8 +4945,10 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
                 await update_time_name(user_id, client)
                 last_clock_value = clock_value
 
-            with contextlib.suppress(Exception):
+            try:
                 await _banner_worker_tick(client, user_id)
+            except Exception as exc:
+                print(f"[BANNER {user_id}] worker tick error: {type(exc).__name__}: {exc}")
 
             # Billing: 2.5 diamonds/hour, accumulated safely using whole-diamond balance.
             # We charge floor(total_elapsed * 2.5), so the average rate is exactly 2.5/hour.
