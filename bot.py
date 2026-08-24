@@ -746,6 +746,9 @@ def self_guide_text(page=1):
             "<code>انتقال ۵۰۰</code>\n\n"
             "🎲 <b>تاس</b>\n"
             "<code>تاس ۱</code> تا <code>تاس ۶</code>\n\n"
+            "🎭 <b>سرگرمی</b>\n"
+            "روی یک پیام ریپلای کن و <code>هک + ریپلی</code> بفرست؛\n"
+            "یک عملیات هک کاملاً نمایشی و شوخی اجرا می‌شود. 😈\n\n"
             "<blockquote>✨ برای برگشت به پنل، دکمه «بازگشت» را بزن.</blockquote>"
         ),
     ]
@@ -828,6 +831,74 @@ async def send_self_inline_result(event, query: str):
     )
 
 
+def _event_inline_message_id(event):
+    """Return the real inline-message identifier from a Telethon callback."""
+    if not getattr(event, "via_inline", False):
+        return None
+    query = getattr(event, "query", None)
+    return getattr(query, "msg_id", None)
+
+
+def _serialize_inline_message_id(value):
+    """Serialize Telethon's InputBotInlineMessageID for durable per-operation state."""
+    if value is None:
+        return None
+    try:
+        return {
+            "dc_id": int(value.dc_id),
+            "id": int(value.id),
+            "access_hash": int(value.access_hash),
+        }
+    except Exception:
+        return None
+
+
+def _deserialize_inline_message_id(value):
+    """Rebuild an InputBotInlineMessageID from saved state."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        return types.InputBotInlineMessageID(
+            dc_id=int(value["dc_id"]),
+            id=int(value["id"]),
+            access_hash=int(value["access_hash"]),
+        )
+    except Exception:
+        return None
+
+
+async def _edit_panel_message(*, text, buttons=None, inline_message_id=None,
+                              chat_id=None, message_id=None, parse_mode="html"):
+    """Edit either an inline message or a normal bot-owned message."""
+    if inline_message_id is not None:
+        target = (
+            inline_message_id
+            if isinstance(inline_message_id, types.InputBotInlineMessageID)
+            else _deserialize_inline_message_id(inline_message_id)
+        )
+        if target is None:
+            raise RuntimeError("invalid inline_message_id")
+        return await bot.edit_message(
+            target,
+            text,
+            parse_mode=parse_mode,
+            buttons=buttons,
+        )
+
+    if chat_id is None or message_id is None:
+        raise RuntimeError(
+            f"panel message identity missing: chat_id={chat_id} message_id={message_id}"
+        )
+
+    return await bot.edit_message(
+        int(chat_id),
+        int(message_id),
+        text,
+        parse_mode=parse_mode,
+        buttons=buttons,
+    )
+
+
 async def _transfer_sender_label(client, user_id: int) -> str:
     """@username when available, otherwise the numeric Telegram ID."""
     try:
@@ -838,27 +909,6 @@ async def _transfer_sender_label(client, user_id: int) -> str:
     except Exception:
         pass
     return str(int(user_id))
-
-
-async def send_self_panel(chat_id: int, uid: int, reply_to=None):
-    """Inline panels are bot messages; Telegram does not deliver callback queries to user accounts."""
-    return await bot.send_message(
-        chat_id,
-        self_panel_text(uid),
-        parse_mode="html",
-        buttons=self_panel_buttons(uid),
-        reply_to=reply_to,
-    )
-
-
-async def send_self_guide(chat_id: int, uid: int, reply_to=None, page=1):
-    return await bot.send_message(
-        chat_id,
-        self_guide_text(page),
-        parse_mode="html",
-        buttons=self_guide_buttons(uid, page),
-        reply_to=reply_to,
-    )
 
 
 
@@ -1088,7 +1138,7 @@ async def _cleanup_leave_dialogs(client, dialogs, uid, label, progress_cb=None):
     return done
 
 
-async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
+async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None, panel_inline_message_id=None):
     client = self_clients.get(uid)
     if not client:
         self_set(uid, "cleanup_progress", "❌ سلف فعال نیست")
@@ -1099,17 +1149,21 @@ async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
     async def progress(text, force=False):
         nonlocal last_panel_update
         self_set(uid, "cleanup_progress", text)
-        if panel_chat_id and panel_message_id:
+        if panel_inline_message_id is not None or (panel_chat_id is not None and panel_message_id is not None):
             now = time.monotonic()
             # Never edit the same Telegram message dozens/hundreds of times per
-            # second.  State is still saved on every call; UI is throttled.
+            # second. State is still saved on every call; UI is throttled.
             if not force and (now - last_panel_update) < 0.75:
                 return
             last_panel_update = now
             with contextlib.suppress(Exception):
-                await bot.edit_message(
-                    panel_chat_id, panel_message_id, self_panel_text(uid),
-                    parse_mode="html", buttons=self_panel_buttons(uid)
+                await _edit_panel_message(
+                    text=self_panel_text(uid),
+                    buttons=self_panel_buttons(uid),
+                    inline_message_id=panel_inline_message_id,
+                    chat_id=panel_chat_id,
+                    message_id=panel_message_id,
+                    parse_mode="html",
                 )
 
     try:
@@ -1154,9 +1208,9 @@ async def _cleanup_run(uid, target, panel_chat_id=None, panel_message_id=None):
         _cleanup_tasks.pop(uid, None)
 
 
-async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None):
+async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None, panel_inline_message_id=None):
     # Backward-compatible entry point: "all" is the old full-cleanup behavior.
-    await _cleanup_run(uid, "all", panel_chat_id, panel_message_id)
+    await _cleanup_run(uid, "all", panel_chat_id, panel_message_id, panel_inline_message_id)
 
 
 async def handle_self_panel_callback(event):
@@ -1297,13 +1351,26 @@ async def handle_self_panel_callback(event):
         if not client:
             await event.edit("❌ سلف فعال نیست.", buttons=self_panel_buttons(uid))
             return True
-        _cleanup_panel_messages[uid] = (event.chat_id, event.message_id)
-        task = asyncio.create_task(_cleanup_run(uid, target, event.chat_id, event.message_id))
+        _cleanup_panel_messages[uid] = (
+            getattr(event, "chat_id", None),
+            getattr(event, "message_id", None),
+            _event_inline_message_id(event),
+        )
+        task = asyncio.create_task(
+            _cleanup_run(
+                uid,
+                target,
+                getattr(event, "chat_id", None),
+                getattr(event, "message_id", None),
+                _event_inline_message_id(event),
+            )
+        )
         _cleanup_tasks[uid] = task
         await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
         return True
 
     if action == "channel_save":
+        print(f"[CHANNEL_SAVE DEBUG] uid={uid} open-channel-list via_inline={getattr(event, 'via_inline', False)}")
         client = self_clients.get(uid)
         if not client:
             await event.edit("❌ سلف فعال نیست. ابتدا سلف را فعال کن.", parse_mode="html", buttons=self_panel_buttons(uid))
@@ -1329,6 +1396,7 @@ async def handle_self_panel_callback(event):
         return True
 
     if action.startswith("channel_pick:"):
+        print(f"[CHANNEL_SAVE DEBUG] uid={uid} channel-pick action={action}")
         try:
             entity_id = int(action.split(":", 1)[1])
             client = self_clients.get(uid)
@@ -1434,9 +1502,9 @@ async def handle_self_panel_callback(event):
                 "channel_id": int(state["channel_id"]),
                 "channel_access_hash": state.get("channel_access_hash"),
                 "channel_title": str(state.get("channel_title") or "چنل"),
-                "panel_chat_id": int(event.chat_id) if getattr(event, "chat_id", None) is not None else None,
-                "panel_message_id": int(event.message_id) if getattr(event, "message_id", None) is not None else None,
-                "inline_message_id": getattr(event, "inline_message_id", None),
+                "panel_chat_id": (int(event.chat_id) if getattr(event, "chat_id", None) is not None else None),
+                "panel_message_id": (int(event.message_id) if getattr(event, "message_id", None) is not None else None),
+                "inline_message_id": _serialize_inline_message_id(_event_inline_message_id(event)),
                 "processing_started": time.time(),
                 "operation_id": operation_id,
             })
@@ -1444,21 +1512,12 @@ async def handle_self_panel_callback(event):
             worker_state = dict(state)
 
             # Remove the numeric keyboard before any heavy Telegram work.
-            # Inline mode MUST use the callback event's inline message editor;
-            # bot.edit_message(chat_id, message_id) cannot edit an inline result.
             try:
-                if getattr(event, "inline_message_id", None):
-                    await event.edit(
-                        "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
-                        parse_mode="html",
-                        buttons=None,
-                    )
-                else:
-                    await _channel_save_ui_edit(
-                        worker_state,
-                        "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
-                        buttons=None,
-                    )
+                await _channel_save_ui_edit(
+                    worker_state,
+                    "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
+                    buttons=None,
+                )
             except Exception as exc:
                 print(
                     "[CHANNEL_SAVE UI] initial processing edit failed: "
@@ -1478,7 +1537,6 @@ async def handle_self_panel_callback(event):
                     state=worker_state,
                     count=count,
                     operation_id=operation_id,
-                    inline_event=event if getattr(event, "inline_message_id", None) else None,
                 )
             )
             _channel_save_tasks[uid] = task
@@ -1512,6 +1570,7 @@ async def handle_self_panel_callback(event):
 
     if action.startswith("channel_media:"):
         media_kind = action.split(":", 1)[1]
+        print(f"[CHANNEL_SAVE DEBUG] uid={uid} media={media_kind} via_inline={getattr(event, 'via_inline', False)}")
         if media_kind not in {"photos", "videos", "music", "voice", "text", "all"}:
             return True
         state = self_channel_save_state(uid)
@@ -1526,8 +1585,9 @@ async def handle_self_panel_callback(event):
             "step": "count",
             "media": media_kind,
             "count_input": "0",
-            "panel_chat_id": int(event.chat_id),
-            "panel_message_id": int(event.message_id),
+            "panel_chat_id": (int(event.chat_id) if getattr(event, "chat_id", None) is not None else None),
+            "panel_message_id": (int(event.message_id) if getattr(event, "message_id", None) is not None else None),
+            "inline_message_id": _serialize_inline_message_id(_event_inline_message_id(event)),
         })
         self_set_channel_save_state(uid, state)
         await event.edit(
@@ -2145,35 +2205,40 @@ def _channel_progress_text(percent, label="درحال ذخیره سازی…", p
     percent = max(0, min(100, int(percent)))
     slots = 10
     filled = round(slots * percent / 100)
-    bar = "━" * filled + "─" * (slots - filled)
-    counts = ""
+    bar = "▰" * filled + "▱" * (slots - filled)
+    progress = f"💾 <b>{percent}%</b> {bar}"
     if total is not None:
-        counts = f"\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
-        if successful is not None or failed is not None:
-            counts += f"  •  ✅ {int(successful or 0)}  ❌ {int(failed or 0)}"
-    return f"💾 <b>ذخیره مدیا</b>\n{bar} <b>{percent}%</b>\n<i>{html.escape(label)}</i>{counts}"
+        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
+    counts = ""
+    if successful is not None or failed is not None:
+        counts = f"  •  ✅{int(successful or 0)} ❌{int(failed or 0)}"
+    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
 
 
 async def _channel_save_ui_edit(state, text, buttons=None, *, retries=2):
-    """Edit only the channel-save panel message owned by this operation."""
+    """Edit the exact channel-save message, including inline-mode messages."""
     chat_id = state.get("panel_chat_id")
     message_id = state.get("panel_message_id")
+    inline_message_id = _deserialize_inline_message_id(state.get("inline_message_id"))
     uid = state.get("uid", "?")
-    if chat_id is None or message_id is None:
+
+    if inline_message_id is None and (chat_id is None or message_id is None):
         raise RuntimeError(
-            f"channel-save panel identity is missing: chat_id={chat_id} message_id={message_id}"
+            f"channel-save panel identity is missing: chat_id={chat_id} "
+            f"message_id={message_id} inline={state.get('inline_message_id')}"
         )
 
     last_exc = None
     for attempt in range(max(1, int(retries))):
         try:
             await _tg_call_with_flood_retry(
-                lambda: bot.edit_message(
-                    int(chat_id),
-                    int(message_id),
-                    text,
-                    parse_mode="html",
+                lambda: _edit_panel_message(
+                    text=text,
                     buttons=buttons,
+                    inline_message_id=inline_message_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    parse_mode="html",
                 ),
                 label=f"channel-save UI edit uid={uid}",
             )
@@ -2181,8 +2246,9 @@ async def _channel_save_ui_edit(state, text, buttons=None, *, retries=2):
         except Exception as exc:
             last_exc = exc
             print(
-                f"[CHANNEL_SAVE UI] edit failed: "
+                f"[CHANNEL_SAVE UI] edit failed: uid={uid} "
                 f"chat_id={chat_id} message_id={message_id} "
+                f"inline={bool(inline_message_id)} "
                 f"attempt={attempt + 1}/{max(1, int(retries))} error={exc}"
             )
             if attempt + 1 < max(1, int(retries)):
@@ -2202,23 +2268,27 @@ def _channel_progress_text(
     percent = max(0, min(100, int(percent)))
     slots = 10
     filled = round(slots * percent / 100)
-    bar = "━" * filled + "─" * (slots - filled)
-    counts = ""
+    bar = "▰" * filled + "▱" * (slots - filled)
+    progress = f"💾 <b>{percent}%</b> {bar}"
     if total is not None:
-        counts = f"\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
-        if successful is not None or failed is not None:
-            counts += f"  •  ✅ {int(successful or 0)}  ❌ {int(failed or 0)}"
-    return f"💾 <b>ذخیره مدیا</b>\n{bar} <b>{percent}%</b>\n<i>{html.escape(label)}</i>{counts}"
+        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
+    counts = ""
+    if successful is not None or failed is not None:
+        counts = (
+            f"  •  ✅{int(successful or 0)}"
+            f" ❌{int(failed or 0)}"
+        )
+    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
 
 
 class _ChannelProgressController:
-    """Single UI owner for channel-save progress, including inline messages."""
+    """Single UI owner for the channel-save panel message."""
 
-    def __init__(self, state, *, min_interval=0.5, inline_event=None):
+    def __init__(self, state, *, min_interval=0.5):
         self.state = state
-        self.chat_id = int(state["panel_chat_id"])
-        self.message_id = int(state["panel_message_id"])
-        self.inline_event = inline_event
+        self.chat_id = state.get("panel_chat_id")
+        self.message_id = state.get("panel_message_id")
+        self.inline_message_id = _deserialize_inline_message_id(state.get("inline_message_id"))
         self.min_interval = float(min_interval)
         self.last_edit = 0.0
         self.last_percent = None
@@ -2227,13 +2297,6 @@ class _ChannelProgressController:
         self.last_failed = -1
 
     async def edit(self, text, buttons=None):
-        # Inline-mode callback messages do not have a normal chat_id/message_id.
-        # Telegram exposes them through the callback event's inline_message_id;
-        # event.edit() uses the correct inline edit route. Normal bot-chat panels
-        # continue using the existing bot.edit_message path unchanged.
-        if self.inline_event is not None and getattr(self.inline_event, "inline_message_id", None):
-            await self.inline_event.edit(text, parse_mode="html", buttons=buttons)
-            return True
         return await _channel_save_ui_edit(self.state, text, buttons=buttons)
 
     async def update(
@@ -3189,9 +3252,9 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
-    slots = 10
+    slots = 24
     filled = round(slots * percent / 100)
-    bar = "━" * filled + "─" * (slots - filled)
+    bar = "▰" * filled + "▱" * (slots - filled)
     counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
     return (
         f"📦 <b>استخراج آرشیو</b>\n\n"
@@ -3686,6 +3749,73 @@ async def _self_logo_command(event, uid, text):
         await event.edit("❌ <b>ساخت لوگو ناموفق بود؛ دوباره تلاش کن.</b>", parse_mode="html")
     return True
 
+
+async def _fake_hack_prank(event, uid):
+    """
+    Purely visual entertainment. It performs no hacking, scanning, downloading,
+    or access to any database. It only edits the user's own outgoing message.
+    """
+    if not event.is_reply:
+        with contextlib.suppress(Exception):
+            await event.edit(
+                "🎭 <b>ENTERTAINMENT</b>\n\n"
+                "Reply to a message and send <code>هک + ریپلی</code>."
+            )
+        return
+
+    stages = [
+        "INITIALIZING SECURE CHANNEL...",
+        "BYPASSING FIREWALL...",
+        "ACCESSING MAINFRAME...",
+        "ENUMERATING DATABASES...",
+        "DECRYPTING USER TABLES...",
+        "DOWNLOADING ARCHIVE INDEX...",
+        "MERGING DATABASE SHARDS...",
+        "EXTRACTING TARGET RECORDS...",
+        "COMPRESSING DATA...",
+        "FINALIZING OPERATION...",
+    ]
+    slots = 12
+    started = time.monotonic()
+
+    for second in range(15):
+        elapsed = time.monotonic() - started
+        remaining = max(0.0, 15.0 - elapsed)
+        percent = min(99, int(((second + 1) / 15) * 99))
+        filled = round(slots * percent / 100)
+        bar = "▰" * filled + "▱" * (slots - filled)
+        stage = stages[min(second, len(stages) - 1)]
+        text = (
+            "🛰️ <b>HACKING ALL DATABASES</b>\n\n"
+            f"<code>{bar}</code> <b>{percent}%</b>\n\n"
+            f"<i>{stage}</i>\n"
+            f"<code>ETA {remaining:04.1f}s</code>"
+        )
+        with contextlib.suppress(Exception):
+            await event.edit(text, parse_mode="html")
+        await asyncio.sleep(max(0.0, 1.0 - (time.monotonic() - started - second)))
+
+    size_gb = round(random.uniform(15.0, 30.0), 2)
+    size_text = f"{size_gb:.2f}GB"
+    file_name = f"all_databases_dump_{size_gb:.2f}GB.zip"
+    final_text = (
+        "🟢 <b>HACKING ALL DATABASES</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✓ FIREWALL BYPASSED\n"
+        "✓ DATABASES ACCESSED\n"
+        "✓ RECORDS EXTRACTED\n"
+        "✓ ARCHIVE CREATED\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>STATUS:</b> SUCCESS\n"
+        f"<b>FILE:</b> <code>{file_name}</code>\n"
+        f"<b>SIZE:</b> <code>{size_text}</code>\n"
+        f"<b>TRANSFER:</b> COMPLETE\n\n"
+        "😈 <i>Relax. It was just a prank.</i>"
+    )
+    with contextlib.suppress(Exception):
+        await event.edit(final_text, parse_mode="html")
+
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
@@ -3806,6 +3936,10 @@ async def self_handle_outgoing(event, uid):
                 chat_id,
                 f"❌ تلگرام اجازه تولید تاس {target} را نداد."
             )
+        return
+
+    if low in {"هک + ریپلی", "هک+ریپلی", "هک ریپلی"}:
+        await _fake_hack_prank(event, uid)
         return
 
     if low == "پنل":
@@ -4504,8 +4638,9 @@ async def finish_login(user_id: int):
 
 @bot.on(events.InlineQuery)
 async def inline_query_handler(event):
-    """Insert the self panel into any chat through Telegram inline mode."""
+    """Return the self panel only through Telegram inline mode."""
     query = (event.text or "").strip().casefold()
+    print(f"[INLINE QUERY] uid={getattr(event, 'sender_id', '?')} query={query!r}")
     if query not in {"پنل", "راهنما"}:
         await event.answer([], cache_time=0, private=True)
         return
@@ -4540,7 +4675,7 @@ async def inline_query_handler(event):
     else:
         result = event.builder.article(
             title="⚙️ پنل سلف",
-            description="پنل تنظیمات سلف را در همین چت ارسال کن.",
+            description="پنل تنظیمات سلف را همین‌جا با Inline باز کن.",
             text=self_panel_text(uid),
             parse_mode="html",
             buttons=self_panel_buttons(uid),
@@ -4593,19 +4728,6 @@ async def private_message(event):
     text = event.raw_text or ""
 
     init_user_db(user_id)
-
-    # --------------------------------------------------------
-    # DIRECT PANEL IN BOT PRIVATE CHAT
-    # --------------------------------------------------------
-    if text.strip().casefold() == "پنل":
-        if is_banned(user_id):
-            await event.reply("🚫 شما توسط ادمین مسدود شده‌اید.")
-            return
-        if not has_registered_phone(user_id):
-            await send_phone_request(user_id)
-            return
-        await send_self_panel(event.chat_id, user_id)
-        return
 
     # --------------------------------------------------------
     # START + REFERRAL
