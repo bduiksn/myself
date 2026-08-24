@@ -1053,7 +1053,11 @@ def self_panel_buttons(uid):
         ],
         [
             btn("💬 کامنت اول", _self_cb(uid, "comment_help"), "primary"),
-            btn("🧰 ابزار سلف", _self_cb(uid, "tools"), "primary"),
+            btn("🤵 منشی", _self_cb(uid, "secretary_help"), "primary"),
+        ],
+        [
+            btn("🛡 مدیریت گروه", _self_cb(uid, "group_help"), "primary"),
+            btn("🏷 تگ اعضا", _self_cb(uid, "tag_help"), "primary"),
         ],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
@@ -1114,11 +1118,11 @@ def self_guide_text(page=1):
          "🟢 <code>منشی روشن</code>\n🔴 <code>منشی خاموش</code>\n⏱ <code>تنظیم زمان منشی 15</code>\n\n"
          "زمان مجاز بین <b>۵ تا ۶۰ دقیقه</b> است. منشی فقط در پیوی فعال است و برای هر کاربر در هر بازه فقط یک پاسخ می‌فرستد."),
         ("📚 <b>راهنمای سلف • پین و بن گروه</b>\n<i>صفحه ۱۲ از ۱۵</i>\n\n"
-         "📌 روی پیام ریپلای: <code>پین</code>\n📌 حذف: <code>حذف پین</code>\n🚫 روی کاربر ریپلای: <code>بن</code> یا <code>.سیک</code>\n🔓 رفع بن: <code>آن بن</code>\n\n"
+         "📌 روی پیام ریپلای: <code>پین</code>\n📌 حذف: <code>حذف پین</code>\n🚫 روی کاربر ریپلای: <code>بن</code> یا <code>سیک</code>\n🔓 رفع بن: <code>آن بن</code>\n\n"
          "این دستورات فقط در گروه و در صورت ادمین‌بودن اکانت SELF اجرا می‌شوند."),
         ("📚 <b>راهنمای سلف • بن سراسری</b>\n<i>صفحه ۱۳ از ۱۵</i>\n\n"
-         "🚫 افزودن با آیدی/یوزرنیم:\n<code>بن ال @username</code>\nیا روی پیام کاربر ریپلای کن و <code>بن ال</code> بفرست.\n\n"
-         "🗑 <code>حذف بن ال @username</code>\n📋 <code>لیست بن ال</code>\n\n"
+         "🚫 افزودن با آیدی/یوزرنیم:\n<code>بن سراسری @username</code>\nیا روی پیام کاربر ریپلای کن و <code>بن سراسری</code> بفرست.\n\n"
+         "🗑 <code>حذف بن سراسری @username</code>\n📋 <code>لیست بن سراسری</code>\n\n"
          "کاربر موجود در لیست، هنگام فعالیت در گروه‌های تحت مدیریت SELF محدود می‌شود."),
         ("📚 <b>راهنمای سلف • تگ اعضا</b>\n<i>صفحه ۱۴ از ۱۵</i>\n\n"
          "🏷 <code>تگ 20</code> → تگ ۲۰ عضو.\n🏷 <code>همه</code> → تگ تمام اعضای قابل دریافت گروه.\n\n"
@@ -2040,20 +2044,6 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
-    if action == "tools":
-        await event.edit(
-            "🧰 <b>ابزارهای جدید سلف</b>\n\n"
-            "اسپم، کامنت اول، منشی، مدیریت گروه، بن سراسری و تگ اعضا.",
-            parse_mode="html",
-            buttons=[
-                [btn("💬 کامنت اول", _self_cb(uid, "comment_help"), "primary"), btn("🤵 منشی", _self_cb(uid, "secretary_help"), "primary")],
-                [btn("🛡 مدیریت گروه", _self_cb(uid, "group_help"), "primary"), btn("🏷 تگ اعضا", _self_cb(uid, "tag_help"), "primary")],
-                [btn("🔁 اسپم", _self_cb(uid, "spam_help"), "danger")],
-                [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
-            ],
-        )
-        return True
-
     if action == "comment_help":
         await event.edit(
             "💬 <b>کامنت اول</b>\n\n"
@@ -2062,7 +2052,7 @@ async def handle_self_panel_callback(event):
             "<code>حذف کامنت اول @channel</code>\n"
             "<code>لیست کامنت</code>\n"
             "<code>پاکسازی لیست کامنت</code>",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
         )
         return True
     if action == "secretary_help":
@@ -2072,32 +2062,25 @@ async def handle_self_panel_callback(event):
             "<code>منشی روشن</code> / <code>منشی خاموش</code>\n"
             "<code>تنظیم زمان منشی 15</code>\n\n"
             "فقط پیوی؛ هر کاربر در هر بازه فقط یک پاسخ.",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
         )
         return True
     if action == "group_help":
         await event.edit(
             "🛡 <b>مدیریت گروه</b>\n\n"
             "<code>پین</code> / <code>حذف پین</code> با ریپلای\n"
-            "<code>بن</code> یا <code>.سیک</code> با ریپلای\n"
+            "<code>بن</code> یا <code>سیک</code> با ریپلای\n"
             "<code>آن بن</code> با ریپلای\n"
-            "<code>بن ال @user</code>\n<code>حذف بن ال @user</code>\n<code>لیست بن ال</code>",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+            "<code>بن سراسری @user</code>\n<code>حذف بن سراسری @user</code>\n<code>لیست بن سراسری</code>",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
         )
         return True
     if action == "tag_help":
         await event.edit(
             "🏷 <b>تگ اعضا</b>\n\n<code>تگ 20</code>\n<code>همه</code>\n\nپیام دستور حذف و تگ‌ها گروهی ارسال می‌شوند.",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
         )
         return True
-    if action == "spam_help":
-        await event.edit(
-            "🔁 <b>اسپم</b>\n\nروی پیام ریپلای کن و بنویس:\n<code>تکرار 160</code>\n\nحداقل ۱ و حداکثر ۱۰۰۰ تکرار.",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
-        )
-        return True
-
     if action == "guide":
         try:
             await event.edit(
@@ -4127,7 +4110,7 @@ async def _profile_copy_restore(event, uid):
 
 
 # ============================================================
-# EXTRA SELF TOOLS: SPAM / FIRST COMMENT / SECRETARY / GROUP / TAG
+# EXTRA SELF FEATURES: SPAM / FIRST COMMENT / SECRETARY / GROUP / TAG
 # ============================================================
 
 GLOBAL_BAN_KEY = "global_ban_list"
@@ -4322,7 +4305,7 @@ async def _handle_group_command(event, uid, text):
             await event.edit(f"❌ حذف پین انجام نشد: {html.escape(str(exc))}")
         return True
 
-    if low in {"بن", ".سیک", "سیک", "بن + ریپلای", ".سیک + ریپلای"}:
+    if low in {"بن", "سیک", "بن + ریپلای", "سیک + ریپلای"}:
         if not event.is_group or not event.is_reply:
             await event.edit("❌ این دستور را داخل گروه و با ریپلای روی کاربر استفاده کن.")
             return True
@@ -4357,7 +4340,7 @@ async def _handle_group_command(event, uid, text):
             await event.edit(f"❌ آن‌بن انجام نشد: {html.escape(str(exc))}")
         return True
 
-    m = re.fullmatch(r"بن ال(?:\s+(.+))?", text, flags=re.S | re.I)
+    m = re.fullmatch(r"بن سراسری(?:\s+(.+))?", text, flags=re.S | re.I)
     if m:
         raw = (m.group(1) or "").strip()
         if not raw and not event.is_reply:
@@ -4378,7 +4361,7 @@ async def _handle_group_command(event, uid, text):
             await event.edit(f"❌ ثبت بن سراسری ناموفق بود: {html.escape(str(exc))}")
         return True
 
-    m = re.fullmatch(r"حذف بن ال(?:\s+(.+))?", text, flags=re.S | re.I)
+    m = re.fullmatch(r"حذف بن سراسری(?:\s+(.+))?", text, flags=re.S | re.I)
     if m:
         raw = (m.group(1) or "").strip()
         try:
@@ -4396,7 +4379,7 @@ async def _handle_group_command(event, uid, text):
             await event.edit(f"❌ حذف بن سراسری ناموفق بود: {html.escape(str(exc))}")
         return True
 
-    if low == "لیست بن ال":
+    if low == "لیست بن سراسری":
         bans = sorted(_global_ban_list(uid))
         if not bans:
             await event.edit("🚫 لیست بن سراسری خالی است.")
@@ -4501,7 +4484,7 @@ async def _handle_first_comment_command(event, uid, text):
 
 async def _handle_secretary_command(event, uid, text):
     low = text.casefold().strip()
-    if low in {"منشی روشن", "منشی روشنیا"}:
+    if low == "منشی روشن":
         if not _secretary_reply(uid):
             await event.edit("❌ ابتدا با «تنظیم منشی» پاسخ منشی را تنظیم کن.")
             return True
