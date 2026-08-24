@@ -460,7 +460,7 @@ def force_join_buttons(channels):
         title = str(channel.get("title") or channel.get("username") or "کانال")
         url = _channel_url(channel)
         if url:
-            rows.append([btn(f"📢 {title}", f"fj_open:{channel.get('id')}", "primary")])
+            rows.append([Button.url(f"📢 {title}", url, style="primary")])
     rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
     return rows
 
@@ -602,7 +602,7 @@ def main_buttons(user_id: int):
         ],
         [
             btn("👥 زیرمجموعه‌گیری", b"referral_system", "primary"),
-            Button.url("🆘 پشتیبانی", "https://t.me/HusteRIX"),
+            Button.url("🆘 پشتیبانی", "https://t.me/HusteRIX", style="primary"),
         ],
     ]
     if user_id in ADMINS:
@@ -4991,23 +4991,6 @@ async def callbacks(event):
     data = event.data.decode("utf-8", errors="ignore")
     user_id = event.sender_id
 
-    if data.startswith("fj_open:"):
-        try:
-            channel_id = int(data.split(":", 1)[1])
-        except Exception:
-            await safe_answer(event, "❌ کانال نامعتبر است.", True)
-            return
-        channel = next((c for c in get_force_join_channels() if int(c.get("id", 0)) == channel_id), None)
-        if channel:
-            url = _channel_url(channel)
-            if url:
-                await safe_answer(event, "📢 ابتدا عضو کانال شوید.")
-                with contextlib.suppress(Exception):
-                    await bot.send_message(user_id, f"📢 {channel.get('title', 'کانال')}", buttons=[
-                        [Button.url("🔗 ورود به کانال", url)]
-                    ])
-        return
-
     if data == "fj_check":
         if await ensure_force_join(user_id):
             await safe_answer(event, "✅ عضویت تأیید شد.")
@@ -5387,9 +5370,9 @@ async def callbacks(event):
             return
 
         buttons = [
-            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("🚫 مسدود کردن کاربر", b"ban_user", "danger")],
+            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("💾 Backups", b"backups", "primary")],
             [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
-            [btn("💾 Backups", b"backups", "primary"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
+            [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
             [btn("🔙 برگشت", b"back", "danger")],
         ]
         await edit_or_send(event, "🛠 **مدیریت**\n\nیک گزینه را انتخاب کنید:", buttons)
