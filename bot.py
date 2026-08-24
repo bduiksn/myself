@@ -342,6 +342,9 @@ active_games = {}
 self_workers = {}
 self_clients = {}
 _self_reply_cache = set()
+_secretary_reply_cache = {}
+_spam_tasks = {}
+
 _inline_bot_cache = {}
 _cleanup_tasks = {}
 _cleanup_panel_messages = {}
@@ -1049,6 +1052,10 @@ def self_panel_buttons(uid):
             btn("🤖 تبچی", _self_cb(uid, "banners"), "primary"),
         ],
         [
+            btn("💬 کامنت اول", _self_cb(uid, "comment_help"), "primary"),
+            btn("🧰 ابزار سلف", _self_cb(uid, "tools"), "primary"),
+        ],
+        [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
@@ -1068,135 +1075,70 @@ def self_panel_text(uid):
 
 def self_guide_text(page=1):
     pages = [
-        (
-            "📚 <b>راهنمای سلف • شروع سریع</b>\n"
-            "<i>صفحه ۱ از ۱۱</i>\n\n"
-            "<blockquote>🧭 همه قابلیت‌ها از پنل «سلف» در دسترس‌اند.\n"
-            "دستورها را دقیقاً مثل نمونه‌ها بنویس و اگر گفته شده، روی پیام موردنظر ریپلای کن.</blockquote>\n\n"
-            "🕐 <b>ساعت روی نام</b>\n"
-            "ساعت ایران را روی نام پروفایل روشن/خاموش می‌کند.\n\n"
-            "🔤 <b>فونت ساعت</b>\n"
-            "با هر بار لمس، فونت ساعت عوض می‌شود و تغییر فوراً اعمال می‌شود.\n\n"
-            "🅱 <b>بولد</b> • 🅵 <b>فونت فارسی</b>\n"
-            "برای تغییر ظاهر متن‌های ارسالی استفاده می‌شوند."
-        ),
-        (
-            "📚 <b>راهنمای سلف • ظاهر و وضعیت</b>\n"
-            "<i>صفحه ۲ از ۱۱</i>\n\n"
-            "🌐 <b>ترجمه</b>\n"
-            "متن‌های ارسالی را به انگلیسی ترجمه می‌کند.\n\n"
-            "🔤 <b>فونت انگلیسی</b>\n"
-            "استایل حروف انگلیسی پیام‌های ارسالی را تغییر می‌دهد.\n\n"
-            "👁 <b>سین</b>\n"
-            "پیام‌های دریافتی را خوانده‌شده می‌کند.\n\n"
-            "⌨️ <b>تایپینگ</b>\n"
-            "وضعیت تایپ‌کردن را در گفتگو نشان می‌دهد.\n\n"
-            "🎮 <b>حالت بازی</b>\n"
-            "به‌جای تایپینگ، وضعیت بازی را نمایش می‌دهد."
-        ),
-        (
-            "📚 <b>راهنمای سلف • تبچی و ریاکشن</b>\n"
-            "<i>صفحه ۳ از ۱۱</i>\n\n"
-            "💬 <b>پاسخ خودکار</b>\n"
-            "با دکمه «پاسخ خودکار» یا دستورهای زیر مدیریت می‌شود.\n\n"
-            "<code>پاسخ خودکار روشن</code> / <code>پاسخ خودکار خاموش</code>\n"
-            "<code>پاسخ خودکار جدید [کلمه]</code>\n"
-            "<code>ذخیره پاسخ خودکار [کلمه]</code> + ریپلای روی متن پاسخ\n"
-            "<code>حذف پاسخ خودکار [کلمه]</code>\n"
-            "<code>لیست پاسخ خودکار</code>\n\n"
-            "❤️ <b>ریاکشن خودکار</b>\n"
-            "روی پیام کاربر ریپلای کن و دستور ریاکشن را بفرست تا برای همان کاربر تنظیم شود.\n"
-            "برای حذف تنظیم همان کاربر، «حذف ریاکشن» یا «ریاکشن خاموش» را استفاده کن."
-        ),
-        (
-            "📚 <b>راهنمای سلف • ویس و OCR</b>\n"
-            "<i>صفحه ۴ از ۱۱</i>\n\n"
-            "🎙️ <b>ویس → متن</b>\n"
-            "روی ویس یا فایل صوتی ریپلای کن و بنویس: <code>متن</code>\n\n"
-            "برای اینکه نتیجه روی همان ویس ریپلای شود: <code>متن + ریپلای</code>\n"
-            "یا <code>متن + ریپلی</code>\n\n"
-            "🖼️ <b>OCR</b>\n"
-            "روی تصویر ریپلای کن و <code>OCR</code> یا <code>او سی آر</code> بفرست."
-        ),
-        (
-            "📚 <b>راهنمای سلف • تبدیل رسانه</b>\n"
-            "<i>صفحه ۵ از ۱۱</i>\n\n"
-            "🎵 <b>دستورها</b>\n"
-            "<code>ویس به mp3</code> → ویس را به MP3 تبدیل می‌کند.\n"
-            "<code>mp3 به ویس</code> → MP3 را به ویس تلگرام تبدیل می‌کند.\n"
-            "<code>ویدیو به ویس</code> → صدای ویدیو را به ویس تبدیل می‌کند.\n"
-            "<code>ویدیو به mp3</code> → صدای ویدیو را به MP3 تبدیل می‌کند.\n\n"
-            "📌 برای تبدیل، دستور را روی فایل موردنظر ریپلای کن."
-        ),
-        (
-            "📚 <b>راهنمای سلف • فایل و پاکسازی</b>\n"
-            "<i>صفحه ۶ از ۱۱</i>\n\n"
-            "📦 <b>استخراج ZIP/RAR</b>\n"
-            "روی فایل ZIP/RAR ریپلای کن و <code>unzip + ریپلی</code> یا <code>استخراج + ریپلای</code> بفرست.\n\n"
-            "📥 <b>دانلود</b>\n"
-            "روی پیام موردنظر ریپلای کن و <code>دانلود</code> بفرست.\n\n"
-            "🧹 <b>پاکسازی</b>\n"
-            "از پنل، نوع پاکسازی را انتخاب کن؛ هر بخش مستقل اجرا می‌شود.\n\n"
-            "💾 <b>ذخیره چنل</b>\n"
-            "از پنل «ذخیره چنل» را بزن، چنل را انتخاب کن، نوع مدیا و تعداد را مشخص کن و «تأیید و شروع» را بزن. پیشرفت روی همان پیام پنل نمایش داده می‌شود و موارد موفق داخل Saved Messages ذخیره می‌شوند.\n\n"
-            "🔒 <b>قفل چت</b>\n"
-            "روی پیام کاربر ریپلای کن و <code>قفل چت</code> بفرست."
-        ),
-        (
-            "📚 <b>راهنمای سلف • ارز و لوگو</b>\n"
-            "<i>صفحه ۷ از ۱۱</i>\n\n"
-            "💱 <b>نرخ ارز</b>\n"
-            "قیمت لحظه‌ای را با این دستورها بگیر: \n"
-            "<code>قیمت BTC</code> • <code>قیمت ETH</code> • <code>قیمت SOL</code> • <code>قیمت USDT</code>\n\n"
-            "🎨 <b>لوگوساز</b>\n"
-            "نمونه: <code>لوگو 12 HusteRIX</code>\n"
-            "۱۲ قالب داخلی برای ساخت لوگو در نظر گرفته شده است."
-        ),
-        (
-            "📚 <b>راهنمای سلف • تاس و سرگرمی</b>\n"
-            "<i>صفحه ۸ از ۱۱</i>\n\n"
-            "🎲 <b>تاس</b>\n"
-            "دستورهای مجاز: <code>تاس ۱</code> تا <code>تاس ۶</code>\n"
-            "عدد انتخابی با تاس واقعی تلگرام تولید می‌شود.\n\n"
-            "🎭 <b>هک نمایشی</b>\n"
-            "روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.\n"
-            "پیام دستور حذف می‌شود و یک سناریوی هک کاملاً نمایشی با نوار پیشرفت نمایش داده می‌شود.\n\n"
-            "💎 <b>انتقال الماس</b>\n"
-            "نمونه: <code>انتقال ۵۰۰</code>\n\n"
-            ""
-        ),
-        (
-            "🤖 <b>تبچی • شروع از صفر</b>\n<i>صفحه ۹ از ۱۱</i>\n\n"
-            "<blockquote>تبچی سیستم مدیریت و ارسال خودکار بنرهاست. اول پیام را به‌عنوان بنر ثبت می‌کنی، بعد مقصد و زمان را مشخص می‌کنی.</blockquote>\n\n"
-            "<b>۱) ساخت بنر</b>\nروی پیام ریپلای کن و یکی از این‌ها را بفرست:\n"
-            "<code>تنظیم بنر فور</code> → فوروارد پیام\n"
-            "<code>تنظیم بنر کپی</code> → کپی محتوا\n\n"
-            "بعد از ثبت، بنر یک شماره مثل <code>#۱</code> می‌گیرد؛ این شماره برای تنظیمات بعدی لازم است."
-        ),
-        (
-            "🤖 <b>تبچی • مقصد و زمان‌بندی</b>\n<i>صفحه ۱۰ از ۱۱</i>\n\n"
-            "<b>۲) افزودن یک گروه</b>\nداخل گروه هدف بفرست:\n<code>تنظیم گپ هدف بنر ۱</code>\n\n"
-            "حذف همان گروه:\n<code>حذف گپ هدف بنر ۱</code>\n\n"
-            "افزودن همه گروه‌های قابل دسترسی:\n<code>تنظیم هدف بنر ۱ تمام گپ ها</code>\n\n"
-            "<b>۳) زمان ارسال</b>\nمثلاً هر ۳۰ دقیقه:\n<code>تنظیم عدد بنر ۱ ۳۰ دقیقه</code>\n\n"
-            "⚠️ بنر بدون مقصد، ارسال خودکار ندارد."
-        ),
-        (
-            "🤖 <b>تبچی • اجرا و مدیریت کامل</b>\n<i>صفحه ۱۱ از ۱۱</i>\n\n"
-            "<b>۴) فعال‌سازی</b>\n<code>تبچی روشن</code>\nخاموش کردن:\n<code>تبچی خاموش</code>\n\n"
-            "<b>۵) ارسال فوری به پیوی‌های اخیر</b>\n<code>فور بنر ۱ در ۲۰ پیوی اخیر</code>\n"
-            "بنر ۱ را فوراً برای ۲۰ پیوی اخیر می‌فرستد و منتظر زمان‌بندی نمی‌ماند.\n\n"
-            "<b>۶) مدیریت</b>\n<code>حذف بنر ۱</code> → حذف یک بنر\n<code>پاکسازی لیست بنر ها</code> → حذف همه بنرها\n<code>وضعیت تبچی</code> → نمایش وضعیت و تعداد بنرها\n\n"
-            "<blockquote>✅ ترتیب پیشنهادی: ساخت → مقصد → زمان → تبچی روشن.</blockquote>\n\n"
-            "✨ برای برگشت، دکمه «🔙 بازگشت» را بزن."
-        ),
+        ("📚 <b>راهنمای سلف • شروع سریع</b>\n<i>صفحه ۱ از ۱۵</i>\n\n"
+         "<blockquote>این راهنما همه قابلیت‌های سلف را از صفر تا صد توضیح می‌دهد. هرجا نوشته شده «ریپلای»، دستور را روی همان پیام بفرست.</blockquote>\n\n"
+         "🕐 <b>ساعت روی نام</b>\nساعت ایران را روی نام پروفایل می‌گذارد.\n\n"
+         "🔤 <b>فونت ساعت / فارسی / انگلیسی</b>\nظاهر ساعت و متن‌های ارسالی را شخصی‌سازی می‌کنند.\n\n"
+         "🌐 <b>ترجمه</b>\nترجمه متن‌های ارسالی به انگلیسی را فعال می‌کند."),
+        ("📚 <b>راهنمای سلف • حضور و پاسخ خودکار</b>\n<i>صفحه ۲ از ۱۵</i>\n\n"
+         "👁 <b>سین</b> → خوانده‌شدن پیام‌های ورودی.\n⌨️ <b>تایپینگ</b> → نمایش وضعیت تایپ.\n🎮 <b>بازی</b> → نمایش وضعیت بازی.\n\n"
+         "💬 <b>پاسخ خودکار قدیمی</b>\n<code>پاسخ خودکار روشن</code>\n<code>پاسخ خودکار جدید سلام</code>\nروی متن پاسخ ریپلای کن: <code>ذخیره پاسخ خودکار سلام</code>\n<code>حذف پاسخ خودکار سلام</code>\n<code>لیست پاسخ خودکار</code>"),
+        ("📚 <b>راهنمای سلف • ریاکشن و قفل</b>\n<i>صفحه ۳ از ۱۵</i>\n\n"
+         "❤️ <b>ریاکشن</b>\nروی پیام کاربر ریپلای کن: <code>ریاکشن 🔥</code>\nحذف: <code>حذف ریاکشن</code>\n\n"
+         "🔒 <b>قفل چت</b>\nدر پیوی روی پیام کاربر ریپلای کن: <code>قفل چت</code>\nخاموش: <code>بازکردن قفل چت</code>"),
+        ("📚 <b>راهنمای سلف • رسانه و OCR</b>\n<i>صفحه ۴ از ۱۵</i>\n\n"
+         "🎙️ <code>متن + ریپلی</code> روی ویس → تبدیل ویس به متن.\n🖼️ <code>OCR</code> روی تصویر → استخراج متن.\n\n"
+         "🎵 <code>ویس به mp3</code>\n<code>mp3 به ویس</code>\n<code>ویدیو به ویس</code>\n<code>ویدیو به mp3</code>"),
+        ("📚 <b>راهنمای سلف • فایل و ذخیره چنل</b>\n<i>صفحه ۵ از ۱۵</i>\n\n"
+         "📦 روی ZIP/RAR ریپلای: <code>استخراج + ریپلای</code>\n📥 روی پیام: <code>دانلود</code>\n\n"
+         "💾 از پنل «ذخیره چنل» را بزن؛ چنل، نوع مدیا و تعداد را انتخاب کن و تأیید کن."),
+        ("📚 <b>راهنمای سلف • تبچی</b>\n<i>صفحه ۶ از ۱۵</i>\n\n"
+         "📢 ساخت بنر با ریپلای:\n<code>تنظیم بنر فور</code> یا <code>تنظیم بنر کپی</code>\n\n"
+         "🎯 مقصد داخل گروه:\n<code>تنظیم گپ هدف بنر ۱</code>\n<code>حذف گپ هدف بنر ۱</code>\n<code>تنظیم هدف بنر ۱ تمام گپ ها</code>"),
+        ("📚 <b>راهنمای سلف • تبچی و زمان</b>\n<i>صفحه ۷ از ۱۵</i>\n\n"
+         "⏱ <code>تنظیم عدد بنر ۱ ۳۰ دقیقه</code>\n🟢 <code>تبچی روشن</code>\n🔴 <code>تبچی خاموش</code>\n📋 <code>لیست بنر هام</code>\n🗑 <code>حذف بنر ۱</code>\n🧹 <code>پاکسازی لیست بنر ها</code>\n\n"
+         "تبچی و ارسال بنر فقط با اکانت SELF انجام می‌شود."),
+        ("📚 <b>راهنمای سلف • اسپم</b>\n<i>صفحه ۸ از ۱۵</i>\n\n"
+         "🔁 <b>تکرار</b>\nروی پیام موردنظر ریپلای کن و بنویس:\n<code>تکرار 160</code>\n\n"
+         "پیام همان لحظه با اکانت SELF در همان چت تکرار می‌شود.\nحداقل: <b>۱</b> • حداکثر: <b>۱۰۰۰</b>\n\n"
+         "⚠️ استفاده زیاد ممکن است با محدودیت Flood تلگرام مواجه شود."),
+        ("📚 <b>راهنمای سلف • کامنت اول</b>\n<i>صفحه ۹ از ۱۵</i>\n\n"
+         "💬 <b>۱) متن کامنت</b>\nروی یک پیام متنی ریپلای کن:\n<code>تنظیم کامنت</code>\n\n"
+         "📢 <b>۲) فعال‌سازی کانال</b>\n<code>تنظیم کامنت اول @channel</code>\nیا با آیدی کانال.\n\n"
+         "🗑 غیرفعال: <code>حذف کامنت اول @channel</code>"),
+        ("📚 <b>راهنمای سلف • مدیریت کامنت</b>\n<i>صفحه ۱۰ از ۱۵</i>\n\n"
+         "📋 <code>لیست کامنت</code> → کانال‌های فعال + متن فعلی.\n🧹 <code>پاکسازی لیست کامنت</code> → حذف همه کانال‌ها.\n\n"
+         "وقتی پست کانال به‌صورت فوروارد توسط SELF داخل گروه گفت‌وگو ارسال شود، متن تنظیم‌شده به همان پست ریپلای می‌شود و به‌عنوان کامنت اول ارسال می‌گردد."),
+        ("📚 <b>راهنمای سلف • منشی</b>\n<i>صفحه ۱۱ از ۱۵</i>\n\n"
+         "🤵 <b>تنظیم پاسخ</b>\nروی پیام متنی یا مدیا ریپلای کن:\n<code>تنظیم منشی</code>\n\n"
+         "🟢 <code>منشی روشن</code>\n🔴 <code>منشی خاموش</code>\n⏱ <code>تنظیم زمان منشی 15</code>\n\n"
+         "زمان مجاز بین <b>۵ تا ۶۰ دقیقه</b> است. منشی فقط در پیوی فعال است و برای هر کاربر در هر بازه فقط یک پاسخ می‌فرستد."),
+        ("📚 <b>راهنمای سلف • پین و بن گروه</b>\n<i>صفحه ۱۲ از ۱۵</i>\n\n"
+         "📌 روی پیام ریپلای: <code>پین</code>\n📌 حذف: <code>حذف پین</code>\n🚫 روی کاربر ریپلای: <code>بن</code> یا <code>.سیک</code>\n🔓 رفع بن: <code>آن بن</code>\n\n"
+         "این دستورات فقط در گروه و در صورت ادمین‌بودن اکانت SELF اجرا می‌شوند."),
+        ("📚 <b>راهنمای سلف • بن سراسری</b>\n<i>صفحه ۱۳ از ۱۵</i>\n\n"
+         "🚫 افزودن با آیدی/یوزرنیم:\n<code>بن ال @username</code>\nیا روی پیام کاربر ریپلای کن و <code>بن ال</code> بفرست.\n\n"
+         "🗑 <code>حذف بن ال @username</code>\n📋 <code>لیست بن ال</code>\n\n"
+         "کاربر موجود در لیست، هنگام فعالیت در گروه‌های تحت مدیریت SELF محدود می‌شود."),
+        ("📚 <b>راهنمای سلف • تگ اعضا</b>\n<i>صفحه ۱۴ از ۱۵</i>\n\n"
+         "🏷 <code>تگ 20</code> → تگ ۲۰ عضو.\n🏷 <code>همه</code> → تگ تمام اعضای قابل دریافت گروه.\n\n"
+         "پیام دستور بعد از شروع حذف می‌شود و تگ‌ها در چند پیام گروهی ارسال می‌شوند. می‌توانی روی یک پیام هم ریپلای کنی تا تگ‌ها در همان رشته ارسال شوند."),
+        ("📚 <b>راهنمای سلف • جمع‌بندی</b>\n<i>صفحه ۱۵ از ۱۵</i>\n\n"
+         "✨ <b>ترتیب پیشنهادی برای قابلیت‌های جدید</b>\n"
+         "۱. منشی → تنظیم منشی → تنظیم زمان → روشن\n"
+         "۲. کامنت اول → تنظیم متن → ثبت کانال\n"
+         "۳. تبچی → ساخت بنر → مقصد → زمان → روشن\n"
+         "۴. مدیریت گروه → فقط در گروهی که ادمین هستی\n"
+         "۵. تگ → تعداد یا همه\n"
+         "۶. اسپم → ریپلای پیام + <code>تکرار عدد</code>\n\n"
+         "<blockquote>🔐 همه ارسال‌های این قابلیت‌ها توسط اکانت SELF انجام می‌شود، نه BOT.</blockquote>\n\n"
+         "✨ برای برگشت، دکمه «🔙 بازگشت» را بزن."),
     ]
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
 
-
 def self_guide_buttons(uid, page=1):
-    total_pages = 11
+    total_pages = 15
     page = max(1, min(int(page), total_pages))
     nav = []
     if page > 1:
@@ -2098,6 +2040,64 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
+    if action == "tools":
+        await event.edit(
+            "🧰 <b>ابزارهای جدید سلف</b>\n\n"
+            "اسپم، کامنت اول، منشی، مدیریت گروه، بن سراسری و تگ اعضا.",
+            parse_mode="html",
+            buttons=[
+                [btn("💬 کامنت اول", _self_cb(uid, "comment_help"), "primary"), btn("🤵 منشی", _self_cb(uid, "secretary_help"), "primary")],
+                [btn("🛡 مدیریت گروه", _self_cb(uid, "group_help"), "primary"), btn("🏷 تگ اعضا", _self_cb(uid, "tag_help"), "primary")],
+                [btn("🔁 اسپم", _self_cb(uid, "spam_help"), "danger")],
+                [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
+            ],
+        )
+        return True
+
+    if action == "comment_help":
+        await event.edit(
+            "💬 <b>کامنت اول</b>\n\n"
+            "<code>تنظیم کامنت</code> + ریپلای روی متن\n"
+            "<code>تنظیم کامنت اول @channel</code>\n"
+            "<code>حذف کامنت اول @channel</code>\n"
+            "<code>لیست کامنت</code>\n"
+            "<code>پاکسازی لیست کامنت</code>",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+        )
+        return True
+    if action == "secretary_help":
+        await event.edit(
+            "🤵 <b>منشی</b>\n\n"
+            "<code>تنظیم منشی</code> + ریپلای روی متن/مدیا\n"
+            "<code>منشی روشن</code> / <code>منشی خاموش</code>\n"
+            "<code>تنظیم زمان منشی 15</code>\n\n"
+            "فقط پیوی؛ هر کاربر در هر بازه فقط یک پاسخ.",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+        )
+        return True
+    if action == "group_help":
+        await event.edit(
+            "🛡 <b>مدیریت گروه</b>\n\n"
+            "<code>پین</code> / <code>حذف پین</code> با ریپلای\n"
+            "<code>بن</code> یا <code>.سیک</code> با ریپلای\n"
+            "<code>آن بن</code> با ریپلای\n"
+            "<code>بن ال @user</code>\n<code>حذف بن ال @user</code>\n<code>لیست بن ال</code>",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+        )
+        return True
+    if action == "tag_help":
+        await event.edit(
+            "🏷 <b>تگ اعضا</b>\n\n<code>تگ 20</code>\n<code>همه</code>\n\nپیام دستور حذف و تگ‌ها گروهی ارسال می‌شوند.",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+        )
+        return True
+    if action == "spam_help":
+        await event.edit(
+            "🔁 <b>اسپم</b>\n\nروی پیام ریپلای کن و بنویس:\n<code>تکرار 160</code>\n\nحداقل ۱ و حداکثر ۱۰۰۰ تکرار.",
+            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "tools"), "primary")]]
+        )
+        return True
+
     if action == "guide":
         try:
             await event.edit(
@@ -2236,7 +2236,7 @@ async def handle_self_panel_callback(event):
             page = int(action.split(":", 1)[1])
         except ValueError:
             page = 1
-        page = max(1, min(page, 11))
+        page = max(1, min(page, 15))
         try:
             await event.edit(
                 self_guide_text(page),
@@ -4126,6 +4126,426 @@ async def _profile_copy_restore(event, uid):
         await event.edit("❌ بازگردانی پروفایل انجام نشد.")
 
 
+# ============================================================
+# EXTRA SELF TOOLS: SPAM / FIRST COMMENT / SECRETARY / GROUP / TAG
+# ============================================================
+
+GLOBAL_BAN_KEY = "global_ban_list"
+FIRST_COMMENT_CHANNELS_KEY = "first_comment_channels"
+FIRST_COMMENT_TEXT_KEY = "first_comment_text"
+SECRETARY_REPLY_KEY = "secretary_reply"
+SECRETARY_ENABLED_KEY = "secretary_enabled"
+SECRETARY_INTERVAL_KEY = "secretary_interval"
+
+
+def _json_setting(uid, key, default):
+    try:
+        value = json.loads(self_get(uid, key, json.dumps(default, ensure_ascii=False)))
+        return value if isinstance(value, type(default)) else default
+    except Exception:
+        return default
+
+
+def _global_ban_list(uid):
+    return {int(x) for x in _json_setting(uid, GLOBAL_BAN_KEY, []) if str(x).lstrip("-").isdigit()}
+
+
+def _save_global_ban_list(uid, values):
+    self_set(uid, GLOBAL_BAN_KEY, json.dumps(sorted({int(x) for x in values})))
+
+
+def _first_comment_channels(uid):
+    raw = _json_setting(uid, FIRST_COMMENT_CHANNELS_KEY, [])
+    result = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("id") is not None:
+            try:
+                item["id"] = int(item["id"])
+                result.append(item)
+            except Exception:
+                pass
+    return result
+
+
+def _save_first_comment_channels(uid, values):
+    self_set(uid, FIRST_COMMENT_CHANNELS_KEY, json.dumps(values, ensure_ascii=False))
+
+
+def _first_comment_text(uid):
+    return self_get(uid, FIRST_COMMENT_TEXT_KEY, "") or ""
+
+
+def _secretary_reply(uid):
+    try:
+        value = json.loads(self_get(uid, SECRETARY_REPLY_KEY, "{}"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_secretary_reply(uid, value):
+    self_set(uid, SECRETARY_REPLY_KEY, json.dumps(value, ensure_ascii=False))
+
+
+async def _is_group_admin(client, chat_id, uid):
+    try:
+        if not chat_id:
+            return False
+        perms = await client.get_permissions(chat_id, uid)
+        return bool(getattr(perms, "is_admin", False) or getattr(perms, "is_creator", False))
+    except Exception:
+        return False
+
+
+async def _resolve_user(client, raw, reply_message=None):
+    raw = (raw or "").strip()
+    if reply_message and reply_message.sender_id:
+        return await client.get_entity(int(reply_message.sender_id))
+    if raw.startswith("@"):
+        raw = raw[1:]
+    if raw.lstrip("-").isdigit():
+        return await client.get_entity(int(raw))
+    if raw:
+        return await client.get_entity(raw)
+    return None
+
+
+async def _spam_replied(event, uid, count):
+    if not event.is_reply:
+        return "❌ این دستور باید روی پیام موردنظر ریپلای شود."
+    if count < 1 or count > 1000:
+        return "❌ تعداد تکرار باید بین ۱ تا ۱۰۰۰ باشد."
+    replied = await event.get_reply_message()
+    if not replied:
+        return "❌ پیام ریپلای‌شده پیدا نشد."
+    if uid in _spam_tasks and not _spam_tasks[uid].done():
+        return "⏳ یک اسپم در حال اجراست."
+
+    chat_id = event.chat_id
+    async def worker():
+        try:
+            # Re-send content using the SELF account. Never use the bot client.
+            text = replied.raw_text or ""
+            if getattr(replied, "media", None):
+                path = None
+                try:
+                    path = await replied.download_media(file=str(BASE_DIR / "tmp_spam" / str(uid)))
+                    if path:
+                        for _ in range(count):
+                            await _tg_call_with_flood_retry(
+                                lambda p=path: event.client.send_file(chat_id, p, caption=text[:4096]),
+                                label="spam send",
+                                max_retries=5,
+                            )
+                    else:
+                        raise RuntimeError("media_download_failed")
+                finally:
+                    if path:
+                        with contextlib.suppress(Exception):
+                            Path(path).unlink(missing_ok=True)
+            else:
+                for _ in range(count):
+                    await _tg_call_with_flood_retry(
+                        lambda: event.client.send_message(chat_id, text),
+                        label="spam send",
+                        max_retries=5,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[SPAM {uid}] failed: {exc}")
+
+    task = asyncio.create_task(worker())
+    _spam_tasks[uid] = task
+    with contextlib.suppress(Exception):
+        await event.delete()
+    return f"✅ اسپم {count:,} تکرار با اکانت SELF شروع شد."
+
+
+async def _maybe_first_comment(event, uid):
+    """If an outgoing forwarded channel post is sent into a configured discussion group,
+    immediately post the configured first comment as a reply to that forwarded post."""
+    if not event.is_group:
+        return
+    text = _first_comment_text(uid).strip()
+    channels = _first_comment_channels(uid)
+    if not text or not channels:
+        return
+    msg = event.message
+    fwd = getattr(msg, "fwd_from", None)
+    from_id = getattr(fwd, "from_id", None)
+    source_id = getattr(from_id, "channel_id", None)
+    if source_id is None:
+        return
+    source_id = int(source_id)
+    configured = {int(x.get("id")) for x in channels if x.get("id") is not None}
+    if source_id not in configured:
+        return
+    try:
+        await event.client.send_message(event.chat_id, text, reply_to=msg.id)
+    except Exception as exc:
+        print(f"[COMMENT {uid}] failed for channel {source_id}: {exc}")
+
+
+async def _handle_group_command(event, uid, text):
+    low = text.casefold().strip()
+    client = event.client
+
+    # Global ban enforcement runs for every incoming message elsewhere too.
+    if low in {"پین", "پین + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی پیام موردنظر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند پین کند.")
+            return True
+        replied = await event.get_reply_message()
+        try:
+            await client.pin_message(event.chat_id, replied.id, notify=False)
+            await event.edit("📌 پیام با موفقیت سنجاق شد.")
+        except Exception as exc:
+            await event.edit(f"❌ پین انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"حذف پین", "حذف پین + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی پیام موردنظر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند پین را حذف کند.")
+            return True
+        replied = await event.get_reply_message()
+        try:
+            await client.unpin_message(event.chat_id, message=replied.id)
+            await event.edit("📌 سنجاق پیام حذف شد.")
+        except Exception as exc:
+            await event.edit(f"❌ حذف پین انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"بن", ".سیک", "سیک", "بن + ریپلای", ".سیک + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ این دستور را داخل گروه و با ریپلای روی کاربر استفاده کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند بن کند.")
+            return True
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        if not target or target == uid:
+            await event.edit("❌ کاربر هدف معتبر نیست.")
+            return True
+        try:
+            await client.edit_permissions(event.chat_id, target, view_messages=False, send_messages=False)
+            await event.edit(f"🚫 کاربر `{target}` از گروه بن شد.")
+        except Exception as exc:
+            await event.edit(f"❌ بن انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"آن بن", "ان بن", "آن‌بن", "ان‌بن", "آن بن + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی کاربر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند آن‌بن کند.")
+            return True
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        try:
+            await client.edit_permissions(event.chat_id, target, view_messages=True, send_messages=True)
+            await event.edit(f"✅ کاربر `{target}` آن‌بن شد.")
+        except Exception as exc:
+            await event.edit(f"❌ آن‌بن انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    m = re.fullmatch(r"بن ال(?:\s+(.+))?", text, flags=re.S | re.I)
+    if m:
+        raw = (m.group(1) or "").strip()
+        if not raw and not event.is_reply:
+            await event.edit("❌ آیدی یا یوزرنیم را بده یا روی پیام کاربر ریپلای کن.")
+            return True
+        try:
+            replied = await event.get_reply_message() if event.is_reply else None
+            target = await _resolve_user(client, raw, replied)
+            target_id = int(target.id)
+            bans = _global_ban_list(uid)
+            bans.add(target_id)
+            _save_global_ban_list(uid, bans)
+            if event.is_group and await _is_group_admin(client, event.chat_id, uid) and target_id != uid:
+                with contextlib.suppress(Exception):
+                    await client.edit_permissions(event.chat_id, target_id, view_messages=False, send_messages=False)
+            await event.edit(f"🚫 کاربر `{target_id}` به لیست بن سراسری اضافه شد.")
+        except Exception as exc:
+            await event.edit(f"❌ ثبت بن سراسری ناموفق بود: {html.escape(str(exc))}")
+        return True
+
+    m = re.fullmatch(r"حذف بن ال(?:\s+(.+))?", text, flags=re.S | re.I)
+    if m:
+        raw = (m.group(1) or "").strip()
+        try:
+            replied = await event.get_reply_message() if event.is_reply else None
+            target = await _resolve_user(client, raw, replied)
+            target_id = int(target.id)
+            bans = _global_ban_list(uid)
+            if target_id not in bans:
+                await event.edit("❌ این کاربر در لیست بن سراسری نیست.")
+                return True
+            bans.discard(target_id)
+            _save_global_ban_list(uid, bans)
+            await event.edit(f"✅ کاربر `{target_id}` از لیست بن سراسری حذف شد.")
+        except Exception as exc:
+            await event.edit(f"❌ حذف بن سراسری ناموفق بود: {html.escape(str(exc))}")
+        return True
+
+    if low == "لیست بن ال":
+        bans = sorted(_global_ban_list(uid))
+        if not bans:
+            await event.edit("🚫 لیست بن سراسری خالی است.")
+        else:
+            await event.edit("🚫 <b>لیست بن سراسری</b>\n\n" + "\n".join(f"{i}. <code>{x}</code>" for i, x in enumerate(bans, 1)), parse_mode="html")
+        return True
+
+    tag_match = re.fullmatch(r"تگ(?:\s+([0-9۰-۹]+))?", _fa_digits(text))
+    if tag_match or low == "همه":
+        if not event.is_group:
+            await event.edit("❌ تگ اعضا فقط داخل گروه قابل استفاده است.")
+            return True
+        count = None if low == "همه" else int(tag_match.group(1) or 0)
+        if count is not None and not 1 <= count <= 1000:
+            await event.edit("❌ تعداد تگ باید بین ۱ تا ۱۰۰۰ باشد.")
+            return True
+        replied = await event.get_reply_message() if event.is_reply else None
+        members = []
+        async for member in client.iter_participants(event.chat_id):
+            if getattr(member, "bot", False) or int(member.id) == int(uid):
+                continue
+            members.append(member)
+            if count is not None and len(members) >= count:
+                break
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if not members:
+            await client.send_message(event.chat_id, "❌ عضوی برای تگ پیدا نشد.")
+            return True
+        for start in range(0, len(members), 15):
+            chunk = members[start:start + 15]
+            lines = []
+            for member in chunk:
+                name = html.escape((getattr(member, "first_name", None) or getattr(member, "username", None) or "کاربر").strip())
+                lines.append(f'<a href="tg://user?id={int(member.id)}">{name}</a>')
+            kwargs = {"parse_mode": "html"}
+            if replied:
+                kwargs["reply_to"] = replied.id
+            await client.send_message(event.chat_id, "\n".join(lines), **kwargs)
+        return True
+
+    return False
+
+
+async def _handle_first_comment_command(event, uid, text):
+    low = text.casefold().strip()
+    if low.startswith("تنظیم کامنت اول"):
+        raw = text[len("تنظیم کامنت اول"):].strip()
+        if not raw:
+            await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن.")
+            return True
+        try:
+            entity = await event.client.get_entity(raw)
+            if not isinstance(entity, types.Channel) or getattr(entity, "megagroup", False):
+                await event.edit("❌ این مورد یک کانال پخش نیست.")
+                return True
+            channels = _first_comment_channels(uid)
+            item = {"id": int(entity.id), "title": getattr(entity, "title", "کانال"), "username": getattr(entity, "username", None)}
+            channels = [x for x in channels if int(x.get("id", 0)) != int(entity.id)]
+            channels.append(item)
+            _save_first_comment_channels(uid, channels)
+            await event.edit(f"✅ کامنت خودکار برای «{html.escape(item['title'])}» فعال شد.")
+        except Exception as exc:
+            await event.edit(f"❌ کانال پیدا نشد: {html.escape(str(exc))}")
+        return True
+    if low.startswith("حذف کامنت اول"):
+        raw = text[len("حذف کامنت اول"):].strip()
+        try:
+            entity = await event.client.get_entity(raw)
+            channels = [x for x in _first_comment_channels(uid) if int(x.get("id", 0)) != int(entity.id)]
+            _save_first_comment_channels(uid, channels)
+            await event.edit("✅ کامنت خودکار این کانال غیرفعال شد.")
+        except Exception as exc:
+            await event.edit(f"❌ حذف انجام نشد: {html.escape(str(exc))}")
+        return True
+    if low in {"تنظیم کامنت", "تنظیم کامنت + ریپلای", "تنظیم کامنت ریپلای"}:
+        if not event.is_reply:
+            await event.edit("❌ روی پیام متنی کامنت ریپلای کن.")
+            return True
+        replied = await event.get_reply_message()
+        if not replied or not (replied.raw_text or "").strip():
+            await event.edit("❌ پیام ریپلای‌شده باید متنی باشد.")
+            return True
+        self_set(uid, FIRST_COMMENT_TEXT_KEY, replied.raw_text.strip())
+        await event.edit("✅ متن کامنت اول ذخیره شد.")
+        return True
+    if low == "لیست کامنت":
+        channels = _first_comment_channels(uid)
+        body = ["💬 <b>لیست کامنت اول</b>\n"]
+        for i, item in enumerate(channels, 1):
+            title = html.escape(str(item.get("title") or item.get("username") or item.get("id")))
+            body.append(f"\n{i}. {title} • <code>{int(item['id'])}</code>")
+        body.append(f"\n\n📝 متن فعلی: {html.escape(_first_comment_text(uid)[:300]) if _first_comment_text(uid) else '❌ تنظیم نشده'}")
+        await event.edit("".join(body), parse_mode="html")
+        return True
+    if low == "پاکسازی لیست کامنت":
+        _save_first_comment_channels(uid, [])
+        await event.edit("✅ لیست کامنت اول پاک شد.")
+        return True
+    return False
+
+
+async def _handle_secretary_command(event, uid, text):
+    low = text.casefold().strip()
+    if low in {"منشی روشن", "منشی روشنیا"}:
+        if not _secretary_reply(uid):
+            await event.edit("❌ ابتدا با «تنظیم منشی» پاسخ منشی را تنظیم کن.")
+            return True
+        self_set(uid, SECRETARY_ENABLED_KEY, "on")
+        await event.edit("🤵 منشی روشن شد. فقط در پیوی فعال است.")
+        return True
+    if low == "منشی خاموش":
+        self_set(uid, SECRETARY_ENABLED_KEY, "off")
+        await event.edit("🤵 منشی خاموش شد.")
+        return True
+    m = re.fullmatch(r"تنظیم زمان منشی\s+([0-9۰-۹]+)", _fa_digits(text))
+    if m:
+        minutes = int(m.group(1))
+        if not 5 <= minutes <= 60:
+            await event.edit("❌ زمان منشی باید بین ۵ تا ۶۰ دقیقه باشد.")
+            return True
+        self_set(uid, SECRETARY_INTERVAL_KEY, str(minutes))
+        await event.edit(f"✅ فاصله پاسخ منشی روی {minutes} دقیقه تنظیم شد.")
+        return True
+    if low in {"تنظیم منشی", "تنظیم منشی + ریپلای", "تنظیم منشی ریپلای"}:
+        if not event.is_reply:
+            await event.edit("❌ روی پیام متنی یا مدیای موردنظر ریپلای کن.")
+            return True
+        replied = await event.get_reply_message()
+        if not replied:
+            await event.edit("❌ پیام پیدا نشد.")
+            return True
+        data = {"kind": "text", "text": replied.raw_text or "", "path": None, "caption": replied.raw_text or ""}
+        if getattr(replied, "media", None):
+            try:
+                media_dir = BASE_DIR / "secretary_media" / str(uid)
+                media_dir.mkdir(parents=True, exist_ok=True)
+                path = await replied.download_media(file=str(media_dir / "reply"))
+                if path:
+                    data["kind"] = "media"
+                    data["path"] = str(path)
+            except Exception as exc:
+                await event.edit(f"❌ ذخیره مدیا ناموفق بود: {html.escape(str(exc))}")
+                return True
+        _save_secretary_reply(uid, data)
+        await event.edit("✅ پاسخ منشی ذخیره شد. برای فعال‌سازی: «منشی روشن»")
+        return True
+    return False
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
@@ -4136,6 +4556,19 @@ async def self_handle_outgoing(event, uid):
     if await _self_currency_command(event, uid, text):
         return
     if await _self_logo_command(event, uid, text):
+        return
+
+    if await _handle_first_comment_command(event, uid, text):
+        return
+    if await _handle_secretary_command(event, uid, text):
+        return
+    if await _handle_group_command(event, uid, text):
+        return
+
+    m = re.fullmatch(r"تکرار\s+([0-9۰-۹]+)", _fa_digits(text))
+    if m:
+        count = int(m.group(1))
+        await event.edit(await _spam_replied(event, uid, count))
         return
 
     if low == "کپی پروفایل":
@@ -4803,6 +5236,12 @@ async def self_handle_incoming(event, uid):
     sender_id = int(event.sender_id) if event.sender_id else 0
     if event.is_private and sender_id and sender_id != int(uid):
         _cache_private_message(uid, event.message)
+    if (event.is_group or event.is_channel) and sender_id and sender_id in _global_ban_list(uid) and sender_id != int(uid):
+        with contextlib.suppress(Exception):
+            if event.is_group:
+                await client.edit_permissions(event.chat_id, sender_id, view_messages=False, send_messages=False)
+        return
+
     if event.is_private and sender_id in self_chat_lock_targets(uid) and sender_id != int(uid):
         # Delete this incoming message for both sides when Telegram allows revoke.
         with contextlib.suppress(Exception):
@@ -4824,6 +5263,24 @@ async def self_handle_incoming(event, uid):
                 msg_id=event.id,
                 reaction=[ReactionEmoji(emoticon=emoji)],
             ))
+
+    if event.is_private and self_get(uid, SECRETARY_ENABLED_KEY, "off") == "on" and event.sender_id and int(event.sender_id) != int(uid):
+        sender = int(event.sender_id)
+        key = (int(uid), sender)
+        now = time.time()
+        interval = max(5, min(60, int(self_get(uid, SECRETARY_INTERVAL_KEY, "5") or 5))) * 60
+        last = float(_secretary_reply_cache.get(key, 0) or 0)
+        if now - last >= interval:
+            reply = _secretary_reply(uid)
+            if reply:
+                try:
+                    if reply.get("kind") == "media" and reply.get("path") and Path(reply["path"]).exists():
+                        await client.send_file(event.chat_id, reply["path"], caption=(reply.get("caption") or "")[:4096])
+                    else:
+                        await client.send_message(event.chat_id, reply.get("text") or reply.get("caption") or "")
+                    _secretary_reply_cache[key] = now
+                except Exception as exc:
+                    print(f"[SECRETARY {uid}] reply failed: {exc}")
 
     if event.is_private and self_get(uid, "auto_reply", "off") == "on" and event.sender_id and int(event.sender_id) != int(uid):
         incoming_text = (event.raw_text or "").strip().casefold()
@@ -4919,6 +5376,8 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             # Outgoing messages belong to the account owner and must never be
             # placed in the deleted-message archive cache.
             await self_handle_outgoing(event, user_id)
+            with contextlib.suppress(Exception):
+                await _maybe_first_comment(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] outgoing handler error: {exc}")
 
