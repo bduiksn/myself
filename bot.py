@@ -23,9 +23,6 @@ import secrets
 import tempfile
 import shutil
 import zipfile
-import hashlib
-import io
-from cryptography.fernet import Fernet, InvalidToken
 import re
 import sqlite3
 import subprocess
@@ -99,40 +96,6 @@ DATA_DIR = BASE_DIR / "database_users"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 BOT_IMAGE_PATH = BASE_DIR / "1782502761872.jpg"
-ADMIN_CONFIG_PATH = BASE_DIR / "admin_config.json"
-BACKUP_VERSION = 1
-
-def _backup_fernet():
-    raw = os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
-    if raw:
-        try:
-            return Fernet(raw.encode())
-        except Exception:
-            pass
-    digest = hashlib.sha256((BOT_TOKEN + "|" + API_HASH + "|diamond-backup-v1").encode()).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
-
-def _load_admin_config():
-    try:
-        if ADMIN_CONFIG_PATH.exists():
-            data = json.loads(ADMIN_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-    except Exception as exc:
-        print(f"[ADMIN CONFIG] load failed: {exc}")
-    return {"required_channels": []}
-
-def _save_admin_config(data):
-    tmp = ADMIN_CONFIG_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(ADMIN_CONFIG_PATH)
-
-def required_channels():
-    value = _load_admin_config().get("required_channels", [])
-    return value if isinstance(value, list) else []
-
-def _channel_label(item):
-    return str(item.get("title") or item.get("username") or "کانال").strip()
 
 # ============================================================
 # DATABASE
@@ -429,121 +392,202 @@ def btn(text: str, data, style: str | None = None):
 
 
 # ============================================================
-# FORCE JOIN
+# FORCE JOIN + BACKUP
 # ============================================================
 
-async def _resolve_required_channel(item):
-    return await bot.get_entity(item.get("username") or item.get("id"))
+FORCE_JOIN_KEY = "force_join_channels"
+SUPPORT_USERNAME = "HusteRIX"
+BACKUP_PREFIX = "husterix_backup_"
+MAX_BACKUP_BYTES = 100 * 1024 * 1024
 
-async def _is_member(channel, user_id):
+
+def _admin_state(key: str, default=None):
+    return get_setting(int(ADMINS[0]), key, default) if ADMINS else default
+
+
+def _set_admin_state(key: str, value):
+    if ADMINS:
+        set_setting(int(ADMINS[0]), key, value)
+
+
+def get_force_join_channels():
     try:
-        perms = await bot.get_permissions(channel, int(user_id))
-        participant = getattr(perms, "participant", None)
-        if participant is None:
-            return True
-        return "banned" not in participant.__class__.__name__.lower()
+        raw = json.loads(_admin_state(FORCE_JOIN_KEY, "[]"))
+        return raw if isinstance(raw, list) else []
     except Exception:
+        return []
+
+
+def save_force_join_channels(channels):
+    _set_admin_state(FORCE_JOIN_KEY, json.dumps(channels, ensure_ascii=False))
+
+
+def _channel_url(channel):
+    username = str(channel.get("username") or "").lstrip("@")
+    if username:
+        return f"https://t.me/{username}"
+    return channel.get("url") or ""
+
+
+async def _is_joined_channel(user_id: int, channel):
+    try:
+        entity_ref = channel.get("username") or channel.get("id")
+        entity = await bot.get_entity(entity_ref)
+        participant = await bot(functions.channels.GetParticipantRequest(
+            channel=entity,
+            participant=await bot.get_input_entity(user_id),
+        ))
+        return isinstance(
+            getattr(participant, "participant", None),
+            (types.ChannelParticipant, types.ChannelParticipantAdmin, types.ChannelParticipantCreator)
+        )
+    except Exception:
+        # A bot that cannot verify a channel must fail closed for force-join.
         return False
 
-async def force_join_status(user_id):
-    channels = required_channels()
-    if not channels or user_id in ADMINS:
-        return True, []
-    missing = []
-    for item in channels:
-        try:
-            entity = await _resolve_required_channel(item)
-            if not await _is_member(entity, user_id):
-                missing.append(item)
-        except Exception as exc:
-            print(f"[FORCE JOIN] check failed for {item}: {exc}")
-    return not missing, missing
 
-def force_join_buttons(missing):
+async def get_missing_force_joins(user_id: int):
+    missing = []
+    for channel in get_force_join_channels():
+        if not await _is_joined_channel(user_id, channel):
+            missing.append(channel)
+    return missing
+
+
+def force_join_buttons(channels):
     rows = []
-    for item in missing:
-        username = str(item.get("username") or "").strip()
-        url = item.get("url") or (f"https://t.me/{username.lstrip('@')}" if username else None)
+    for channel in channels:
+        title = str(channel.get("title") or channel.get("username") or "کانال")
+        url = _channel_url(channel)
         if url:
-            rows.append([Button.url(f"📢 {_channel_label(item)}", url)])
-    rows.append([btn("✅ عضو شدم", b"forcejoin_check", "success")])
+            rows.append([btn(f"📢 {title}", f"fj_open:{channel.get('id')}", "primary")])
+    rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
     return rows
 
-async def send_force_join(target, missing=None):
-    if missing is None:
-        _, missing = await force_join_status(target)
-    if not missing:
+
+async def show_force_join(event, channels=None):
+    channels = channels if channels is not None else get_force_join_channels()
+    if not channels:
         return False
-    await bot.send_message(
-        target,
-        "🔒 <b>عضویت اجباری</b>\n\nبرای ادامه استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید.\n\nبعد از عضویت روی «✅ عضو شدم» بزنید.",
-        parse_mode="html", buttons=force_join_buttons(missing)
+    text = (
+        "🔐 <b>عضویت اجباری</b>\\n\\n"
+        "برای ادامه استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید:\\n\\n"
+        + "\\n".join(f"• {html.escape(str(c.get('title') or c.get('username') or 'کانال'))}" for c in channels)
+        + "\\n\\nبعد از عضویت روی «🟢 عضو شدم، ادامه» بزن."
     )
+    await edit_or_send(event, text, force_join_buttons(channels))
     return True
 
-async def continue_after_force_join(user_id):
-    if not has_registered_phone(user_id):
-        await send_phone_request(user_id)
+
+async def ensure_force_join(user_id: int, event=None):
+    if user_id in ADMINS:
+        return True
+    missing = await get_missing_force_joins(user_id)
+    if not missing:
+        return True
+    if event is not None:
+        await show_force_join(event, missing)
     else:
-        await send_main(user_id, user_id)
+        await bot.send_message(
+            user_id,
+            "🔐 برای ادامه ابتدا عضو کانال‌های اجباری شوید.",
+            buttons=force_join_buttons(missing)
+        )
+    return False
 
-# ============================================================
-# BACKUPS
-# ============================================================
 
-def _make_backup_file():
-    raw_zip = io.BytesIO()
-    manifest = {"version": BACKUP_VERSION, "created_at": datetime.now().isoformat(), "files": []}
-    with zipfile.ZipFile(raw_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        if ADMIN_CONFIG_PATH.exists():
-            zf.write(ADMIN_CONFIG_PATH, "admin_config.json")
-            manifest["files"].append("admin_config.json")
-        for db_file in sorted(DATA_DIR.glob("user_*.db")):
-            zf.write(db_file, f"database_users/{db_file.name}")
-            manifest["files"].append(f"database_users/{db_file.name}")
-        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    encrypted = _backup_fernet().encrypt(raw_zip.getvalue())
-    out = tempfile.NamedTemporaryFile(prefix="diamond_backup_", suffix=".diamondbackup", delete=False)
-    out.write(encrypted); out.close()
-    return Path(out.name)
+def _safe_backup_member(name: str):
+    p = Path(name)
+    return not p.is_absolute() and ".." not in p.parts
 
-async def _restore_backup_file(path):
+
+def create_backup_sync():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_root = Path(tempfile.mkdtemp(prefix="husterix_backup_build_"))
+    archive = BASE_DIR / f"{BACKUP_PREFIX}{stamp}.zip"
     try:
-        payload = _backup_fernet().decrypt(Path(path).read_bytes())
-    except InvalidToken:
-        raise RuntimeError("فایل بکاپ معتبر نیست یا کلید امنیتی این سرور با بکاپ یکی نیست.")
-    temp_root = Path(tempfile.mkdtemp(prefix="diamond_restore_"))
-    try:
-        with zipfile.ZipFile(io.BytesIO(payload), "r") as zf:
-            names = zf.namelist()
-            if "manifest.json" not in names:
-                raise RuntimeError("manifest بکاپ پیدا نشد.")
-            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-            if int(manifest.get("version", 0)) != BACKUP_VERSION:
-                raise RuntimeError("نسخه بکاپ با نسخه فعلی سازگار نیست.")
-            for name in names:
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise RuntimeError("مسیر غیرمجاز داخل بکاپ وجود دارد.")
-            zf.extractall(temp_root)
-        restored_dbs = list((temp_root / "database_users").glob("user_*.db"))
-        if not restored_dbs:
-            raise RuntimeError("هیچ دیتابیس کاربری معتبری در بکاپ وجود ندارد.")
-        for uid in list(self_workers):
-            with contextlib.suppress(Exception):
-                await stop_self_worker(uid)
-        safety_dir = BASE_DIR / ".pre_restore_safety"
-        safety_dir.mkdir(exist_ok=True)
-        for old in DATA_DIR.glob("user_*.db"):
-            shutil.copy2(old, safety_dir / old.name)
-            old.unlink(missing_ok=True)
-        for db in restored_dbs:
-            shutil.copy2(db, DATA_DIR / db.name)
-        cfg = temp_root / "admin_config.json"
-        if cfg.exists():
-            shutil.copy2(cfg, ADMIN_CONFIG_PATH)
-        await restore_workers()
+        db_copy = temp_root / "database_users"
+        shutil.copytree(DATA_DIR, db_copy)
+        manifest = {
+            "format": 1,
+            "created_at": datetime.now().isoformat(),
+            "database_dir": "database_users",
+            "force_join_channels": get_force_join_channels(),
+        }
+        (temp_root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in temp_root.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(temp_root).as_posix())
+        return archive
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def inspect_backup_sync(archive_path: Path):
+    if archive_path.stat().st_size > MAX_BACKUP_BYTES:
+        raise RuntimeError("backup_too_large")
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        names = zf.namelist()
+        if "manifest.json" not in names:
+            raise RuntimeError("backup_manifest_missing")
+        if not all(_safe_backup_member(n) for n in names):
+            raise RuntimeError("backup_path_traversal")
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        if int(manifest.get("format", 0)) != 1:
+            raise RuntimeError("backup_format")
+        if "database_users/" not in {n if n.endswith("/") else n + "/" for n in names} and not any(
+            n.startswith("database_users/") for n in names
+        ):
+            raise RuntimeError("backup_database_missing")
+        return manifest
+
+
+def restore_backup_sync(archive_path: Path):
+    manifest = inspect_backup_sync(archive_path)
+    restore_root = Path(tempfile.mkdtemp(prefix="husterix_restore_"))
+    old_root = BASE_DIR / f".database_users_old_{secrets.token_hex(6)}"
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            zf.extractall(restore_root)
+        extracted = restore_root / "database_users"
+        if not extracted.is_dir():
+            raise RuntimeError("backup_database_missing")
+        os.replace(DATA_DIR, old_root)
+        os.replace(extracted, DATA_DIR)
+        fj = manifest.get("force_join_channels")
+        if isinstance(fj, list):
+            save_force_join_channels(fj)
+        shutil.rmtree(old_root, ignore_errors=True)
+        return manifest
+    except Exception:
+        if not DATA_DIR.exists() and old_root.exists():
+            os.replace(old_root, DATA_DIR)
+        raise
+    finally:
+        shutil.rmtree(restore_root, ignore_errors=True)
+
+
+async def stop_all_self_workers_for_backup():
+    users = list(self_clients.keys())
+    for uid in users:
+        with contextlib.suppress(Exception):
+            deactivate_session(uid)
+        task = self_workers.get(uid)
+        if task:
+            task.cancel()
+        client = self_clients.get(uid)
+        if client:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+    await asyncio.sleep(0.2)
+    self_workers.clear()
+    self_clients.clear()
+
 
 # ============================================================
 # UI
@@ -553,16 +597,16 @@ def main_buttons(user_id: int):
     rows = [
         [btn("💎 خرید سلف", b"buy_self", "success")],
         [
-            btn("👤 حساب کاربری", b"user_account", "primary"),
             btn("⚙️ مدیریت سلف", b"manage_self", "primary"),
+            btn("👤 حساب کاربری", b"user_account", "primary"),
         ],
         [
             btn("👥 زیرمجموعه‌گیری", b"referral_system", "primary"),
-            btn("🆘 پشتیبانی", b"support", "primary"),
+            Button.url("🆘 پشتیبانی", "https://t.me/HusteRIX"),
         ],
     ]
     if user_id in ADMINS:
-        rows.append([btn("🛠 پنل مدیریت", b"admin_panel", "primary")])
+        rows.append([btn("🛠 مدیریت", b"admin_panel", "primary")])
     return rows
 
 
@@ -4451,21 +4495,6 @@ async def private_message(event):
 
     init_user_db(user_id)
 
-    # Preserve referral code even when the user must complete force-join first.
-    if text.startswith("/start"):
-        parts = text.split(maxsplit=1)
-        if len(parts) == 2:
-            with contextlib.suppress(Exception):
-                referrer = int(parts[1])
-                if referrer != user_id and not has_registered_phone(user_id):
-                    set_setting(user_id, "pending_referrer", str(referrer))
-
-    if user_id not in ADMINS:
-        joined, missing = await force_join_status(user_id)
-        if not joined:
-            await send_force_join(user_id, missing)
-            return
-
     # --------------------------------------------------------
     # START + REFERRAL
     # --------------------------------------------------------
@@ -4478,8 +4507,13 @@ async def private_message(event):
         if len(parts) == 2:
             with contextlib.suppress(Exception):
                 referrer = int(parts[1])
-                if referrer != user_id and has_registered_phone(user_id):
+                if referrer != user_id and not has_registered_phone(user_id):
+                    set_setting(user_id, "pending_referrer", str(referrer))
+                else:
                     await process_referral(user_id, referrer)
+
+        if not await ensure_force_join(user_id):
+            return
 
         if not has_registered_phone(user_id):
             await send_phone_request(user_id)
@@ -4507,50 +4541,76 @@ async def private_message(event):
             with contextlib.suppress(Exception):
                 await process_referral(user_id, int(pending_referrer))
             set_setting(user_id, "pending_referrer", "")
-        await bot.send_message(user_id, "✅ شماره شما ثبت شد. حالا می‌توانی مستقیم از گزینه‌های ربات استفاده کنی.", buttons=Button.clear())
+        await bot.send_message(user_id, "✅ شماره شما ثبت شد.", buttons=Button.clear())
+        if not await ensure_force_join(user_id):
+            return
         await send_main(user_id, user_id)
         return
 
     # --------------------------------------------------------
-    # ADMIN INPUT STATES
+    # ADMIN INPUTS: FORCE JOIN / BACKUP
     # --------------------------------------------------------
     state = pending.get(user_id)
-    if user_id in ADMINS and state:
-        if state.get("step") == "forcejoin_add":
-            value = (event.raw_text or "").strip()
-            try:
-                entity = await bot.get_entity(value)
-                title = (getattr(entity, "title", None) or value).strip()
-                username = getattr(entity, "username", None)
-                if not username: raise ValueError("کانال باید یوزرنیم عمومی داشته باشد.")
-                cfg = _load_admin_config(); channels = cfg.setdefault("required_channels", [])
-                if any(str(x.get("username", "")).lstrip("@").casefold() == username.casefold() for x in channels):
-                    await event.reply("⚠️ این کانال قبلاً ثبت شده است.")
-                else:
-                    channels.append({"id": int(entity.id), "username": username, "title": title, "url": f"https://t.me/{username}"})
-                    _save_admin_config(cfg); await event.reply(f"✅ کانال «{title}» اضافه شد.")
-            except Exception as exc:
-                await event.reply(f"❌ کانال ثبت نشد: {exc}")
-            pending.pop(user_id, None); return
-        if state.get("step") == "backup_restore":
-            if not event.document:
-                await event.reply("❌ لطفاً فایل بکاپ را به‌صورت فایل ارسال کنید."); return
-            file_name = ""
-            for attr in getattr(event.document, "attributes", []) or []:
-                file_name = getattr(attr, "file_name", "") or file_name
-            if not file_name.lower().endswith(".diamondbackup"):
-                await event.reply("❌ فقط فایل .diamondbackup پذیرفته می‌شود."); return
-            temp = None
-            try:
-                temp = await event.download_media(); await _restore_backup_file(temp)
-                await event.reply("✅ بکاپ با موفقیت بازیابی شد و Workerهای سلف دوباره اجرا شدند.")
-            except Exception as exc:
-                await event.reply(f"❌ بازیابی بکاپ ناموفق بود: {exc}")
-            finally:
-                pending.pop(user_id, None)
-                if temp:
-                    with contextlib.suppress(Exception): Path(temp).unlink()
+
+    if user_id in ADMINS and state and state.get("step") == "force_join_add":
+        raw = (event.raw_text or "").strip()
+        username = raw.split("/")[-1].lstrip("@").strip()
+        if not username or " " in username:
+            await event.reply("❌ یوزرنیم یا لینک عمومی کانال معتبر نیست.")
             return
+        try:
+            entity = await bot.get_entity("@" + username)
+            if not isinstance(entity, types.Channel):
+                raise RuntimeError("not_channel")
+            channel = {
+                "id": int(entity.id),
+                "title": getattr(entity, "title", None) or username,
+                "username": getattr(entity, "username", None) or username,
+                "url": f"https://t.me/{getattr(entity, 'username', None) or username}",
+            }
+            channels = [c for c in get_force_join_channels() if int(c.get("id", 0)) != channel["id"]]
+            channels.append(channel)
+            save_force_join_channels(channels)
+            pending.pop(user_id, None)
+            await event.reply(f"✅ کانال «{channel['title']}» به جوین اجباری اضافه شد.", buttons=[
+                [btn("📢 مدیریت جوین اجباری", b"force_join", "primary")]
+            ])
+        except Exception as exc:
+            print(f"[FORCE JOIN] add failed: {exc}")
+            await event.reply("❌ کانال پیدا نشد. مطمئن شو یوزرنیم عمومی است و بات به کانال دسترسی دارد.")
+        return
+
+    if user_id in ADMINS and state and state.get("step") == "backup_restore":
+        document = getattr(event, "document", None)
+        if not document:
+            await event.reply("❌ فایل ZIP بکاپ را ارسال کن.")
+            return
+        tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_backup_upload_{user_id}_"))
+        archive_path = tmp_dir / "backup.zip"
+        try:
+            downloaded = await event.download_media(file=str(archive_path))
+            if not downloaded:
+                raise RuntimeError("download_failed")
+            await asyncio.to_thread(inspect_backup_sync, archive_path)
+            await bot.send_message(user_id, "⏳ بکاپ معتبر است؛ در حال توقف Workerها و بازگردانی اطلاعات...")
+            await stop_all_self_workers_for_backup()
+            manifest = await asyncio.to_thread(restore_backup_sync, archive_path)
+            pending.pop(user_id, None)
+            await bot.send_message(
+                user_id,
+                "✅ بکاپ با موفقیت بازگردانی شد.\n"
+                "⚙️ اطلاعات کاربران، موجودی‌ها، sessionها و تنظیمات برگشتند.\n"
+                "🔄 در حال بازیابی Workerهای فعال..."
+            )
+            await restore_workers()
+            await send_main(user_id, user_id)
+        except Exception as exc:
+            print(f"[BACKUP] restore failed: {exc}")
+            await bot.send_message(user_id, "❌ بازگردانی انجام نشد؛ بکاپ فعلی دست‌نخورده باقی ماند.")
+        finally:
+            pending.pop(user_id, None)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
 
     # --------------------------------------------------------
     # RECEIPT
@@ -4931,6 +4991,36 @@ async def callbacks(event):
     data = event.data.decode("utf-8", errors="ignore")
     user_id = event.sender_id
 
+    if data.startswith("fj_open:"):
+        try:
+            channel_id = int(data.split(":", 1)[1])
+        except Exception:
+            await safe_answer(event, "❌ کانال نامعتبر است.", True)
+            return
+        channel = next((c for c in get_force_join_channels() if int(c.get("id", 0)) == channel_id), None)
+        if channel:
+            url = _channel_url(channel)
+            if url:
+                await safe_answer(event, "📢 ابتدا عضو کانال شوید.")
+                with contextlib.suppress(Exception):
+                    await bot.send_message(user_id, f"📢 {channel.get('title', 'کانال')}", buttons=[
+                        [Button.url("🔗 ورود به کانال", url)]
+                    ])
+        return
+
+    if data == "fj_check":
+        if await ensure_force_join(user_id):
+            await safe_answer(event, "✅ عضویت تأیید شد.")
+            with contextlib.suppress(Exception):
+                await event.delete()
+            if not has_registered_phone(user_id):
+                await send_phone_request(user_id)
+            else:
+                await send_main(user_id, user_id)
+        else:
+            await safe_answer(event, "❌ هنوز در همه کانال‌ها عضو نشده‌اید.", True)
+        return
+
     if data.startswith("sp:"):
         await handle_self_panel_callback(event)
         return
@@ -4939,34 +5029,13 @@ async def callbacks(event):
         await safe_answer(event)
         return
 
-    if data == "noop_forcejoin":
-        await safe_answer(event)
-        return
-
-    if data == "forcejoin_check":
-        if user_id in ADMINS:
-            return
-        joined, missing = await force_join_status(user_id)
-        if not joined:
-            await safe_answer(event, "❌ هنوز در همه کانال‌ها عضو نشده‌ای.", True)
-            return
-        with contextlib.suppress(Exception):
-            await event.delete()
-        await safe_answer(event, "✅ عضویت تأیید شد.")
-        await continue_after_force_join(user_id)
-        return
-
-    if user_id not in ADMINS:
-        joined, missing = await force_join_status(user_id)
-        if not joined:
-            await safe_answer(event, "🔒 ابتدا عضویت اجباری را تکمیل کنید.", True)
-            await send_force_join(user_id, missing)
-            return
-
     if not has_registered_phone(user_id):
         await safe_answer(event, "📱 ابتدا شماره موبایل ایران خود را ثبت کنید.", True)
         with contextlib.suppress(Exception):
             await send_phone_request(user_id)
+        return
+
+    if not await ensure_force_join(user_id, event):
         return
 
     if data == "buy_self":
@@ -5082,11 +5151,6 @@ async def callbacks(event):
             text,
             [[btn("🔙 برگشت", b"back", "primary")]]
         )
-        return
-
-    if data == "support":
-        admin_id = ADMINS[0] if ADMINS else 0
-        await edit_or_send(event, "🆘 <b>پشتیبانی</b>\n\nبرای ارتباط با پشتیبانی روی دکمه زیر بزنید.", [[Button.url("💬 ارتباط با پشتیبانی", f"tg://user?id={admin_id}")], [btn("🔙 برگشت", b"back", "primary")]])
         return
 
     if data == "buy_balance":
@@ -5324,14 +5388,114 @@ async def callbacks(event):
 
         buttons = [
             [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("🚫 مسدود کردن کاربر", b"ban_user", "danger")],
-            [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"forcejoin_admin", "primary")],
-            [btn("💾 Backups", b"backups", "primary"), btn("🆘 پشتیبانی", b"admin_support", "primary")],
-            [btn("🔙 برگشت", b"back", "primary")]
+            [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
+            [btn("💾 Backups", b"backups", "primary"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
+            [btn("🔙 برگشت", b"back", "danger")],
         ]
+        await edit_or_send(event, "🛠 **مدیریت**\n\nیک گزینه را انتخاب کنید:", buttons)
+        return
+
+    if data == "force_join":
+        if user_id not in ADMINS:
+            return
+        channels = get_force_join_channels()
+        rows = []
+        for c in channels:
+            rows.append([
+                btn(f"📢 {c.get('title', c.get('username', 'کانال'))}", f"fj_remove:{c.get('id')}", "primary")
+            ])
+        rows.append([btn("➕ افزودن کانال", b"fj_add", "success"), btn("🗑 حذف همه", b"fj_clear", "danger")])
+        rows.append([btn("🔙 برگشت", b"admin_panel", "danger")])
         await edit_or_send(
             event,
-            "🛠 **پنل مدیریت**\n\nیک گزینه را انتخاب کنید:",
-            buttons
+            "📢 **جوین اجباری**\n\n"
+            "کانال‌های فعال با رنگ بنفش نمایش داده می‌شوند.\n"
+            "برای افزودن، لینک عمومی کانال مثل `@channel` یا `https://t.me/channel` را بفرست.",
+            rows
+        )
+        return
+
+    if data == "fj_add":
+        if user_id not in ADMINS:
+            return
+        pending[user_id] = {"step": "force_join_add"}
+        await edit_or_send(event, "📢 یوزرنیم یا لینک عمومی کانال را بفرست:", [[btn("🔙 برگشت", b"force_join", "danger")]])
+        return
+
+    if data.startswith("fj_remove:"):
+        if user_id not in ADMINS:
+            return
+        cid = int(data.split(":", 1)[1])
+        channels = [c for c in get_force_join_channels() if int(c.get("id", 0)) != cid]
+        save_force_join_channels(channels)
+        await safe_answer(event, "✅ کانال حذف شد.")
+        await event.edit("📢 **جوین اجباری**", buttons=[
+            [btn("➕ افزودن کانال", b"fj_add", "success"), btn("🗑 حذف همه", b"fj_clear", "danger")],
+            [btn("🔙 برگشت", b"admin_panel", "danger")]
+        ])
+        return
+
+    if data == "fj_clear":
+        if user_id not in ADMINS:
+            return
+        save_force_join_channels([])
+        await safe_answer(event, "✅ همه جوین‌های اجباری حذف شدند.")
+        await edit_or_send(event, "📢 **جوین اجباری**\n\nهیچ کانالی تنظیم نشده است.", [
+            [btn("➕ افزودن کانال", b"fj_add", "success")],
+            [btn("🔙 برگشت", b"admin_panel", "danger")]
+        ])
+        return
+
+    if data == "backups":
+        if user_id not in ADMINS:
+            return
+        await edit_or_send(
+            event,
+            "💾 **Backups**\n\n"
+            "بکاپ شامل database_users، موجودی کاربران، وضعیت سلف، sessionها، تنظیمات و جوین اجباری است.",
+            [
+                [btn("🟢 بکاپ‌گیری", b"backup_create", "success"), btn("🟣 بارگزاری بکاپ", b"backup_restore", "primary")],
+                [btn("🔴 بازگشت", b"admin_panel", "danger")]
+            ]
+        )
+        return
+
+    if data == "backup_create":
+        if user_id not in ADMINS:
+            return
+        await safe_answer(event, "⏳ در حال ساخت بکاپ...")
+        try:
+            path = await asyncio.to_thread(create_backup_sync)
+            await bot.send_file(user_id, str(path), caption="💾 بکاپ کامل ربات آماده است.")
+            with contextlib.suppress(Exception):
+                path.unlink()
+            await event.edit("✅ بکاپ کامل با موفقیت ارسال شد.", buttons=[[btn("🔙 Backups", b"backups", "danger")]])
+        except Exception as exc:
+            print(f"[BACKUP] create failed: {exc}")
+            await event.edit("❌ ساخت بکاپ ناموفق بود.", buttons=[[btn("🔙 Backups", b"backups", "danger")]])
+        return
+
+    if data == "backup_restore":
+        if user_id not in ADMINS:
+            return
+        pending[user_id] = {"step": "backup_restore"}
+        await edit_or_send(
+            event,
+            "🟣 **بارگزاری بکاپ**\n\nفایل ZIP بکاپ را همین‌جا ارسال کن.\n"
+            "قبل از بازگردانی، Workerهای سلف متوقف و بعد از اتمام دوباره بازیابی می‌شوند.",
+            [[btn("🔴 لغو", b"backups", "danger")]]
+        )
+        return
+
+    if data == "admin_stats":
+        if user_id not in ADMINS:
+            return
+        count = len(list(DATA_DIR.glob("user_*.db")))
+        active = len(all_active_sessions())
+        await edit_or_send(
+            event,
+            f"📊 **آمار مدیریت**\n\n👥 کاربران ثبت‌شده: `{count}`\n⚙️ سلف‌های فعال: `{active}`\n📢 جوین‌های اجباری: `{len(get_force_join_channels())}`",
+            [[btn("🔙 مدیریت", b"admin_panel", "danger")]]
         )
         return
 
@@ -5366,70 +5530,6 @@ async def callbacks(event):
             "🔓 آیدی عددی کاربر را ارسال کنید:",
             [[btn("🔙 برگشت", b"back", "primary")]]
         )
-        return
-
-    if data == "forcejoin_admin":
-        if user_id not in ADMINS: return
-        channels = required_channels()
-        rows = []
-        for i, item in enumerate(channels):
-            rows.append([btn(f"📢 {_channel_label(item)}", f"fjnoop:{i}".encode(), "primary"), btn("🗑 حذف", f"fjdel:{i}".encode(), "danger")])
-        rows.append([btn("➕ افزودن کانال", b"fj_add", "success")])
-        rows.append([btn("🔙 برگشت", b"admin_panel", "primary")])
-        await edit_or_send(event, "📢 <b>تنظیم جوین اجباری</b>\n\nهمه کانال‌های این فهرست برای کاربران اجباری هستند.", rows)
-        return
-
-    if data.startswith("fjnoop:"):
-        await safe_answer(event, "ℹ️ کانال جوین اجباری فعال است.")
-        return
-
-    if data.startswith("fjdel:"):
-        if user_id not in ADMINS: return
-        try:
-            idx = int(data.split(":", 1)[1])
-            cfg = _load_admin_config(); channels = cfg.get("required_channels", [])
-            if 0 <= idx < len(channels):
-                channels.pop(idx); cfg["required_channels"] = channels; _save_admin_config(cfg)
-            await safe_answer(event, "✅ کانال حذف شد.")
-        except Exception:
-            await safe_answer(event, "❌ حذف ناموفق بود.", True)
-        await edit_or_send(event, "📢 <b>تنظیم جوین اجباری</b>", [[btn("📢 جوین اجباری", b"forcejoin_admin", "primary")], [btn("🔙 برگشت", b"admin_panel", "primary")]])
-        return
-
-    if data == "fj_add":
-        if user_id not in ADMINS: return
-        pending[user_id] = {"step": "forcejoin_add"}
-        await edit_or_send(event, "➕ یوزرنیم کانال یا لینک عمومی کانال را ارسال کنید.\nمثال: <code>@mychannel</code>", [[btn("🔙 برگشت", b"forcejoin_admin", "primary")]])
-        return
-
-    if data == "backups":
-        if user_id not in ADMINS: return
-        await edit_or_send(event, "💾 <b>Backups</b>\n\nبکاپ شامل دیتابیس کاربران، موجودی‌ها، Sessionهای سلف، تنظیمات و جوین‌های اجباری است.\n🔐 فایل بکاپ رمزنگاری می‌شود.", [[btn("🟢 بکاپ‌گیری", b"backup_create", "success"), btn("🟣 بارگزاری بکاپ", b"backup_restore", "primary")], [btn("🔴 بازگشت", b"admin_panel", "danger")]])
-        return
-
-    if data == "backup_create":
-        if user_id not in ADMINS: return
-        path = None
-        try:
-            path = _make_backup_file()
-            await bot.send_file(user_id, path, caption="💾 <b>بکاپ کامل ربات آماده شد.</b>\n🔐 فایل رمزنگاری شده است.", parse_mode="html")
-            await safe_answer(event, "✅ بکاپ ساخته شد.")
-        except Exception as exc:
-            await safe_answer(event, f"❌ ساخت بکاپ ناموفق بود: {exc}", True)
-        finally:
-            if path:
-                with contextlib.suppress(Exception): path.unlink()
-        return
-
-    if data == "backup_restore":
-        if user_id not in ADMINS: return
-        pending[user_id] = {"step": "backup_restore"}
-        await edit_or_send(event, "📥 <b>بارگزاری بکاپ</b>\n\nفایل <code>.diamondbackup</code> را همین‌جا ارسال کنید.\n⚠️ اطلاعات فعلی با بکاپ جایگزین می‌شود.", [[btn("🔴 بازگشت", b"backups", "danger")]])
-        return
-
-    if data == "admin_support":
-        if user_id not in ADMINS: return
-        await edit_or_send(event, "🆘 <b>پشتیبانی</b>", [[Button.url("💬 ارتباط با مدیر", f"tg://user?id={ADMINS[0]}" )], [btn("🔙 بازگشت", b"admin_panel", "primary")]])
         return
 
     if data.startswith("pay_confirm_"):
