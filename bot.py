@@ -41,6 +41,7 @@ from telethon.tl.functions.messages import (
     TranslateTextRequest,
     GetInlineBotResultsRequest,
     SendInlineBotResultRequest,
+    SendMessageRequest,
 )
 from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, TextWithEntities
 from telethon.sessions import StringSession
@@ -2123,9 +2124,9 @@ async def handle_self_panel_callback(event):
 
             nav = []
             if page > 0:
-                nav.append(btn("⬅️ قبلی", _self_cb(uid, f"comment_page:{page-1}"), "primary"))
+                nav.append(btn("⬅️ قبلی", _self_cb(uid, f"comment_page:{page-1}"), "danger"))
             if page < total_pages - 1:
-                nav.append(btn("➡️ بعدی", _self_cb(uid, f"comment_page:{page+1}"), "primary"))
+                nav.append(btn("➡️ بعدی", _self_cb(uid, f"comment_page:{page+1}"), "success"))
             if nav:
                 rows.append(nav)
 
@@ -4539,6 +4540,15 @@ async def _maybe_first_comment(event, uid):
         and getattr(current_entity, "megagroup", False)
     )
 
+    # For channel-post updates, peer_id is more reliable than get_chat() for
+    # identifying the exact broadcast channel.  Use it as a direct fallback.
+    peer_channel_id = getattr(getattr(msg, "peer_id", None), "channel_id", None)
+    if peer_channel_id is not None:
+        try:
+            peer_channel_id = int(peer_channel_id)
+        except (TypeError, ValueError):
+            peer_channel_id = None
+
     fwd = getattr(msg, "fwd_from", None)
     forward = getattr(msg, "forward", None)
 
@@ -4572,6 +4582,14 @@ async def _maybe_first_comment(event, uid):
                 pass
 
     # Direct post made by SELF in a configured broadcast channel.
+    if source_id is None and peer_channel_id is not None and peer_channel_id in configured:
+        source_id = int(peer_channel_id)
+        original_post_id = original_post_id or int(msg.id)
+        print(
+            f"[COMMENT {uid}] direct channel post detected via peer_id "
+            f"channel={source_id} post={original_post_id}"
+        )
+
     if (
         source_id is None
         and current_is_broadcast
@@ -4728,11 +4746,19 @@ async def _maybe_first_comment(event, uid):
         return
 
     async def send_comment():
-        sent = await client.send_message(
-            entity=discussion_entity,
-            message=text[:4096],
-            reply_to=int(discussion_message_id),
+        # Use the raw MTProto SendMessageRequest here instead of Telethon's
+        # high-level send_message(reply_to=...).  For linked channel
+        # discussions this makes the reply target explicit and avoids Telethon
+        # resolving the reply against the wrong peer/thread.
+        reply = types.InputReplyToMessage(
+            reply_to_msg_id=int(discussion_message_id)
         )
+        sent = await client(SendMessageRequest(
+            peer=discussion_entity,
+            message=text[:4096],
+            random_id=random.getrandbits(64),
+            reply_to=reply,
+        ))
         _first_comment_sent_cache.add(cache_key)
         if len(_first_comment_sent_cache) > 5000:
             _first_comment_sent_cache.clear()
@@ -5897,8 +5923,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             # Outgoing messages belong to the account owner and must never be
             # placed in the deleted-message archive cache.
             await self_handle_outgoing(event, user_id)
-            with contextlib.suppress(Exception):
-                await _maybe_first_comment(event, user_id)
+            await _maybe_first_comment(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] outgoing handler error: {exc}")
 
@@ -5910,8 +5935,7 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             # account in a configured broadcast channel. Previously this feature
             # was called only from the outgoing handler, so a normal channel post
             # was never processed unless SELF itself forwarded it somewhere.
-            with contextlib.suppress(Exception):
-                await _maybe_first_comment(event, user_id)
+            await _maybe_first_comment(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] incoming handler error: {exc}")
 
