@@ -1171,7 +1171,12 @@ def _cs_clear(uid):
 
 
 def _cs_editor_from_event(event):
+    # Keep the original callback event as the primary editor.  This is important
+    # for inline-result messages: the callback event already knows exactly which
+    # message Telegram delivered the button press from, so progress edits do not
+    # accidentally switch to a different message/client identity.
     return {
+        "event": event,
         "inline_message_id": _event_inline_message_id(event),
         "chat_id": getattr(event, "chat_id", None),
         "message_id": getattr(event, "message_id", None),
@@ -1179,15 +1184,32 @@ def _cs_editor_from_event(event):
 
 
 async def _cs_edit(editor, text, buttons=None):
-    """Edit the one and only progress/panel message."""
-    return await _edit_panel_message(
-        text=text,
-        buttons=buttons,
-        inline_message_id=editor.get("inline_message_id"),
-        chat_id=editor.get("chat_id"),
-        message_id=editor.get("message_id"),
-        parse_mode="html",
-    )
+    """Edit the exact message that produced the confirm callback."""
+    event = editor.get("event")
+    last_exc = None
+
+    # First use the original callback event.  It is the most reliable way to
+    # edit the same inline message throughout the whole save lifecycle.
+    if event is not None:
+        try:
+            return await event.edit(text, parse_mode="html", buttons=buttons)
+        except Exception as exc:
+            last_exc = exc
+
+    # Fallback for normal bot-owned messages / environments where event.edit is
+    # unavailable after the callback has returned.
+    try:
+        return await _edit_panel_message(
+            text=text,
+            buttons=buttons,
+            inline_message_id=editor.get("inline_message_id"),
+            chat_id=editor.get("chat_id"),
+            message_id=editor.get("message_id"),
+            parse_mode="html",
+        )
+    except Exception as exc:
+        last_exc = exc
+        raise last_exc
 
 
 def _cs_progress_bar(done, total, width=16):
@@ -1406,9 +1428,10 @@ async def _cs_worker(uid, client, state, editor):
                 print(f"[CHANNEL_SAVE {uid}] item {index} failed: {exc}")
 
             now = time.monotonic()
-            # Every completed item advances the same message immediately.
-            # This avoids a fast save appearing stuck at 0% because of UI throttling.
-            if True:
+            # Update the same Telegram message at a safe cadence.  For short
+            # jobs every item is shown; for large jobs we avoid FloodWait while
+            # still guaranteeing a moving percentage and a final 100% update.
+            if index == total or total <= 20 or (now - last_ui) >= CHANNEL_SAVE_PROGRESS_INTERVAL:
                 last_ui = now
                 bar, percent = _cs_progress_bar(index, total)
                 await update(
@@ -2799,15 +2822,15 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
     raise RuntimeError("unsupported_archive")
 
 
-def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
+def _archive_progress_text(percent: int, phase: str = "منتظر بمانید", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
     slots = 16
     filled = round(slots * percent / 100)
     bar = "█" * filled + "░" * (slots - filled)
     return (
-        f"📦 <b>استخراج آرشیو</b>\n\n"
-        f"<code>{bar}</code> <b>{percent}%</b>\n\n"
-        f"<i>{html.escape(phase)}</i>"
+        f"📦 در حال استخراج آرشیو\n"
+        f"{bar}\n"
+        f"{html.escape(phase)}"
     )
 
 
@@ -2858,7 +2881,7 @@ async def _self_unzip_reply(event, uid):
 
     try:
         with contextlib.suppress(Exception):
-            await event.edit(_archive_progress_text(0, "در حال دانلود آرشیو…"))
+            await event.edit(_archive_progress_text(0, "منتظر بمانید"))
 
         downloaded = await replied.download_media(file=str(archive_path))
         if not downloaded:
@@ -2869,7 +2892,7 @@ async def _self_unzip_reply(event, uid):
         # responsive and the progress message can keep updating.
         progress_started = time.monotonic()
         progress_task = asyncio.create_task(
-            _archive_progress_5s(event, progress_started, "در حال استخراج…")
+            _archive_progress_5s(event, progress_started, "منتظر بمانید")
         )
         try:
             files = await asyncio.to_thread(_extract_archive_sync, archive_path, extract_dir)
@@ -2891,7 +2914,7 @@ async def _self_unzip_reply(event, uid):
         total = len(files)
         sent = 0
         failed = 0
-        await event.edit(_archive_progress_text(0, "در حال ارسال فایل‌ها…", 0, total))
+        await event.edit(_archive_progress_text(0, "منتظر بمانید", 0, total))
 
         for index, file_path in enumerate(files, 1):
             try:
@@ -2928,7 +2951,7 @@ async def _self_unzip_reply(event, uid):
             percent = int(index * 100 / total)
             with contextlib.suppress(Exception):
                 await event.edit(
-                    _archive_progress_text(percent, "در حال ارسال فایل‌ها…", index, total)
+                    _archive_progress_text(percent, "منتظر بمانید", index, total)
                 )
 
         result = f"✅ استخراج تمام شد.\n📦 ارسال شد: {sent} فایل"
