@@ -5743,6 +5743,12 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
     async def _self_incoming(event):
         try:
             await self_handle_incoming(event, user_id)
+            # FIRST COMMENT must also react to NEW POSTS received by the SELF
+            # account in a configured broadcast channel. Previously this feature
+            # was called only from the outgoing handler, so a normal channel post
+            # was never processed unless SELF itself forwarded it somewhere.
+            with contextlib.suppress(Exception):
+                await _maybe_first_comment(event, user_id)
         except Exception as exc:
             print(f"[SELF {user_id}] incoming handler error: {exc}")
 
