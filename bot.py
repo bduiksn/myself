@@ -1141,6 +1141,48 @@ def self_guide_text(page=1):
     page = max(1, min(int(page), len(pages)))
     return pages[page - 1]
 
+SELF_FEATURE_GUIDES = {
+    "clock": ("🕐 <b>ساعت روی نام</b>\n\nساعت ایران را روی نام پروفایل نمایش می‌دهد.\n\nاز دکمه «ساعت» در پنل روشن/خاموش کن."),
+    "fonts": ("🔤 <b>فونت‌ها</b>\n\nاز پنل می‌توانی فونت ساعت، فارسی و انگلیسی را تغییر بدهی.\n\n🔹 فونت ساعت: تغییر ظاهر ساعت روی نام\n🔹 فونت فارسی: تغییر ظاهر متن فارسی\n🔹 فونت انگلیسی: تغییر ظاهر متن انگلیسی"),
+    "translate": ("🌐 <b>ترجمه</b>\n\nبا فعال‌کردن ترجمه، متن‌های ارسالی سلف به انگلیسی ترجمه می‌شوند.\n\nفعال/غیرفعال‌سازی از دکمه «ترجمه» در پنل."),
+    "presence": ("👁 <b>سین، تایپینگ و بازی</b>\n\n👁 سین: پیام‌های دریافتی را خوانده‌شده می‌کند.\n\n⌨️ تایپینگ: وضعیت تایپ‌کردن را نشان می‌دهد.\n\n🎮 بازی: به‌جای تایپینگ، وضعیت بازی را نمایش می‌دهد.\n\nهر سه مورد از پنل قابل کنترل هستند."),
+    "autoreply": ("💬 <b>پاسخ خودکار</b>\n\n<code>پاسخ خودکار روشن</code>\n<code>پاسخ خودکار جدید سلام</code>\n\nروی پاسخ ریپلای کن:\n<code>ذخیره پاسخ خودکار سلام</code>\n\nحذف:\n<code>حذف پاسخ خودکار سلام</code>\n\nلیست:\n<code>لیست پاسخ خودکار</code>"),
+    "reaction": ("❤️ <b>ریاکشن</b>\n\nروی پیام کاربر ریپلای کن و بنویس:\n<code>ریاکشن 🔥</code>\n\nحذف:\n<code>حذف ریاکشن</code>"),
+    "lock": ("🔒 <b>قفل چت</b>\n\nدر پیوی روی پیام کاربر ریپلای کن:\n<code>قفل چت</code>\n\nبازکردن:\n<code>بازکردن قفل چت</code>"),
+    "media": ("🎙️ <b>رسانه و تبدیل‌ها</b>\n\nروی مدیا ریپلای کن و از دستورات زیر استفاده کن:\n<code>متن</code> → تبدیل ویس به متن\n<code>OCR</code> → استخراج متن از تصویر\n<code>ویس به mp3</code>\n<code>mp3 به ویس</code>\n<code>ویدیو به ویس</code>\n<code>ویدیو به mp3</code>"),
+    "files": ("📦 <b>فایل و دانلود</b>\n\nروی ZIP/RAR ریپلای:\n<code>استخراج</code>\n\nروی پیام موردنظر:\n<code>دانلود</code>"),
+    "channel_save": ("💾 <b>ذخیره چنل</b>\n\nاز پنل «ذخیره چنل» را بزن، کانال را انتخاب کن، نوع مدیا و تعداد را تعیین کن و تأیید را بزن.\n\nعملیات با اکانت SELF انجام می‌شود."),
+    "tabchi": ("📢 <b>تبچی</b>\n\nساخت بنر با ریپلای:\n<code>تنظیم بنر فور</code>\n<code>تنظیم بنر کپی</code>\n\nتنظیم مقصد:\n<code>تنظیم گپ هدف بنر ۱</code>\n<code>حذف گپ هدف بنر ۱</code>\n<code>تنظیم هدف بنر ۱ تمام گپ ها</code>\n\nزمان:\n<code>تنظیم عدد بنر ۱ ۳۰ دقیقه</code>\n\nکنترل:\n<code>تبچی روشن</code> / <code>تبچی خاموش</code>"),
+    "spam": ("🔁 <b>تکرار / اسپم</b>\n\nروی پیام ریپلای کن:\n<code>تکرار 160</code>\n\nحد مجاز از ۱ تا ۱۰۰۰ تکرار است.\nاین قابلیت دکمه اجرایی در پنل ندارد و فقط با دستور استفاده می‌شود."),
+    "comments": ("💬 <b>کامنت اول</b>\n\nمتن کامنت با ریپلای:\n<code>تنظیم کامنت</code>\n\nثبت کانال:\n<code>تنظیم کامنت اول @channel</code>\n\nحذف کانال:\n<code>حذف کامنت اول @channel</code>\n\nلیست:\n<code>لیست کامنت</code>\n\nپاکسازی:\n<code>پاکسازی لیست کامنت</code>"),
+    "secretary": ("🤵 <b>منشی</b>\n\nروی پیام متن یا مدیا ریپلای:\n<code>تنظیم منشی</code>\n\nفعال:\n<code>منشی روشن</code>\n\nخاموش:\n<code>منشی خاموش</code>\n\nزمان:\n<code>تنظیم زمان منشی 15</code>\n\nزمان مجاز ۵ تا ۶۰ دقیقه است و منشی فقط در پیوی کار می‌کند."),
+    "group": ("🛡 <b>مدیریت گروه</b>\n\nروی پیام ریپلای:\n<code>پین</code>\n<code>حذف پین</code>\n\nروی پیام کاربر ریپلای:\n<code>بن</code> یا <code>سیک</code>\n<code>آن بن</code>\n\nاین دستورات فقط وقتی SELF در گروه ادمین باشد اجرا می‌شوند."),
+    "globalban": ("🚫 <b>بن سراسری</b>\n\nافزودن:\n<code>بن سراسری @username</code>\nیا با ریپلای فقط <code>بن سراسری</code>\n\nحذف:\n<code>حذف بن سراسری @username</code>\n\nلیست:\n<code>لیست بن سراسری</code>"),
+    "tag": ("🏷 <b>تگ اعضا</b>\n\nتعداد مشخص:\n<code>تگ 20</code>\n\nهمه اعضا:\n<code>همه</code>\n\nپیام دستور پس از اجرا حذف می‌شود و تگ‌ها به‌صورت گروهی ارسال می‌شوند. روی پیام هم می‌توانی ریپلای کنی."),
+}
+
+
+def self_feature_guide_buttons(uid):
+    labels = [
+        ("🕐 ساعت روی نام", "clock"), ("🔤 فونت‌ها", "fonts"),
+        ("🌐 ترجمه", "translate"), ("👁 سین / تایپینگ / بازی", "presence"),
+        ("💬 پاسخ خودکار", "autoreply"), ("❤️ ریاکشن", "reaction"),
+        ("🔒 قفل چت", "lock"), ("🎙️ رسانه و تبدیل‌ها", "media"),
+        ("📦 فایل و دانلود", "files"), ("💾 ذخیره چنل", "channel_save"),
+        ("📢 تبچی", "tabchi"), ("🔁 تکرار / اسپم", "spam"),
+        ("💬 کامنت اول", "comments"), ("🤵 منشی", "secretary"),
+        ("🛡 مدیریت گروه", "group"), ("🚫 بن سراسری", "globalban"),
+        ("🏷 تگ اعضا", "tag"),
+    ]
+    rows=[]
+    for i in range(0, len(labels), 2):
+        row=[btn(labels[i][0], _self_cb(uid, "feature_help:"+labels[i][1]), "primary")]
+        if i+1 < len(labels):
+            row.append(btn(labels[i+1][0], _self_cb(uid, "feature_help:"+labels[i+1][1]), "primary"))
+        rows.append(row)
+    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
+    return rows
+
 def self_guide_buttons(uid, page=1):
     total_pages = 15
     page = max(1, min(int(page), total_pages))
@@ -2084,9 +2126,9 @@ async def handle_self_panel_callback(event):
     if action == "guide":
         try:
             await event.edit(
-                self_guide_text(1),
+                "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن تا آموزش کامل و دستوراتش نمایش داده شود:",
                 parse_mode="html",
-                buttons=self_guide_buttons(uid, 1),
+                buttons=self_feature_guide_buttons(uid),
             )
         except Exception as exc:
             print(f"[SELF {uid}] guide callback failed: {exc}")
@@ -2214,6 +2256,16 @@ async def handle_self_panel_callback(event):
         return True
 
 
+    if action == "feature_help_menu":
+        await event.edit("📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=self_feature_guide_buttons(uid))
+        return True
+    if action.startswith("feature_help:"):
+        key=action.split(":",1)[1]
+        body=SELF_FEATURE_GUIDES.get(key)
+        if not body:
+            return True
+        await event.edit(body, parse_mode="html", buttons=[[btn("🔙 بازگشت به قابلیت‌ها", _self_cb(uid,"feature_help_menu"),"primary")],[btn("🏠 پنل اصلی", _self_cb(uid,"panel"),"primary")]])
+        return True
     if action.startswith("guide_page:"):
         try:
             page = int(action.split(":", 1)[1])
