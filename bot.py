@@ -341,11 +341,15 @@ purchase_state = {}
 active_games = {}
 self_workers = {}
 self_clients = {}
-_channel_save_tasks = {}
 _self_reply_cache = set()
 _inline_bot_cache = {}
 _cleanup_tasks = {}
 _cleanup_panel_messages = {}
+
+# Channel-save is deliberately isolated: one in-memory session and one worker
+# per owner. The progress message is always the exact same panel message.
+_channel_save_sessions = {}
+_channel_save_tasks = {}
 # Independent state for media conversions; never shares channel-save state.
 media_convert_state = {}
 # Last five incoming private messages per chat.  Used only as a short-lived
@@ -420,6 +424,10 @@ async def send_main(target, user_id: int, text="به سلف‌ساز خوش آم
 async def safe_answer(event, text="", alert=False):
     with contextlib.suppress(Exception):
         await event.answer(text, alert=alert)
+
+
+async def _with_timeout(coro, timeout=10):
+    return await asyncio.wait_for(coro, timeout=float(timeout))
 
 
 async def edit_or_send(event, text, buttons=None):
@@ -608,7 +616,7 @@ def self_panel_buttons(uid):
         ],
         [
             btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
-            btn("💾 ذخیره چنل", _self_cb(uid, "channel_save"), "primary"),
+            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
         ],
         [
             btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
@@ -702,24 +710,14 @@ def self_guide_text(page=1):
             "روی پیام موردنظر ریپلای کن و <code>دانلود</code> بفرست.\n\n"
             "🧹 <b>پاکسازی</b>\n"
             "از پنل، نوع پاکسازی را انتخاب کن؛ هر بخش مستقل اجرا می‌شود.\n\n"
+            "💾 <b>ذخیره چنل</b>\n"
+            "از پنل «ذخیره چنل» را بزن، چنل را انتخاب کن، نوع مدیا و تعداد را مشخص کن و «تأیید و شروع» را بزن. پیشرفت روی همان پیام پنل نمایش داده می‌شود و موارد موفق داخل Saved Messages ذخیره می‌شوند.\n\n"
             "🔒 <b>قفل چت</b>\n"
             "روی پیام کاربر ریپلای کن و <code>قفل چت</code> بفرست."
         ),
         (
-            "📚 <b>راهنمای سلف • ذخیره چنل</b>\n"
-            "<i>صفحه ۷ از ۹</i>\n\n"
-            "💾 <b>ذخیره چنل، مرحله‌به‌مرحله</b>\n"
-            "۱) از پنل «💾 ذخیره چنل» را بزن.\n"
-            "۲) فقط کانال‌های خصوصیِ عضو اکانت نمایش داده می‌شوند.\n"
-            "۳) کانال را انتخاب کن.\n"
-            "۴) نوع مدیا را انتخاب کن: تصویر، ویدیو، موسیقی، ویس، متن یا همه.\n"
-            "۵) تعداد را با کیپد انتخاب کن؛ از <b>۱ تا ۱۰۰۰</b>.\n"
-            "۶) «✅ تأیید» را بزن.\n\n"
-            "🚀 بعد از تأیید، پیام انتخاب تعداد حذف می‌شود و یک پیام جدید با نوار پیشرفت ساخته می‌شود؛ ذخیره در Saved Messages انجام می‌شود و نتیجه در همان پیام جدید نمایش داده می‌شود."
-        ),
-        (
             "📚 <b>راهنمای سلف • ارز و لوگو</b>\n"
-            "<i>صفحه ۸ از ۹</i>\n\n"
+            "<i>صفحه ۷ از ۸</i>\n\n"
             "💱 <b>نرخ ارز</b>\n"
             "قیمت لحظه‌ای را با این دستورها بگیر: \n"
             "<code>قیمت BTC</code> • <code>قیمت ETH</code> • <code>قیمت SOL</code> • <code>قیمت USDT</code>\n\n"
@@ -729,7 +727,7 @@ def self_guide_text(page=1):
         ),
         (
             "📚 <b>راهنمای سلف • تاس و سرگرمی</b>\n"
-            "<i>صفحه ۹ از ۹</i>\n\n"
+            "<i>صفحه ۸ از ۸</i>\n\n"
             "🎲 <b>تاس</b>\n"
             "دستورهای مجاز: <code>تاس ۱</code> تا <code>تاس ۶</code>\n"
             "عدد انتخابی با تاس واقعی تلگرام تولید می‌شود.\n\n"
@@ -746,7 +744,7 @@ def self_guide_text(page=1):
 
 
 def self_guide_buttons(uid, page=1):
-    total_pages = 9
+    total_pages = 8
     page = max(1, min(int(page), total_pages))
     nav = []
     if page > 1:
@@ -914,64 +912,16 @@ def self_save_chat_lock_targets(uid, targets):
     self_set(uid, "chat_lock_targets", json.dumps(sorted(int(x) for x in targets)))
 
 
-async def _private_channel_entries(client, limit=None):
-    """Return ONLY joined private broadcast channels.
-
-    A Telegram channel is public when it has a public username.
-    Megagroups/supergroups are deliberately excluded even though Telethon
-    exposes them through the channel dialog type as well.
-    """
-    items = []
-    async for dialog in client.iter_dialogs():
-        entity = getattr(dialog, "entity", None)
-        if not isinstance(entity, types.Channel):
-            continue
-        if not getattr(dialog, "is_channel", False):
-            continue
-        # Only Telegram broadcast channels are eligible.
-        # Supergroups/megagroups must never appear here.
-        if getattr(entity, "megagroup", False):
-            continue
-        if not getattr(entity, "broadcast", False):
-            continue
-        # A channel with a public username is public. Private channels do not
-        # have a public username, so reject every channel that exposes one.
-        if bool(getattr(entity, "username", None)):
-            continue
-        # Broadcast + no username => private channel.
-        title = (getattr(entity, "title", None) or getattr(dialog, "name", None) or "بدون نام").strip()
-        display_id = getattr(dialog, "id", None)
-        if display_id is None:
-            display_id = -1000000000000 - int(entity.id)
-        items.append((int(display_id), title, entity))
-    items.sort(key=lambda x: x[1].casefold())
-    return items[:limit] if limit else items
 
 
-def _private_channel_button_id(entity):
-    return int(getattr(entity, "id", 0))
 
 
-def _private_channel_access_hash(entity):
-    value = getattr(entity, "access_hash", None)
-    return int(value) if value is not None else None
 
 
-def self_channel_save_state(uid):
-    try:
-        raw = self_get(uid, "channel_save_state", "{}")
-        value = json.loads(raw or "{}")
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
 
 
-def self_set_channel_save_state(uid, state):
-    self_set(uid, "channel_save_state", json.dumps(state or {}, ensure_ascii=False))
 
 
-def self_clear_channel_save_state(uid):
-    self_set_channel_save_state(uid, {})
 
 
 async def _tg_call_with_flood_retry(call_factory, *, label="telegram", max_retries=20):
@@ -1203,6 +1153,335 @@ async def _cleanup_account(uid, panel_chat_id=None, panel_message_id=None, panel
     await _cleanup_run(uid, "all", panel_chat_id, panel_message_id, panel_inline_message_id)
 
 
+
+# ============================================================
+# CHANNEL SAVE — CLEAN IMPLEMENTATION
+# ============================================================
+
+CHANNEL_SAVE_MAX_COUNT = 1000
+CHANNEL_SAVE_PROGRESS_INTERVAL = 0.75
+
+
+def _cs_session(uid):
+    return _channel_save_sessions.get(int(uid))
+
+
+def _cs_clear(uid):
+    _channel_save_sessions.pop(int(uid), None)
+
+
+def _cs_editor_from_event(event):
+    return {
+        "inline_message_id": _event_inline_message_id(event),
+        "chat_id": getattr(event, "chat_id", None),
+        "message_id": getattr(event, "message_id", None),
+    }
+
+
+async def _cs_edit(editor, text, buttons=None):
+    """Edit the one and only progress/panel message."""
+    return await _edit_panel_message(
+        text=text,
+        buttons=buttons,
+        inline_message_id=editor.get("inline_message_id"),
+        chat_id=editor.get("chat_id"),
+        message_id=editor.get("message_id"),
+        parse_mode="html",
+    )
+
+
+def _cs_progress_bar(done, total, width=18):
+    if total <= 0:
+        return "░" * width, 0
+    ratio = max(0.0, min(1.0, done / total))
+    filled = int(round(ratio * width))
+    return "█" * filled + "░" * (width - filled), int(ratio * 100)
+
+
+def _cs_media_match(message, kind):
+    if kind == "photos":
+        return bool(getattr(message, "photo", None))
+    if kind == "videos":
+        return bool(getattr(message, "video", None))
+    if kind == "music":
+        return bool(getattr(message, "audio", None)) and not bool(getattr(message, "voice", None))
+    if kind == "voice":
+        return bool(getattr(message, "voice", None))
+    if kind == "text":
+        return bool((getattr(message, "raw_text", "") or "").strip()) and not bool(getattr(message, "media", None))
+    return bool(getattr(message, "media", None) or (getattr(message, "raw_text", "") or "").strip())
+
+
+async def _cs_channels(client):
+    """Return broadcast channels the logged-in self account can actually read."""
+    result = []
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", None)
+        if not isinstance(entity, types.Channel):
+            continue
+        if not getattr(entity, "broadcast", False):
+            continue
+        if getattr(entity, "megagroup", False):
+            continue
+        title = (getattr(entity, "title", None) or getattr(dialog, "name", None) or "بدون نام").strip()
+        result.append({
+            "id": int(entity.id),
+            "access_hash": int(entity.access_hash) if getattr(entity, "access_hash", None) is not None else None,
+            "title": title,
+            "username": getattr(entity, "username", None),
+        })
+    result.sort(key=lambda x: x["title"].casefold())
+    return result
+
+
+def _cs_channel_buttons(uid, channels):
+    rows = []
+    for idx, item in enumerate(channels):
+        title = item["title"]
+        if len(title) > 42:
+            title = title[:39] + "..."
+        rows.append([btn(f"📢 {title}", _self_cb(uid, f"cs_pick:{idx}"), "primary")])
+    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
+    return rows
+
+
+def _cs_media_buttons(uid):
+    return [
+        [btn("🖼 تصویر", _self_cb(uid, "cs_media:photos"), "primary"), btn("🎬 ویدیو", _self_cb(uid, "cs_media:videos"), "primary")],
+        [btn("🎵 موسیقی", _self_cb(uid, "cs_media:music"), "primary"), btn("🎤 ویس", _self_cb(uid, "cs_media:voice"), "primary")],
+        [btn("📝 متن", _self_cb(uid, "cs_media:text"), "primary"), btn("📦 همه", _self_cb(uid, "cs_media:all"), "primary")],
+        [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
+    ]
+
+
+def _cs_count_buttons(uid, value):
+    return [
+        [btn("1", _self_cb(uid, "cs_num:1")), btn("2", _self_cb(uid, "cs_num:2")), btn("3", _self_cb(uid, "cs_num:3"))],
+        [btn("4", _self_cb(uid, "cs_num:4")), btn("5", _self_cb(uid, "cs_num:5")), btn("6", _self_cb(uid, "cs_num:6"))],
+        [btn("7", _self_cb(uid, "cs_num:7")), btn("8", _self_cb(uid, "cs_num:8")), btn("9", _self_cb(uid, "cs_num:9"))],
+        [btn("0", _self_cb(uid, "cs_num:0")), btn("⌫", _self_cb(uid, "cs_back"), "danger"), btn("🗑", _self_cb(uid, "cs_clear"), "danger")],
+        [btn("✅ تأیید و شروع", _self_cb(uid, "cs_confirm"), "success")],
+        [btn("🔙 بازگشت", _self_cb(uid, "cs_media_back"), "primary")],
+    ]
+
+
+def _cs_count_text(state):
+    labels = {"photos":"تصویر", "videos":"ویدیو", "music":"موسیقی", "voice":"ویس", "text":"متن", "all":"همه مدیاها"}
+    return (
+        f"💾 <b>ذخیره چنل</b>\n\n"
+        f"📢 چنل: <b>{html.escape(state['channel_title'])}</b>\n"
+        f"📦 نوع: <b>{labels.get(state['media'], state['media'])}</b>\n\n"
+        f"🔢 تعداد: <b>{state.get('count', 0)}</b>\n\n"
+        f"تعداد موردنظر را انتخاب کن و بعد «تأیید و شروع» را بزن."
+    )
+
+
+async def _cs_save_one(client, entity, message):
+    """Save one channel message into Saved Messages, with a safe fallback."""
+    # First choice: server-side copy/forward. This preserves the original media
+    # without downloading large files through the bot process.
+    try:
+        result = await _tg_call_with_flood_retry(
+            lambda: client.forward_messages("me", message, from_peer=entity),
+            label="save channel message",
+        )
+        return bool(result)
+    except Exception as forward_exc:
+        # Protected content may reject forwarding. For downloadable media/text,
+        # try a real re-upload/copy as a fallback.
+        if not getattr(message, "media", None):
+            try:
+                await _tg_call_with_flood_retry(
+                    lambda: client.send_message("me", getattr(message, "raw_text", "") or ""),
+                    label="save text fallback",
+                )
+                return True
+            except Exception:
+                raise forward_exc
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="channel_save_"))
+        try:
+            path = await _tg_call_with_flood_retry(
+                lambda: client.download_media(message, file=str(tmp_dir)),
+                label="download protected channel media",
+            )
+            if not path:
+                raise forward_exc
+            await _tg_call_with_flood_retry(
+                lambda: client.send_file(
+                    "me", path, caption=(getattr(message, "raw_text", "") or "")[:4096]
+                ),
+                label="upload protected channel media",
+            )
+            return True
+        except Exception:
+            raise forward_exc
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _cs_worker(uid, client, state, editor):
+    current = asyncio.current_task()
+    requested = int(state["count"])
+    kind = state["media"]
+    title = state["channel_title"]
+    success = 0
+    failed = 0
+    found = 0
+    last_ui = 0.0
+
+    async def update(text, buttons=None):
+        try:
+            await _cs_edit(editor, text, buttons)
+        except Exception as exc:
+            # UI failure must never kill the actual save operation.
+            print(f"[CHANNEL_SAVE {uid}] progress edit failed: {exc}")
+
+    try:
+        access_hash = state.get("access_hash")
+        if access_hash is not None:
+            entity = await _tg_call_with_flood_retry(
+                lambda: client.get_entity(types.InputPeerChannel(int(state["channel_id"]), int(access_hash))),
+                label="resolve save channel",
+            )
+        else:
+            entity = await _tg_call_with_flood_retry(
+                lambda: client.get_entity(int(state["channel_id"])),
+                label="resolve save channel",
+            )
+
+        await update(
+            f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
+            "🔎 در حال پیدا کردن پیام‌های موردنظر...\n"
+            f"📦 درخواست: <b>{requested}</b>\n"
+            "⏳ لطفاً صبر کن..."
+        )
+
+        selected = []
+        async for message in client.iter_messages(entity):
+            if not message or not _cs_media_match(message, kind):
+                continue
+            selected.append(message)
+            found = len(selected)
+            now = time.monotonic()
+            if now - last_ui >= CHANNEL_SAVE_PROGRESS_INTERVAL:
+                last_ui = now
+                await update(
+                    f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
+                    f"🔎 در حال یافتن پیام‌ها... <b>{found}/{requested}</b>\n"
+                    "⏳ تاریخچه در حال بررسی است..."
+                )
+            if len(selected) >= requested:
+                break
+
+        if not selected:
+            await update(
+                f"❌ <b>ذخیره چنل</b>\n\n📢 {html.escape(title)}\n\n"
+                "هیچ مورد قابل ذخیره‌ای با نوع انتخاب‌شده پیدا نشد.",
+                [[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+            )
+            return
+
+        selected.reverse()  # oldest -> newest for a natural Saved Messages order
+        total = len(selected)
+        await update(
+            f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
+            f"🔄 شروع ذخیره <b>{total}</b> مورد...\n"
+            f"{_cs_progress_bar(0, total)[0]} 0%\n\n"
+            "✅ موفق: 0\n❌ ناموفق: 0"
+        )
+
+        last_ui = 0.0
+        for index, message in enumerate(selected, 1):
+            try:
+                if await _cs_save_one(client, entity, message):
+                    success += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                failed += 1
+                print(f"[CHANNEL_SAVE {uid}] item {index} failed: {exc}")
+
+            now = time.monotonic()
+            if now - last_ui >= CHANNEL_SAVE_PROGRESS_INTERVAL or index == total:
+                last_ui = now
+                bar, percent = _cs_progress_bar(index, total)
+                await update(
+                    f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
+                    f"{bar} <b>{percent}%</b>\n\n"
+                    f"📦 پیشرفت: <b>{index}/{total}</b>\n"
+                    f"✅ موفق: <b>{success}</b>\n"
+                    f"❌ ناموفق: <b>{failed}</b>"
+                )
+
+        status = "✅ ذخیره با موفقیت کامل شد" if failed == 0 else "⚠️ ذخیره با تعدادی خطا تمام شد"
+        await update(
+            f"{status}\n\n"
+            f"📢 چنل: <b>{html.escape(title)}</b>\n"
+            f"📦 درخواست: <b>{requested}</b>\n"
+            f"📚 پیدا شده: <b>{total}</b>\n"
+            f"✅ ذخیره‌شده: <b>{success}</b>\n"
+            f"❌ ناموفق: <b>{failed}</b>\n\n"
+            "📁 موارد موفق در <b>Saved Messages</b> ذخیره شدند.",
+            [[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+        )
+
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await update(
+                "⚠️ <b>عملیات ذخیره متوقف شد.</b>",
+                [[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+            )
+        raise
+    except Exception as exc:
+        logging.exception("channel save worker crashed")
+        await update(
+            "❌ <b>ذخیره چنل با خطا متوقف شد.</b>\n\n"
+            f"<code>{html.escape(str(exc))}</code>",
+            [[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+        )
+    finally:
+        if _channel_save_tasks.get(uid) is current:
+            _channel_save_tasks.pop(uid, None)
+        session = _cs_session(uid)
+        if session and session.get("editor") == editor:
+            # Keep the final message visible; only remove in-memory state.
+            _cs_clear(uid)
+
+
+async def _cs_open(event, uid):
+    if uid in _channel_save_tasks and not _channel_save_tasks[uid].done():
+        await safe_answer(event, "⏳ یک ذخیره‌سازی در حال اجراست.", True)
+        return True
+    client = self_clients.get(uid)
+    if not client:
+        await event.edit("❌ سلف فعال نیست. ابتدا سلف را فعال کن.", parse_mode="html", buttons=self_panel_buttons(uid))
+        return True
+    try:
+        channels = await _cs_channels(client)
+        if not channels:
+            await event.edit(
+                "💾 <b>ذخیره چنل</b>\n\n❌ هیچ چنل قابل دسترسی پیدا نشد.",
+                parse_mode="html",
+                buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+            )
+            return True
+        _channel_save_sessions[uid] = {"step": "channel", "channels": channels, "editor": _cs_editor_from_event(event)}
+        await event.edit(
+            "💾 <b>ذخیره چنل</b>\n\nچنلی را که می‌خواهی از آن ذخیره کنی انتخاب کن:",
+            parse_mode="html",
+            buttons=_cs_channel_buttons(uid, channels),
+        )
+    except Exception as exc:
+        logging.exception("channel list failed")
+        await event.edit(
+            "❌ <b>لیست چنل‌ها دریافت نشد.</b>\n\n"
+            f"<code>{html.escape(str(exc))}</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+    return True
+
 async def handle_self_panel_callback(event):
     data = event.data.decode("utf-8", errors="ignore")
     parts = data.split(":", 2)
@@ -1220,13 +1499,117 @@ async def handle_self_panel_callback(event):
 
     action = parts[2]
 
-    # During an active channel-save operation, stale/queued channel callbacks
-    # must not be allowed to mutate or restart the flow.
-    if action.startswith("channel_") and self_channel_save_state(uid).get("step") == "processing":
-        await safe_answer(event, "⏳ ذخیره مدیا در حال انجام است.", True)
-        return True
 
     await safe_answer(event)
+
+    if action == "cs_open":
+        return await _cs_open(event, uid)
+
+    if action.startswith("cs_"):
+        session = _cs_session(uid)
+        if not session:
+            await safe_answer(event, "❌ این عملیات دیگر فعال نیست.", True)
+            return True
+
+        if action.startswith("cs_pick:"):
+            try:
+                idx = int(action.split(":", 1)[1])
+                item = session["channels"][idx]
+            except (ValueError, IndexError, KeyError):
+                await safe_answer(event, "❌ چنل انتخابی معتبر نیست.", True)
+                return True
+            session.update({
+                "step": "media",
+                "channel_id": item["id"],
+                "access_hash": item.get("access_hash"),
+                "channel_title": item["title"],
+            })
+            await event.edit(
+                f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n\nنوع مدیا را انتخاب کن:",
+                parse_mode="html", buttons=_cs_media_buttons(uid)
+            )
+            return True
+
+        if action.startswith("cs_media:"):
+            kind = action.split(":", 1)[1]
+            if kind not in {"photos", "videos", "music", "voice", "text", "all"} or session.get("step") != "media":
+                return True
+            session.update({"step": "count", "media": kind, "count": 0})
+            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
+            return True
+
+        if action == "cs_media_back":
+            session["step"] = "media"
+            await event.edit(
+                f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(session.get('channel_title','چنل'))}</b>\n\nنوع مدیا را انتخاب کن:",
+                parse_mode="html", buttons=_cs_media_buttons(uid)
+            )
+            return True
+
+        if action.startswith("cs_num:") and session.get("step") == "count":
+            digit = action.split(":", 1)[1]
+            if digit.isdigit():
+                value = str(session.get("count", 0))
+                value = "" if value == "0" else value
+                candidate = (value + digit).lstrip("0") or "0"
+                if len(candidate) <= 4 and int(candidate) <= CHANNEL_SAVE_MAX_COUNT:
+                    session["count"] = int(candidate)
+                else:
+                    await safe_answer(event, f"⚠️ حداکثر {CHANNEL_SAVE_MAX_COUNT} مورد است.", True)
+                    return True
+            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
+            return True
+
+        if action == "cs_back" and session.get("step") == "count":
+            value = str(session.get("count", 0))
+            session["count"] = int(value[:-1] or "0")
+            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
+            return True
+
+        if action == "cs_clear" and session.get("step") == "count":
+            session["count"] = 0
+            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
+            return True
+
+        if action == "cs_confirm" and session.get("step") == "count":
+            count = int(session.get("count", 0))
+            if count < 1:
+                await safe_answer(event, "⚠️ ابتدا تعداد را انتخاب کن.", True)
+                return True
+            if uid in _channel_save_tasks and not _channel_save_tasks[uid].done():
+                await safe_answer(event, "⏳ یک عملیات ذخیره در حال اجراست.", True)
+                return True
+            client = self_clients.get(uid)
+            if not client:
+                await event.edit("❌ سلف فعال نیست.", parse_mode="html", buttons=self_panel_buttons(uid))
+                _cs_clear(uid)
+                return True
+
+            # CRITICAL: capture this exact message identity BEFORE starting the
+            # worker. The worker edits this same message for its entire life.
+            editor = _cs_editor_from_event(event)
+            session["step"] = "processing"
+            session["count"] = count
+            session["editor"] = editor
+            try:
+                await _cs_edit(
+                    editor,
+                    f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(session['channel_title'])}</b>\n\n"
+                    "⏳ در حال آماده‌سازی...\n"
+                    "░░░░░░░░░░░░░░░░░░ 0%",
+                    buttons=None,
+                )
+            except Exception as exc:
+                logging.exception("initial channel progress edit failed")
+                session["step"] = "count"
+                await safe_answer(event, "❌ پیام پنل قابل بروزرسانی نیست؛ عملیات شروع نشد.", True)
+                return True
+
+            task = asyncio.create_task(_cs_worker(uid, client, dict(session), editor))
+            _channel_save_tasks[uid] = task
+            return True
+
+        return True
 
     if action == "close":
         # The panel is a bot-owned inline-result message.  Do not delete it:
@@ -1357,254 +1740,6 @@ async def handle_self_panel_callback(event):
         )
         _cleanup_tasks[uid] = task
         await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
-        return True
-
-    if action == "channel_save":
-        print(f"[CHANNEL_SAVE DEBUG] uid={uid} open-channel-list via_inline={getattr(event, 'via_inline', False)}")
-        client = self_clients.get(uid)
-        if not client:
-            await event.edit("❌ سلف فعال نیست. ابتدا سلف را فعال کن.", parse_mode="html", buttons=self_panel_buttons(uid))
-            return True
-        channels = await _private_channel_entries(client)
-        if not channels:
-            await event.edit(
-                "💾 <b>ذخیره از چنل خصوصی</b>\n\n❌ هیچ چنل خصوصیِ عضوشده‌ای برای این اکانت پیدا نشد.",
-                parse_mode="html",
-                buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
-            )
-            return True
-        self_set_channel_save_state(uid, {"step": "select_channel"})
-        buttons = []
-        for display_id, title, entity in channels:
-            buttons.append([btn(f"{display_id} | {title}", _self_cb(uid, f"channel_pick:{int(entity.id)}"), "primary")])
-        buttons.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
-        await event.edit(
-            "💾 <b>چنل خصوصی را انتخاب کن</b>\n\n"
-            "فقط چنل‌های خصوصی که همین اکانت داخلشان عضو است نمایش داده می‌شوند.",
-            parse_mode="html", buttons=buttons,
-        )
-        return True
-
-    if action.startswith("channel_pick:"):
-        print(f"[CHANNEL_SAVE DEBUG] uid={uid} channel-pick action={action}")
-        try:
-            entity_id = int(action.split(":", 1)[1])
-            client = self_clients.get(uid)
-            if not client:
-                raise ValueError("سلف فعال نیست")
-
-            # Resolve from the account's actual dialogs, not from an arbitrary
-            # numeric ID, so a stale/forged callback cannot select another chat.
-            entity = None
-            async for dialog in client.iter_dialogs():
-                candidate = getattr(dialog, "entity", None)
-                if not isinstance(candidate, types.Channel):
-                    continue
-                if getattr(candidate, "id", None) != entity_id:
-                    continue
-                if getattr(candidate, "megagroup", False):
-                    continue
-                if getattr(candidate, "username", None):
-                    continue
-                entity = candidate
-                break
-
-            if entity is None:
-                raise ValueError("چنل خصوصی معتبر پیدا نشد")
-
-            title = getattr(entity, "title", None) or "بدون نام"
-            state = {
-                "step": "media",
-                "channel_id": int(entity.id),
-                "channel_access_hash": _private_channel_access_hash(entity),
-                "channel_title": title,
-            }
-            self_set_channel_save_state(uid, state)
-            await event.edit(
-                f"📢 <b>{html.escape(title)}</b>\n\nنوع مدیا را انتخاب کن:",
-                parse_mode="html",
-                buttons=self_channel_media_buttons(uid),
-            )
-        except Exception as exc:
-            print(f"[SELF {uid}] private channel pick failed: {exc}")
-            with contextlib.suppress(Exception):
-                await event.edit(
-                    f"❌ انتخاب چنل ناموفق بود.\n<code>{html.escape(str(exc))}</code>",
-                    parse_mode="html",
-                    buttons=[
-                        [btn("🔙 بازگشت به چنل‌ها", _self_cb(uid, "channel_save"), "primary")],
-                        [btn("🏠 پنل", _self_cb(uid, "panel"), "primary")],
-                    ],
-                )
-        return True
-
-    if action.startswith("channel_count:"):
-        state = self_channel_save_state(uid)
-        if state.get("step") != "count" or not state.get("channel_id"):
-            await safe_answer(event, "❌ این مرحله دیگر فعال نیست.", True)
-            return True
-
-        command = action.split(":", 1)[1]
-        current = str(state.get("count_input") or "0")
-
-        if command == "back_media":
-            state.update({"step": "media"})
-            state.pop("count_input", None)
-            self_set_channel_save_state(uid, state)
-            await event.edit(
-                f"📢 <b>{html.escape(str(state.get('channel_title') or 'چنل'))}</b>\n\nنوع مدیا را انتخاب کن:",
-                parse_mode="html",
-                buttons=self_channel_media_buttons(uid),
-            )
-            return True
-
-        if command == "clear":
-            state["count_input"] = "0"
-        elif command == "back":
-            state["count_input"] = current[:-1] or "0"
-        elif command == "confirm":
-            try:
-                count = int(current)
-            except ValueError:
-                count = 0
-            if count < 1 or count > 1000:
-                await safe_answer(event, "⚠️ تعداد باید بین 1 تا 1000 باشد.", True)
-                return True
-
-            # Capture the real logged-in self client now. The worker receives this
-            # exact object explicitly and never performs a later self_clients lookup.
-            client = self_clients.get(uid) or getattr(event, "client", None)
-            if client is None:
-                await safe_answer(event, "❌ سلف فعال نیست.", True)
-                return True
-
-            existing = _channel_save_tasks.get(uid)
-            if existing is not None and not existing.done():
-                await safe_answer(event, "⏳ یک عملیات ذخیره مدیا در حال انجام است.", True)
-                return True
-
-            operation_id = secrets.token_hex(12)
-
-            # The old keypad/panel message is deliberately NOT reused.
-            # Create a fresh message with the self account; this message is the
-            # only UI that the long-running save operation is allowed to edit.
-            target_chat = getattr(event, "chat_id", None)
-            if target_chat is None:
-                peer = getattr(event, "peer_id", None)
-                channel_peer_id = getattr(peer, "channel_id", None)
-                if channel_peer_id is not None:
-                    target_chat = -1000000000000 - int(channel_peer_id)
-                else:
-                    target_chat = getattr(peer, "user_id", None) or getattr(peer, "chat_id", None)
-
-            if target_chat is None:
-                await safe_answer(event, "❌ مقصد پیام پیشرفت پیدا نشد.", True)
-                return True
-
-            state.update({
-                "step": "processing",
-                "uid": int(uid),
-                "requested": int(count),
-                "media": state.get("media", "all"),
-                "channel_id": int(state["channel_id"]),
-                "channel_access_hash": state.get("channel_access_hash"),
-                "channel_title": str(state.get("channel_title") or "چنل"),
-                "progress_chat_id": int(target_chat),
-                "progress_message_id": None,
-                "processing_started": time.time(),
-                "operation_id": operation_id,
-            })
-
-            try:
-                progress_message = await client.send_message(
-                    int(target_chat),
-                    "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
-                    parse_mode="html",
-                )
-                state["progress_message_id"] = int(progress_message.id)
-                self_set_channel_save_state(uid, state)
-                worker_state = dict(state)
-
-                # Delete the old keypad/panel completely. If one Telegram API
-                # path refuses, the second path is attempted as a fallback.
-                with contextlib.suppress(Exception):
-                    await event.delete()
-                if getattr(event, "chat_id", None) is not None and getattr(event, "message_id", None) is not None:
-                    with contextlib.suppress(Exception):
-                        await bot.delete_messages(int(event.chat_id), int(event.message_id))
-
-            except Exception as exc:
-                print(f"[CHANNEL_SAVE UI] failed to create replacement message: {exc}")
-                if self_channel_save_state(uid).get("operation_id") == operation_id:
-                    self_clear_channel_save_state(uid)
-                await safe_answer(event, "❌ شروع ذخیره‌سازی ناموفق بود.", True)
-                return True
-
-            task = asyncio.create_task(
-                _channel_save_worker(
-                    client=client,
-                    uid=uid,
-                    state=worker_state,
-                    count=count,
-                    operation_id=operation_id,
-                )
-            )
-            _channel_save_tasks[uid] = task
-            return True
-        else:
-            digit = command
-            if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "00"}:
-                return True
-            if current == "0":
-                candidate = digit.lstrip("0") or "0"
-            else:
-                candidate = current + digit
-            candidate = candidate.lstrip("0") or "0"
-            if len(candidate) > 4 or int(candidate) > 1000:
-                await safe_answer(event, "⚠️ حداکثر تعداد ۱۰۰۰ مورد است.", True)
-                return True
-            state["count_input"] = candidate
-
-        self_set_channel_save_state(uid, state)
-        await event.edit(
-            _channel_count_text(state),
-            parse_mode="html",
-            buttons=_channel_count_buttons(uid, state.get("count_input", "0")),
-        )
-        return True
-
-    if action == "channel_cancel":
-        self_clear_channel_save_state(uid)
-        await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
-        return True
-
-    if action.startswith("channel_media:"):
-        media_kind = action.split(":", 1)[1]
-        print(f"[CHANNEL_SAVE DEBUG] uid={uid} media={media_kind} via_inline={getattr(event, 'via_inline', False)}")
-        if media_kind not in {"photos", "videos", "music", "voice", "text", "all"}:
-            return True
-        state = self_channel_save_state(uid)
-        if not state.get("channel_id"):
-            await event.edit("❌ ابتدا چنل را از لیست انتخاب کن.", buttons=self_panel_buttons(uid))
-            return True
-        labels = {
-            "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
-            "voice": "ویس", "text": "متن", "all": "کل مدیاها"
-        }
-        state.update({
-            "step": "count",
-            "media": media_kind,
-            "count_input": "0",
-            "panel_chat_id": (int(event.chat_id) if getattr(event, "chat_id", None) is not None else None),
-            "panel_message_id": (int(event.message_id) if getattr(event, "message_id", None) is not None else None),
-            "inline_message_id": _serialize_inline_message_id(_event_inline_message_id(event)),
-        })
-        self_set_channel_save_state(uid, state)
-        await event.edit(
-            _channel_count_text(state),
-            parse_mode="html",
-            buttons=_channel_count_buttons(uid, "0"),
-        )
         return True
 
     if action == "lock_help":
@@ -2176,598 +2311,26 @@ async def _self_roll_guaranteed_six(event, uid):
     return await _self_roll_guaranteed_value(event, uid, 6)
 
 
-def self_channel_media_buttons(uid):
-    return [
-        [btn("🖼 تصویر", _self_cb(uid, "channel_media:photos")), btn("🎬 ویدیو", _self_cb(uid, "channel_media:videos"))],
-        [btn("🎵 موسیقی", _self_cb(uid, "channel_media:music")), btn("🎤 ویس", _self_cb(uid, "channel_media:voice"))],
-        [btn("📝 متن", _self_cb(uid, "channel_media:text")), btn("📦 همه", _self_cb(uid, "channel_media:all"))],
-        [btn("❌ لغو", _self_cb(uid, "channel_cancel"), "danger")],
-    ]
 
 
-def _channel_count_buttons(uid, value="0"):
-    return [
-        [btn("1", _self_cb(uid, "channel_count:1")), btn("2", _self_cb(uid, "channel_count:2")), btn("3", _self_cb(uid, "channel_count:3"))],
-        [btn("4", _self_cb(uid, "channel_count:4")), btn("5", _self_cb(uid, "channel_count:5")), btn("6", _self_cb(uid, "channel_count:6"))],
-        [btn("7", _self_cb(uid, "channel_count:7")), btn("8", _self_cb(uid, "channel_count:8")), btn("9", _self_cb(uid, "channel_count:9"))],
-        [btn("0", _self_cb(uid, "channel_count:0")), btn("00", _self_cb(uid, "channel_count:00")), btn("⌫", _self_cb(uid, "channel_count:back"), "danger")],
-        [btn("🗑 پاک کردن", _self_cb(uid, "channel_count:clear"), "danger"), btn("✅ تأیید", _self_cb(uid, "channel_count:confirm"), "success")],
-        [btn("↩️ برگشت", _self_cb(uid, "channel_count:back_media"), "primary")],
-    ]
 
 
-def _channel_count_text(state):
-    labels = {
-        "photos": "تصویر", "videos": "ویدیو", "music": "موسیقی",
-        "voice": "ویس", "text": "متن", "all": "کل مدیاها"
-    }
-    media = labels.get(state.get("media"), "مدیا")
-    value = str(state.get("count_input") or "0")
-    return (
-        f"💾 <b>{media}</b>\n\n"
-        "چند مورد آخر را ذخیره کنم؟\n\n"
-        f"🔢 <b>{value}</b>\n\n"
-        "مقدار را با دکمه‌های زیر انتخاب کن و سپس «تأیید» را بزن."
-    )
 
 
-def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None, successful=None, failed=None):
-    percent = max(0, min(100, int(percent)))
-    slots = 10
-    filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
-    progress = f"💾 <b>{percent}%</b> {bar}"
-    if total is not None:
-        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
-    counts = ""
-    if successful is not None or failed is not None:
-        counts = f"  •  ✅{int(successful or 0)} ❌{int(failed or 0)}"
-    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
 
 
-async def _channel_save_ui_edit(state, text, buttons=None, *, retries=2, client=None):
-    """Edit the NEW progress message only. Never edit the old channel panel."""
-    client = client or self_clients.get(int(state.get("uid", 0)))
-    chat_id = state.get("progress_chat_id")
-    message_id = state.get("progress_message_id")
-    uid = state.get("uid", "?")
 
-    if client is None or chat_id is None or message_id is None:
-        raise RuntimeError(
-            f"channel-save progress identity missing: chat_id={chat_id} "
-            f"message_id={message_id} client={bool(client)}"
-        )
 
-    last_exc = None
-    for attempt in range(max(1, int(retries))):
-        try:
-            await _tg_call_with_flood_retry(
-                lambda: client.edit_message(
-                    int(chat_id),
-                    int(message_id),
-                    text,
-                    parse_mode="html",
-                    buttons=buttons,
-                ),
-                label=f"channel-save progress edit uid={uid}",
-            )
-            return True
-        except Exception as exc:
-            last_exc = exc
-            print(
-                f"[CHANNEL_SAVE UI] progress edit failed: uid={uid} "
-                f"chat_id={chat_id} message_id={message_id} "
-                f"attempt={attempt + 1}/{max(1, int(retries))} error={exc}"
-            )
-            if attempt + 1 < max(1, int(retries)):
-                await asyncio.sleep(0.15)
-    raise last_exc
 
 
-def _channel_progress_text(
-    percent,
-    label="در حال ذخیره…",
-    processed=None,
-    total=None,
-    successful=None,
-    failed=None,
-):
-    percent = max(0, min(100, int(percent)))
-    slots = 12
-    filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
-    progress = f"💾 <b>{percent}%</b> <code>{bar}</code>"
-    if total is not None:
-        progress += f"  <b>{int(processed or 0)}/{int(total)}</b>"
-    counts = ""
-    if successful is not None or failed is not None:
-        counts = f"  •  ✅{int(successful or 0)}  ❌{int(failed or 0)}"
-    return f"{progress}{counts}\n<i>{html.escape(label)}</i>"
 
 
-class _ChannelProgressController:
-    """Owns the replacement progress message created after confirmation."""
 
-    def __init__(self, state, client, *, min_interval=0.5):
-        self.state = state
-        self.client = client
-        self.min_interval = float(min_interval)
-        self.last_edit = 0.0
-        self.last_percent = None
-        self.last_failed = -1
 
-    async def edit(self, text, buttons=None):
-        return await _channel_save_ui_edit(
-            self.state, text, buttons=buttons, client=self.client
-        )
 
-    async def update(
-        self, processed, total, *, successful=0, failed=0, force=False,
-        label="در حال ذخیره…",
-    ):
-        total = max(0, int(total))
-        processed = max(0, min(int(processed), total)) if total else 0
-        percent = 100 if total == 0 else int(processed * 100 / total)
-        percent = max(0, min(100, percent))
-        now = time.monotonic()
 
-        important = (
-            force or processed == 0 or processed == 1 or
-            (total > 0 and processed == total) or failed != self.last_failed
-        )
-        if not important:
-            if percent == self.last_percent or (now - self.last_edit) < self.min_interval:
-                return
 
-        await self.edit(
-            _channel_progress_text(
-                percent, label=label, processed=processed, total=total,
-                successful=successful, failed=failed,
-            ),
-            buttons=None,
-        )
-        self.last_edit = time.monotonic()
-        self.last_percent = percent
-        self.last_failed = failed
 
-    async def phase(self, text):
-        await self.edit(text, buttons=None)
-        self.last_edit = time.monotonic()
-
-    async def finish(self, *, successful, failed, requested, available):
-        if available <= 0:
-            await self.edit(
-                "❌ <b>مدیای قابل ذخیره پیدا نشد.</b>",
-                buttons=[[btn("🔙 بازگشت به پنل", _self_cb(int(self.state["uid"]), "panel"), "primary")]],
-            )
-            return
-
-        await self.update(
-            available, available, successful=successful, failed=failed,
-            force=True, label="ذخیره کامل شد",
-        )
-
-        if successful == requested and failed == 0 and available >= requested:
-            text = (
-                "✅ <b>ذخیره مدیا تکمیل شد</b>\n\n"
-                f"📦 درخواست: {requested}\n"
-                f"✅ موفق: {successful}\n"
-                f"❌ ناموفق: {failed}"
-            )
-        else:
-            text = (
-                "⚠️ <b>ذخیره مدیا تکمیل شد</b>\n\n"
-                f"📦 درخواست: {requested}\n"
-                f"✅ موفق: {successful}\n"
-                f"❌ ناموفق: {failed}"
-            )
-            if available < requested:
-                text += f"\nℹ️ مدیای پیدا شده: {available}"
-
-        await self.edit(
-            text,
-            buttons=[[btn("🔙 بازگشت به پنل", _self_cb(int(self.state["uid"]), "panel"), "primary")]],
-        )
-
-
-async def _channel_progress_done(state, *, successful, failed, requested, available):
-    controller = _ChannelProgressController(state, self_clients.get(int(state.get("uid", 0))))
-    await controller.finish(
-        successful=successful,
-        failed=failed,
-        requested=requested,
-        available=available,
-    )
-
-
-
-async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
-    """
-    Production-safe private-channel saver.
-
-    Flow:
-      1) Resolve the private channel.
-      2) Scan messages without blocking the UI.
-      3) Immediately expose a real 0% progress state once the target set is known.
-      4) Save oldest -> newest, updating the same panel after every item.
-      5) Never forward; copy to Saved Messages.
-    """
-    kind = state.get("media", "all")
-    channel_id = state.get("channel_id")
-    labels = {
-        "photos": "تصویر",
-        "videos": "ویدیو",
-        "music": "موسیقی",
-        "voice": "ویس",
-        "text": "متن",
-        "all": "مدیا",
-    }
-
-    if not channel_id:
-        return {
-            "saved": 0, "failed": 0, "processed": 0, "available": 0,
-            "error": "❌ چنل انتخاب نشده است.",
-        }
-
-    try:
-        access_hash = state.get("channel_access_hash")
-        if access_hash is not None:
-            entity = await _tg_call_with_flood_retry(
-                lambda: client.get_entity(
-                    types.InputPeerChannel(int(channel_id), int(access_hash))
-                ),
-                label="resolve private channel",
-            )
-        else:
-            entity = await _tg_call_with_flood_retry(
-                lambda: client.get_entity(int(channel_id)),
-                label="resolve private channel",
-            )
-
-        # --------------------------------------------------------
-        # PHASE 1: collect the requested messages.
-        # This phase deliberately has its own live UI because Telegram
-        # can take a while to walk a large/private channel history.
-        # --------------------------------------------------------
-        selected_items = []
-        scanned = 0
-        last_scan_ui = 0.0
-
-        if progress_cb:
-            await progress_cb(
-                0, 0,
-                successful=0,
-                failed=0,
-                force=True,
-                label=f"🔎 درحال پیدا کردن {count} {labels.get(kind, 'مدیا')} آخر…",
-            )
-
-        async for msg in client.iter_messages(
-            entity,
-            limit=max(count * 8, count + 30),
-        ):
-            if not msg:
-                continue
-
-            scanned += 1
-
-            if kind == "photos":
-                matched = bool(getattr(msg, "photo", None))
-            elif kind == "videos":
-                matched = bool(getattr(msg, "video", None))
-            elif kind == "music":
-                matched = bool(getattr(msg, "audio", None)) and not bool(
-                    getattr(msg, "voice", None)
-                )
-            elif kind == "voice":
-                matched = bool(getattr(msg, "voice", None))
-            elif kind == "text":
-                matched = bool((msg.raw_text or "").strip()) and not getattr(
-                    msg, "media", None
-                )
-            else:
-                matched = bool(
-                    getattr(msg, "media", None) or (msg.raw_text or "").strip()
-                )
-
-            if matched:
-                selected_items.append(msg)
-                if len(selected_items) >= count:
-                    break
-
-            # Do not edit Telegram for every scanned message.
-            # A small live heartbeat prevents the UI from looking frozen.
-            now = time.monotonic()
-            if progress_cb and (now - last_scan_ui >= 0.8):
-                last_scan_ui = now
-                await progress_cb(
-                    0, 0,
-                    successful=0,
-                    failed=0,
-                    force=True,
-                    label=(
-                        f"🔎 درحال بررسی چنل… "
-                        f"{len(selected_items)}/{count} مورد پیدا شد"
-                    ),
-                )
-
-        total = len(selected_items)
-
-        if not selected_items:
-            if kind == "photos":
-                error = "❌ <b>مدیای قابل ذخیره پیدا نشد.</b>"
-            else:
-                error = (
-                    f"❌ <b>مدیای قابل ذخیره پیدا نشد.</b>\n"
-                    f"<i>نوع انتخاب‌شده: {html.escape(labels.get(kind, kind))}</i>"
-                )
-            return {
-                "saved": 0,
-                "failed": 0,
-                "processed": 0,
-                "available": 0,
-                "error": error,
-            }
-
-        # --------------------------------------------------------
-        # PHASE 2: real progress starts HERE.
-        # This call is forced, so the first 0% state is always visible.
-        # --------------------------------------------------------
-        if progress_cb:
-            await progress_cb(
-                0,
-                total,
-                successful=0,
-                failed=0,
-                force=True,
-                label=f"💾 درحال ذخیره {labels.get(kind, 'مدیا')}…",
-            )
-
-        saved = 0
-        failed = 0
-        processed = 0
-
-        # Oldest -> newest. Copying instead of forwarding removes the
-        # Telegram forward header.
-        for msg in reversed(selected_items):
-            media_id = getattr(msg, "id", "?")
-
-            # Give the user an immediate visual transition before a
-            # potentially slow upload/download starts.
-            if progress_cb:
-                await progress_cb(
-                    processed,
-                    total,
-                    successful=saved,
-                    failed=failed,
-                    force=True,
-                    label=f"💾 درحال ذخیره مورد {processed + 1} از {total}…",
-                )
-
-            try:
-                media = getattr(msg, "media", None)
-                caption = msg.raw_text or None
-
-                if media:
-                    direct_error = None
-                    try:
-                        await _tg_call_with_flood_retry(
-                            lambda m=media, c=caption: client.send_file(
-                                "me", m, caption=c
-                            ),
-                            label=f"copy media {media_id}",
-                        )
-                    except Exception as direct_exc:
-                        direct_error = direct_exc
-                        print(
-                            f"[CHANNEL_SAVE {uid}] direct media copy failed "
-                            f"{media_id}: {direct_exc}; using download fallback"
-                        )
-
-                        path = await _tg_call_with_flood_retry(
-                            lambda m=msg: m.download_media(),
-                            label=f"download media {media_id}",
-                        )
-                        if not path:
-                            raise RuntimeError(
-                                f"media download failed: {direct_error}"
-                            )
-
-                        try:
-                            await _tg_call_with_flood_retry(
-                                lambda p=path, c=caption: client.send_file(
-                                    "me", p, caption=c
-                                ),
-                                label=f"upload media {media_id}",
-                            )
-                        finally:
-                            with contextlib.suppress(Exception):
-                                os.remove(path)
-
-                elif caption:
-                    await _tg_call_with_flood_retry(
-                        lambda c=caption: client.send_message("me", c),
-                        label=f"save text {media_id}",
-                    )
-                else:
-                    raise RuntimeError(
-                        "matched message contained no savable content"
-                    )
-
-                saved += 1
-
-            except asyncio.CancelledError:
-                raise
-
-            except Exception as exc:
-                failed += 1
-                print(
-                    f"[CHANNEL_SAVE {uid}] item failed "
-                    f"channel={channel_id} message={media_id}: {exc}"
-                )
-
-            finally:
-                processed += 1
-
-                if progress_cb:
-                    await progress_cb(
-                        processed,
-                        total,
-                        successful=saved,
-                        failed=failed,
-                        force=True,
-                        label=(
-                            "💾 درحال ذخیره…"
-                            if processed < total
-                            else "✅ همه موارد بررسی شدند"
-                        ),
-                    )
-
-        return {
-            "saved": saved,
-            "failed": failed,
-            "processed": processed,
-            "available": total,
-            "error": None,
-        }
-
-    except asyncio.CancelledError:
-        raise
-
-    except Exception as exc:
-        print(f"[CHANNEL_SAVE {uid}] channel save failed: {exc}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "saved": 0,
-            "failed": 0,
-            "processed": 0,
-            "available": 0,
-            "error": (
-                f"❌ ذخیره از چنل انجام نشد.\n"
-                f"<code>{html.escape(str(exc))}</code>"
-            ),
-        }
-
-
-async def _channel_save_worker(client, uid, state, count, operation_id):
-    """
-    Owns the complete save lifecycle.
-
-    The callback only changes the state and starts this task.
-    All heavy Telegram work happens here, so the callback never freezes
-    while channel history/media is being processed.
-    """
-    controller = _ChannelProgressController(state, client)
-    current_task = asyncio.current_task()
-
-    async def progress(processed, total, *, successful=0, failed=0,
-                        force=False, label="درحال ذخیره…"):
-        await controller.update(
-            processed,
-            total,
-            successful=successful,
-            failed=failed,
-            force=force,
-            label=label,
-        )
-
-    try:
-        # Smooth transition, matching the game's "resolving" phase.
-        await controller.phase("⏳ <b>درحال آماده‌سازی ذخیره…</b>")
-        await asyncio.sleep(0.15)
-
-        if not client:
-            raise RuntimeError("سلف فعال نیست")
-
-        await controller.phase(
-            f"🔎 <b>درحال پیدا کردن {count} "
-            f"{html.escape(str(state.get('media') or 'مدیا'))} آخر…</b>"
-        )
-
-        # Yield to the event loop before the potentially long channel scan.
-        await asyncio.sleep(0)
-
-        result = await _self_save_channel_media(
-            client,
-            uid,
-            state,
-            count,
-            progress_cb=progress,
-        )
-
-        if result.get("error") and result.get("processed", 0) == 0:
-            if result.get("available", 0) == 0:
-                await controller.finish(
-                    successful=result.get("saved", 0),
-                    failed=result.get("failed", 0),
-                    requested=count,
-                    available=0,
-                )
-            else:
-                await controller.edit(
-                    result["error"],
-                    buttons=[[
-                        btn(
-                            "🔙 بازگشت به پنل",
-                            _self_cb(uid, "panel"),
-                            "primary",
-                        )
-                    ]],
-                )
-            return
-
-        # Let 100% remain visible briefly before replacing it with
-        # the final summary. This makes the transition feel deliberate.
-        await controller.finish(
-            successful=result.get("saved", 0),
-            failed=result.get("failed", 0),
-            requested=count,
-            available=result.get("available", 0),
-        )
-
-        await asyncio.sleep(0.35)
-
-    except asyncio.CancelledError:
-        print(f"[CHANNEL_SAVE {uid}] worker cancelled")
-        with contextlib.suppress(Exception):
-            await controller.edit(
-                "⚠️ <b>ذخیره مدیا متوقف شد.</b>",
-                buttons=[[
-                    btn(
-                        "🔙 بازگشت به پنل",
-                        _self_cb(uid, "panel"),
-                        "primary",
-                    )
-                ]],
-            )
-        raise
-
-    except Exception as exc:
-        print(f"[CHANNEL_SAVE {uid}] fatal worker error")
-        import traceback
-        traceback.print_exc()
-        with contextlib.suppress(Exception):
-            await controller.edit(
-                "❌ <b>ذخیره مدیا با خطا متوقف شد.</b>\n"
-                f"خطا: <code>{html.escape(str(exc))}</code>",
-                buttons=[[
-                    btn(
-                        "🔙 بازگشت به پنل",
-                        _self_cb(uid, "panel"),
-                        "primary",
-                    )
-                ]],
-            )
-
-    finally:
-        # Never let an old worker clear a newer operation.
-        saved_state = self_channel_save_state(uid)
-        if saved_state.get("operation_id") == operation_id:
-            self_clear_channel_save_state(uid)
-
-        if _channel_save_tasks.get(uid) is current_task:
-            _channel_save_tasks.pop(uid, None)
 
 
 # ============================================================
@@ -3733,99 +3296,95 @@ async def _self_logo_command(event, uid, text):
 
 
 async def _fake_hack_prank(event, uid):
-    """Purely visual entertainment; no real access or data operations occur."""
-    chat_id = event.chat_id
-
+    """Purely fictional entertainment sequence; no real access or scanning occurs."""
     if not event.is_reply:
         with contextlib.suppress(Exception):
-            await event.delete()
-        await event.client.send_message(
-            chat_id,
-            "🎭 <b>سرگرمی</b>\n\nبرای اجرای هک، روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.",
-            parse_mode="html",
-        )
+            await event.edit(
+                "🎭 <b>حالت هک نمایشی</b>\n\n"
+                "روی پیام کاربر ریپلای کن و فقط <code>هک</code> بفرست.",
+                parse_mode="html",
+            )
         return
 
     replied = await event.get_reply_message()
     if not replied:
         with contextlib.suppress(Exception):
-            await event.delete()
-        await event.client.send_message(
-            chat_id,
-            "❌ پیام هدف پیدا نشد؛ روی پیام کاربر ریپلای کن و فقط <code>هک</code> بنویس.",
-            parse_mode="html",
-        )
+            await event.edit("❌ این دستور باید روی پیام یک کاربر ریپلای شود.")
         return
 
-    # The command itself should disappear; the target message remains untouched.
+    chat_id = event.chat_id
+    if chat_id is None:
+        return
+
+    # The command itself disappears.  A fresh message is created as a reply to
+    # the target and then edited in place, so the target relationship is visible.
     with contextlib.suppress(Exception):
         await event.delete()
 
     stages = [
-        "INITIALIZING SECURE CHANNEL...",
-        "RESOLVING TARGET SESSION...",
-        "BYPASSING FIREWALL...",
-        "NEGOTIATING ENCRYPTED HANDSHAKE...",
-        "ENUMERATING DATABASE NODES...",
-        "VERIFYING ACCESS TOKENS...",
-        "MOUNTING ARCHIVE INDEX...",
-        "DECRYPTING RECORD MAP...",
-        "EXTRACTING RECORD BLOCKS...",
-        "REBUILDING DATA SHARDS...",
-        "COMPRESSING ARCHIVE...",
-        "FINALIZING SECURE TRANSFER...",
+        "INITIALIZING SECURE SESSION",
+        "ROUTING TRAFFIC THROUGH 7 NODES",
+        "BYPASSING FIREWALL LAYER 01/04",
+        "BYPASSING FIREWALL LAYER 02/04",
+        "ENUMERATING PROTECTED TABLES",
+        "DECRYPTING INDEX MANIFEST",
+        "MOUNTING ARCHIVE VOLUME",
+        "EXTRACTING RECORD SEGMENTS",
+        "VERIFYING CHECKSUMS",
+        "PACKING ARCHIVE",
+        "FINALIZING TRANSFER",
     ]
-    slots = 14
+
+    progress = None
+    try:
+        progress = await event.client.send_message(
+            chat_id,
+            "🛰️ <b>SECURE ACCESS INITIALIZING…</b>",
+            parse_mode="html",
+            reply_to=int(replied.id),
+        )
+    except Exception:
+        return
+
     started = time.monotonic()
-
-    # Keep this explicitly simulated: the loop only edits a normal Telegram
-    # message and performs no network/database/file access beyond Telegram.
-    status_message = await event.client.send_message(
-        chat_id,
-        "🛰️ <b>HACKING TARGET</b>\n\n<code>▱" + "▱" * (slots - 1) + "</code> <b>0%</b>\n\n<i>INITIALIZING SECURE CHANNEL...</i>",
-        parse_mode="html",
-        reply_to=int(replied.id),
-    )
-
-    for step in range(len(stages)):
-        percent = min(99, int(((step + 1) / len(stages)) * 99))
-        filled = round(slots * percent / 100)
-        bar = "▰" * filled + "▱" * (slots - filled)
+    steps = 15
+    for i in range(steps):
+        percent = min(99, int((i + 1) * 99 / steps))
+        filled = round(16 * percent / 100)
+        bar = "█" * filled + "░" * (16 - filled)
+        stage = stages[min(i, len(stages) - 1)]
         elapsed = time.monotonic() - started
-        remaining = max(0.0, 12.0 - elapsed)
+        remaining = max(0.0, steps - elapsed)
         text = (
-            "🛰️ <b>HACKING TARGET</b>\n\n"
+            "🛰️ <b>REMOTE ACCESS PROTOCOL</b>\n\n"
             f"<code>{bar}</code> <b>{percent}%</b>\n\n"
-            f"<code>NODE: {step + 1:02d}/{len(stages):02d}</code>\n"
-            f"<i>{stages[step]}</i>\n"
-            f"<code>ETA {remaining:04.1f}s</code>"
+            f"<code>[{stage}]</code>\n"
+            f"<code>NODE: {i + 1:02d}/15   ETA: {remaining:04.1f}s</code>"
         )
         with contextlib.suppress(Exception):
-            await status_message.edit(text, parse_mode="html")
-        await asyncio.sleep(1.0)
+            await progress.edit(text, parse_mode="html")
+        await asyncio.sleep(1)
 
-    size_gb = round(random.uniform(18.0, 42.0), 2)
-    size_text = f"{size_gb:.2f}GB"
-    file_name = f"target_archive_{size_gb:.2f}GB.zip"
+    size_gb = round(random.uniform(18.0, 39.0), 2)
     final_text = (
-        "🟢 <b>ACCESS SEQUENCE COMPLETE</b>\n\n"
+        "🟢 <b>ACCESS PROTOCOL COMPLETE</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "✓ TARGET IDENTIFIED\n"
-        "✓ FIREWALL BYPASSED\n"
-        "✓ ENCRYPTED SESSION OPENED\n"
-        "✓ DATABASE INDEX MAPPED\n"
-        "✓ RECORD BLOCKS EXTRACTED\n"
-        "✓ ARCHIVE ASSEMBLED\n"
+        "✓ PERIMETER BYPASSED\n"
+        "✓ SECURITY LAYERS OVERRIDDEN\n"
+        "✓ DATABASE INDEX MOUNTED\n"
+        "✓ PROTECTED RECORDS ENUMERATED\n"
+        "✓ ARCHIVE INTEGRITY VERIFIED\n"
+        "✓ ENCRYPTED PACKAGE CREATED\n"
         "✓ TRANSFER CHANNEL CLOSED\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>STATUS:</b> <code>SUCCESS</code>\n"
-        f"<b>ARCHIVE:</b> <code>{file_name}</code>\n"
-        f"<b>SIZE:</b> <code>{size_text}</code>\n"
-        "<b>INTEGRITY:</b> <code>100%</code>\n"
-        "<b>SESSION:</b> <code>TERMINATED</code>"
+        "<b>STATUS:</b> <code>ACCESS GRANTED</code>\n"
+        f"<b>ARCHIVE:</b> <code>global_records_{size_gb:.2f}GB.enc</code>\n"
+        f"<b>SIZE:</b> <code>{size_gb:.2f} GB</code>\n"
+        "<b>INTEGRITY:</b> <code>SHA-256 VERIFIED</code>\n"
+        "<b>TRANSFER:</b> <code>COMPLETE</code>"
     )
     with contextlib.suppress(Exception):
-        await status_message.edit(final_text, parse_mode="html")
+        await progress.edit(final_text, parse_mode="html")
 
 
 async def self_handle_outgoing(event, uid):
@@ -3839,38 +3398,6 @@ async def self_handle_outgoing(event, uid):
         return
     if await _self_logo_command(event, uid, text):
         return
-
-    # Interactive private-channel saver.  The bot panel stores only the
-    # current user's short state; the self account performs the actual fetch.
-    channel_state = self_channel_save_state(uid)
-    if channel_state:
-        step = channel_state.get("step")
-        if step == "channel":
-            # Kept only as a compatibility fallback for old pending states.
-            try:
-                raw_channel = text.strip()
-                if raw_channel.startswith("https://t.me/"):
-                    raw_channel = "@" + raw_channel.rstrip("/").split("/")[-1].split("?")[0]
-                entity = await event.client.get_entity(raw_channel)
-                if getattr(entity, "megagroup", False) or getattr(entity, "username", None):
-                    raise ValueError("فقط چنل خصوصیِ عضو اکانت قابل انتخاب است")
-                channel_state.update({"step": "media", "channel_id": int(entity.id), "channel_title": getattr(entity, "title", "بدون نام")})
-                self_set_channel_save_state(uid, channel_state)
-                await event.edit("📢 چنل انتخاب شد. نوع مدیا را از دکمه‌های همین پنل انتخاب کن.", parse_mode="html", buttons=self_channel_media_buttons(uid))
-            except Exception as exc:
-                await event.edit(f"❌ چنل پیدا نشد یا دسترسی وجود ندارد.\n<code>{html.escape(str(exc))}</code>", parse_mode="html")
-                self_clear_channel_save_state(uid)
-            return
-
-        if step == "processing":
-            # A processing state consumes this flow until the real save finishes.
-            # In particular, a new numeric outgoing message must never restart it.
-            return
-
-        if step == "count":
-            # Count is selected only from the inline numeric keypad.
-            # Typed messages must never start the channel-save operation.
-            return
 
     if low in _UNZIP_COMMANDS:
         result = await _self_unzip_reply(event, uid)
