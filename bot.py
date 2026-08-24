@@ -1046,14 +1046,14 @@ def self_panel_buttons(uid):
             btn("🏓 پینگ", _self_cb(uid, "ping"), "success"),
         ],
         [
-            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
-        ],
-        [
             btn("🤖 تبچی", _self_cb(uid, "banners"), "primary"),
+            btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
         ],
         [
-            btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
+        ],
+        [
+            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
         ],
         [btn("❌ بستن", _self_cb(uid, "close"), "danger")],
     ]
