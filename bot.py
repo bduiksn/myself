@@ -388,6 +388,9 @@ def btn(text: str, data, style: str | None = None):
     if isinstance(data, str):
         data = data.encode("utf-8")
     chosen = style or _button_style(text, data)
+    # Back/cancel buttons are always red/danger, regardless of caller style.
+    if any(w in (text or '').casefold() for w in ('بازگشت', 'برگشت', 'لغو', 'cancel', 'back')):
+        chosen = 'danger'
     try:
         return Button.inline(text, data, style=chosen)
     except Exception:
@@ -1032,7 +1035,6 @@ def self_panel_buttons(uid):
             btn(f"🌐 ترجمه {'روشن' if self_get(uid,'translate')=='on' else 'خاموش'}", _self_cb(uid, "translate"), toggle_style("translate")),
         ],
         [
-            btn(f"❤️ ریاکشن {'فعال' if reaction_on else 'خاموش'}", _self_cb(uid, "reaction"), "success" if reaction_on else "danger"),
             btn(f"👁 سین {'روشن' if self_get(uid,'auto_read')=='on' else 'خاموش'}", _self_cb(uid, "read"), toggle_style("auto_read")),
         ],
         [
@@ -1045,19 +1047,9 @@ def self_panel_buttons(uid):
         ],
         [
             btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
-            btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
         ],
         [
-            btn("🎨 لوگوساز", _self_cb(uid, "logo"), "primary"),
             btn("🤖 تبچی", _self_cb(uid, "banners"), "primary"),
-        ],
-        [
-            btn("💬 کامنت اول", _self_cb(uid, "comment_help"), "primary"),
-            btn("🤵 منشی", _self_cb(uid, "secretary_help"), "primary"),
-        ],
-        [
-            btn("🛡 مدیریت گروه", _self_cb(uid, "group_help"), "primary"),
-            btn("🏷 تگ اعضا", _self_cb(uid, "tag_help"), "primary"),
         ],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
@@ -1159,6 +1151,8 @@ SELF_FEATURE_GUIDES = {
     "group": ("🛡 <b>مدیریت گروه</b>\n\nروی پیام ریپلای:\n<code>پین</code>\n<code>حذف پین</code>\n\nروی پیام کاربر ریپلای:\n<code>بن</code> یا <code>سیک</code>\n<code>آن بن</code>\n\nاین دستورات فقط وقتی SELF در گروه ادمین باشد اجرا می‌شوند."),
     "globalban": ("🚫 <b>بن سراسری</b>\n\nافزودن:\n<code>بن سراسری @username</code>\nیا با ریپلای فقط <code>بن سراسری</code>\n\nحذف:\n<code>حذف بن سراسری @username</code>\n\nلیست:\n<code>لیست بن سراسری</code>"),
     "tag": ("🏷 <b>تگ اعضا</b>\n\nتعداد مشخص:\n<code>تگ 20</code>\n\nهمه اعضا:\n<code>همه</code>\n\nپیام دستور پس از اجرا حذف می‌شود و تگ‌ها به‌صورت گروهی ارسال می‌شوند. روی پیام هم می‌توانی ریپلای کنی."),
+    "currency": ("💱 <b>نرخ ارز</b>\n\nقیمت ارز/رمزارز را با دستور زیر بگیر:\n\n<code>قیمت BTC</code>\n<code>قیمت ETH</code>\n<code>قیمت SOL</code>\n<code>قیمت USDT</code>\n\nدریافت قیمت از سرویس عمومی انجام می‌شود و در صورت خطا fallback فعال است."),
+    "logo": ("🎨 <b>لوگوساز</b>\n\nساخت لوگو با ۱۲ قالب داخلی و رایگان:\n<code>لوگو 12 HusteRIX</code>"),
 }
 
 
@@ -1173,6 +1167,7 @@ def self_feature_guide_buttons(uid):
         ("💬 کامنت اول", "comments"), ("🤵 منشی", "secretary"),
         ("🛡 مدیریت گروه", "group"), ("🚫 بن سراسری", "globalban"),
         ("🏷 تگ اعضا", "tag"),
+        ("💱 نرخ ارز", "currency"), ("🎨 لوگوساز", "logo"),
     ]
     rows=[]
     for i in range(0, len(labels), 2):
@@ -2264,7 +2259,11 @@ async def handle_self_panel_callback(event):
         body=SELF_FEATURE_GUIDES.get(key)
         if not body:
             return True
-        await event.edit(body, parse_mode="html", buttons=[[btn("🔙 بازگشت به قابلیت‌ها", _self_cb(uid,"feature_help_menu"),"primary")],[btn("🏠 پنل اصلی", _self_cb(uid,"panel"),"primary")]])
+        await event.edit(
+            body,
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]],
+        )
         return True
     if action.startswith("guide_page:"):
         try:
