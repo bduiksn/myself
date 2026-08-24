@@ -2679,7 +2679,12 @@ def _openai_transcribe_sync(path: str):
 
 
 async def _self_transcribe_reply(event, uid):
-    """Voice/audio -> Persian text without blocking the Telethon event loop."""
+    """Voice/audio -> accurate Persian text without blocking Telethon.
+
+    Cloud transcription runs in a worker thread.  The local faster-whisper
+    model is ALSO loaded/transcribed in a worker thread; loading large-v3 in
+    the event loop was the main cause of the UI becoming stuck at "processing".
+    """
     if not event.is_reply:
         return "❌ روی ویس یا فایل صوتی ریپلای کن و «متن» را بفرست."
 
@@ -2687,33 +2692,41 @@ async def _self_transcribe_reply(event, uid):
     if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
         return "❌ ویس یا فایل صوتی پیدا نشد."
 
-    stt_state[uid] = {"status": "downloading", "started": time.monotonic()}
-    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
-    progress_task = None
+    state = stt_state.setdefault(uid, {
+        "status": "processing",
+        "started": time.monotonic(),
+        "last_ui": 0.0,
+        "percent": 0,
+    })
 
-    async def set_status(text):
-        with contextlib.suppress(Exception):
-            await event.edit(text, parse_mode="html")
-
-    async def heartbeat(label, interval=6):
-        # STT engines do not expose a trustworthy percentage. We therefore use
-        # a heartbeat with a bounded elapsed time, never a fake 0% progress bar.
-        started = time.monotonic()
-        dots = 0
+    async def progress_loop():
+        # STT providers do not expose a reliable per-file percentage.
+        # Show a live heartbeat instead of pretending a frozen percentage is
+        # real progress.  This task is always cancelled in finally.
+        phases = (
+            "🎙️ ویس دانلود شد…",
+            "🔊 در حال آماده‌سازی صدا…",
+            "🧠 در حال بارگذاری موتور تشخیص گفتار…",
+            "🧠 در حال تشخیص گفتار فارسی…",
+            "✍️ در حال ساخت متن نهایی…",
+        )
+        idx = 0
         while True:
-            dots = (dots + 1) % 4
-            elapsed = int(time.monotonic() - started)
-            suffix = "." * dots
-            await set_status(
-                f"{label}{suffix}\n\n"
-                f"⏳ زمان سپری‌شده: {elapsed} ثانیه\n"
-                "لطفاً پنجره را نبند."
-            )
-            await asyncio.sleep(interval)
+            text = phases[idx % len(phases)]
+            idx += 1
+            with contextlib.suppress(Exception):
+                elapsed = int(time.monotonic() - state.get("started", time.monotonic()))
+                await event.edit(
+                    f"{text}\\n\\n"
+                    f"⏳ زمان پردازش: {elapsed} ثانیه\\n"
+                    "▰▱▱▱▱  در حال انجام",
+                    parse_mode="html",
+                )
+            await asyncio.sleep(2.5)
 
+    progress_task = asyncio.create_task(progress_loop())
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
     try:
-        await set_status("🎙️ <b>ویس دریافت شد</b>\n\n📥 در حال دانلود فایل…")
-        stt_state[uid]["status"] = "downloading"
         try:
             path = await asyncio.wait_for(
                 replied.download_media(file=str(tmp_dir)),
@@ -2728,11 +2741,8 @@ async def _self_transcribe_reply(event, uid):
         if not path:
             return "❌ دانلود ویس ناموفق بود."
 
-        # Keep the UI responsive while a cloud/local engine is working.
+        # Prefer OpenAI when configured.  It is executed off the event loop.
         if OPENAI_API_KEY:
-            await set_status("🎙️ <b>ویس دانلود شد</b>\n\n☁️ در حال تبدیل با موتور ابری…")
-            stt_state[uid]["status"] = "cloud_transcribing"
-            progress_task = asyncio.create_task(heartbeat("🧠 در حال تشخیص گفتار", 6))
             try:
                 result = await asyncio.wait_for(
                     asyncio.to_thread(_openai_transcribe_sync, str(path)),
@@ -2743,32 +2753,29 @@ async def _self_transcribe_reply(event, uid):
             except asyncio.TimeoutError:
                 print(f"[SELF {uid}] OpenAI STT timed out; using local fallback.")
             except Exception as exc:
-                print(f"[SELF {uid}] OpenAI transcription failed; using local fallback: {exc}")
-            finally:
-                if progress_task:
-                    progress_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await progress_task
-                    progress_task = None
+                print(f"[SELF {uid}] OpenAI transcription failed, using local fallback: {exc}")
 
         try:
             from faster_whisper import WhisperModel
         except ImportError:
             if OPENAI_API_KEY:
-                return "❌ سرویس تبدیل صدا در دسترس نیست و موتور محلی هم نصب نشده است."
-            return "❌ `faster-whisper` نصب نیست و `OPENAI_API_KEY` هم تنظیم نشده است."
+                return "❌ سرویس تبدیل صدا موقتاً در دسترس نیست و موتور محلی هم نصب نشده است."
+            return "❌ برای تبدیل محلی، `faster-whisper` را نصب کن یا `OPENAI_API_KEY` را تنظیم کن."
 
-        await set_status("🎙️ <b>ویس دانلود شد</b>\n\n🧠 موتور محلی در حال آماده‌سازی است…")
-        stt_state[uid]["status"] = "local_transcribing"
-        progress_task = asyncio.create_task(heartbeat("🧠 در حال تشخیص گفتار فارسی", 8))
-
+        # IMPORTANT: model construction must be in the worker thread too.
+        # WhisperModel("large-v3") can take a long time and otherwise freezes
+        # the asyncio event loop before the first transcription update.
         def load_and_transcribe():
             model = getattr(_self_transcribe_reply, "_model", None)
             if model is None:
                 model_name = os.getenv("WHISPER_MODEL", "small")
                 device = os.getenv("WHISPER_DEVICE", "cpu")
                 compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-                model = WhisperModel(model_name, device=device, compute_type=compute_type)
+                model = WhisperModel(
+                    model_name,
+                    device=device,
+                    compute_type=compute_type,
+                )
                 _self_transcribe_reply._model = model
 
             segments, _ = model.transcribe(
@@ -2795,16 +2802,11 @@ async def _self_transcribe_reply(event, uid):
         except Exception as exc:
             print(f"[SELF {uid}] local transcription failed: {exc}")
             return "❌ موتور تبدیل ویس خطا داد؛ لاگ سرور را بررسی کن."
-        finally:
-            if progress_task:
-                progress_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await progress_task
-                progress_task = None
 
         return (
             f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
-            if result else "❌ صدایی برای تبدیل به متن پیدا نشد."
+            if result
+            else "❌ صدایی برای تبدیل به متن پیدا نشد."
         )
     except asyncio.CancelledError:
         raise
@@ -2812,10 +2814,9 @@ async def _self_transcribe_reply(event, uid):
         print(f"[SELF {uid}] transcription failed: {exc}")
         return "❌ تبدیل ویس به متن انجام نشد؛ دوباره تلاش کن."
     finally:
-        if progress_task:
-            progress_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await progress_task
+        progress_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await progress_task
         stt_state.pop(uid, None)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -4371,16 +4372,11 @@ async def _spam_replied(event, uid, count):
 
 
 async def _maybe_first_comment(event, uid):
-    """Send the configured first comment reliably.
+    """Post the configured first comment for a configured channel.
 
-    There are two Telegram flows:
-    1) SELF publishes a post directly in the configured broadcast channel.
-       Telegram creates the discussion root asynchronously, so we retry the
-       GetDiscussionMessage lookup for a short period.
-    2) SELF forwards the channel post into the linked discussion group.
-       In that case the forwarded message received by this handler is already
-       the exact message that must be replied to; never replace it with a
-       separately resolved root message.
+    Primary flow: when SELF forwards a channel post into that channel's linked
+    discussion group, reply to the exact forwarded message received in the
+    discussion.  Direct channel-post flow uses GetDiscussionMessageRequest.
     """
     text = _first_comment_text(uid).strip()
     channels = _first_comment_channels(uid)
@@ -4401,6 +4397,7 @@ async def _maybe_first_comment(event, uid):
     if not configured:
         return
 
+    # Current chat/entity.
     current_entity = None
     with contextlib.suppress(Exception):
         current_entity = await event.get_chat()
@@ -4417,6 +4414,7 @@ async def _maybe_first_comment(event, uid):
     fwd = getattr(msg, "fwd_from", None)
     forward = getattr(msg, "forward", None)
 
+    # Find the original channel from every Telethon representation we may get.
     source_id = None
     for peer in (
         getattr(fwd, "from_id", None),
@@ -4434,6 +4432,7 @@ async def _maybe_first_comment(event, uid):
                 source_id = int(candidate)
                 break
 
+    # Original post id (forwarded or direct).
     original_post_id = None
     for obj in (fwd, forward):
         candidate = getattr(obj, "channel_post", None)
@@ -4445,14 +4444,19 @@ async def _maybe_first_comment(event, uid):
                 pass
 
     # Direct post made by SELF in a configured broadcast channel.
-    if source_id is None and current_is_broadcast and current_entity_id is not None:
-        if int(current_entity_id) in configured:
-            source_id = int(current_entity_id)
-            original_post_id = original_post_id or int(msg.id)
+    if (
+        source_id is None
+        and current_is_broadcast
+        and current_entity_id is not None
+        and int(current_entity_id) in configured
+    ):
+        source_id = int(current_entity_id)
+        original_post_id = original_post_id or int(msg.id)
 
     if source_id is None or source_id not in configured:
         return
 
+    # Resolve source channel.
     try:
         channel_entity = await client.get_entity(source_id)
     except Exception as exc:
@@ -4484,9 +4488,11 @@ async def _maybe_first_comment(event, uid):
     discussion_entity_id = getattr(discussion_entity, "id", None)
     discussion_message_id = None
 
-    # If the post was forwarded into the linked discussion, THIS event message
-    # is the target. This is the most reliable path and avoids replying to a
-    # stale/wrong discussion root.
+    # IMPORTANT FIX:
+    # If the forwarded post is already inside the linked discussion, reply to
+    # THIS message. The old code queried GetDiscussionMessage first, which can
+    # select a different/root message and therefore makes the comment appear
+    # unrelated or fail to attach to the forwarded post.
     if (
         current_is_group
         and current_entity_id is not None
@@ -4496,44 +4502,42 @@ async def _maybe_first_comment(event, uid):
     ):
         discussion_message_id = int(msg.id)
         print(
-            f"[COMMENT {uid}] target=current-forward channel={source_id} "
-            f"discussion={discussion_id} msg={msg.id}"
+            f"[COMMENT {uid}] using current forwarded discussion message "
+            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
         )
 
-    # Direct channel-post path. Telegram may need a few seconds to create the
-    # linked discussion message, so retry instead of giving up on the first try.
+    # Direct channel post: Telegram maps the channel post to its discussion
+    # message through GetDiscussionMessageRequest.
     if discussion_message_id is None and original_post_id is not None:
-        for attempt in range(1, 8):
-            try:
-                result = await client(functions.messages.GetDiscussionMessageRequest(
-                    peer=channel_entity,
-                    msg_id=int(original_post_id),
-                ))
-                messages = getattr(result, "messages", None) or []
-                candidates = [
-                    m for m in messages
-                    if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
-                ]
-                if candidates:
-                    discussion_message_id = int(candidates[0].id)
-                elif messages:
-                    discussion_message_id = int(messages[0].id)
-                if discussion_message_id is not None:
-                    print(
-                        f"[COMMENT {uid}] discussion target resolved attempt={attempt} "
-                        f"channel={source_id} post={original_post_id} "
-                        f"discussion={discussion_id} msg={discussion_message_id}"
-                    )
-                    break
-            except Exception as exc:
-                print(
-                    f"[COMMENT {uid}] discussion target attempt={attempt} failed "
-                    f"channel={source_id} post={original_post_id}: {type(exc).__name__}: {exc}"
-                )
-            await asyncio.sleep(1.5)
+        try:
+            result = await client(functions.messages.GetDiscussionMessageRequest(
+                peer=channel_entity,
+                msg_id=int(original_post_id),
+            ))
+            messages = getattr(result, "messages", None) or []
+            # Prefer a message whose peer is the linked discussion.
+            candidates = [
+                m for m in messages
+                if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
+            ]
+            if candidates:
+                discussion_message_id = int(candidates[0].id)
+            elif messages:
+                discussion_message_id = int(messages[0].id)
+            print(
+                f"[COMMENT {uid}] discussion lookup channel={source_id} "
+                f"post={original_post_id} discussion={discussion_id} "
+                f"msg={discussion_message_id}"
+            )
+        except Exception as exc:
+            print(
+                f"[COMMENT {uid}] GetDiscussionMessage failed "
+                f"channel={source_id} post={original_post_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
-    # Metadata-light fallback: if Telegram delivered the forwarded post into the
-    # linked discussion but omitted forward metadata, the current message is it.
+    # Metadata-light fallback when Telegram delivered the forwarded post into
+    # the linked discussion but did not expose forward fields.
     if (
         discussion_message_id is None
         and current_is_group
@@ -4543,24 +4547,33 @@ async def _maybe_first_comment(event, uid):
     ):
         discussion_message_id = int(msg.id)
         print(
-            f"[COMMENT {uid}] target=current-fallback channel={source_id} "
-            f"discussion={discussion_id} msg={msg.id}"
+            f"[COMMENT {uid}] using current discussion message fallback "
+            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
         )
 
     if discussion_message_id is None:
         print(
-            f"[COMMENT {uid}] no discussion target channel={source_id} "
+            f"[COMMENT {uid}] no discussion message found channel={source_id} "
             f"post={original_post_id} current_chat={current_entity_id} "
             f"discussion={discussion_id}"
         )
         return
 
+    cache_key = (int(source_id), int(discussion_message_id), text[:200])
+    if cache_key in _first_comment_sent_cache:
+        print(f"[COMMENT {uid}] duplicate prevented channel={source_id} reply_to={discussion_message_id}")
+        return
+
     async def send_comment():
-        return await client.send_message(
+        sent = await client.send_message(
             entity=discussion_entity,
             message=text[:4096],
             reply_to=int(discussion_message_id),
         )
+        _first_comment_sent_cache.add(cache_key)
+        if len(_first_comment_sent_cache) > 5000:
+            _first_comment_sent_cache.clear()
+        return sent
 
     try:
         sent = await _tg_call_with_flood_retry(
@@ -4569,14 +4582,169 @@ async def _maybe_first_comment(event, uid):
             max_retries=5,
         )
         print(
-            f"[COMMENT {uid}] SUCCESS channel={source_id} discussion={discussion_id} "
-            f"reply_to={discussion_message_id} message_id={getattr(sent, 'id', None)}"
+            f"[COMMENT {uid}] comment sent successfully channel={source_id} "
+            f"discussion={discussion_id} reply_to={discussion_message_id} "
+            f"message_id={getattr(sent, 'id', None)}"
         )
     except Exception as exc:
         print(
-            f"[COMMENT {uid}] SEND FAILED channel={source_id} discussion={discussion_id} "
+            f"[COMMENT {uid}] failed channel={source_id} discussion={discussion_id} "
             f"reply_to={discussion_message_id}: {type(exc).__name__}: {exc}"
         )
+
+
+async def _handle_group_command(event, uid, text):
+    low = text.casefold().strip()
+    client = event.client
+
+    # Global ban enforcement runs for every incoming message elsewhere too.
+    if low in {"پین", "پین + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی پیام موردنظر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند پین کند.")
+            return True
+        replied = await event.get_reply_message()
+        try:
+            await client.pin_message(event.chat_id, replied.id, notify=False)
+            await event.edit("📌 پیام با موفقیت سنجاق شد.")
+        except Exception as exc:
+            await event.edit(f"❌ پین انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"حذف پین", "حذف پین + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی پیام موردنظر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند پین را حذف کند.")
+            return True
+        replied = await event.get_reply_message()
+        try:
+            await client.unpin_message(event.chat_id, message=replied.id)
+            await event.edit("📌 سنجاق پیام حذف شد.")
+        except Exception as exc:
+            await event.edit(f"❌ حذف پین انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"بن", "سیک", "بن + ریپلای", "سیک + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ این دستور را داخل گروه و با ریپلای روی کاربر استفاده کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند بن کند.")
+            return True
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        if not target or target == uid:
+            await event.edit("❌ کاربر هدف معتبر نیست.")
+            return True
+        try:
+            await client.edit_permissions(event.chat_id, target, view_messages=False, send_messages=False)
+            await event.edit(f"🚫 کاربر `{target}` از گروه بن شد.")
+        except Exception as exc:
+            await event.edit(f"❌ بن انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    if low in {"آن بن", "ان بن", "آن‌بن", "ان‌بن", "آن بن + ریپلای"}:
+        if not event.is_group or not event.is_reply:
+            await event.edit("❌ داخل گروه روی کاربر ریپلای کن.")
+            return True
+        if not await _is_group_admin(client, event.chat_id, uid):
+            await event.edit("❌ فقط ادمین گروه می‌تواند آن‌بن کند.")
+            return True
+        replied = await event.get_reply_message()
+        target = int(replied.sender_id) if replied and replied.sender_id else 0
+        try:
+            await client.edit_permissions(event.chat_id, target, view_messages=True, send_messages=True)
+            await event.edit(f"✅ کاربر `{target}` آن‌بن شد.")
+        except Exception as exc:
+            await event.edit(f"❌ آن‌بن انجام نشد: {html.escape(str(exc))}")
+        return True
+
+    m = re.fullmatch(r"بن سراسری(?:\s+(.+))?", text, flags=re.S | re.I)
+    if m:
+        raw = (m.group(1) or "").strip()
+        if not raw and not event.is_reply:
+            await event.edit("❌ آیدی یا یوزرنیم را بده یا روی پیام کاربر ریپلای کن.")
+            return True
+        try:
+            replied = await event.get_reply_message() if event.is_reply else None
+            target = await _resolve_user(client, raw, replied)
+            target_id = int(target.id)
+            bans = _global_ban_list(uid)
+            bans.add(target_id)
+            _save_global_ban_list(uid, bans)
+            if event.is_group and await _is_group_admin(client, event.chat_id, uid) and target_id != uid:
+                with contextlib.suppress(Exception):
+                    await client.edit_permissions(event.chat_id, target_id, view_messages=False, send_messages=False)
+            await event.edit(f"🚫 کاربر `{target_id}` به لیست بن سراسری اضافه شد.")
+        except Exception as exc:
+            await event.edit(f"❌ ثبت بن سراسری ناموفق بود: {html.escape(str(exc))}")
+        return True
+
+    m = re.fullmatch(r"حذف بن سراسری(?:\s+(.+))?", text, flags=re.S | re.I)
+    if m:
+        raw = (m.group(1) or "").strip()
+        try:
+            replied = await event.get_reply_message() if event.is_reply else None
+            target = await _resolve_user(client, raw, replied)
+            target_id = int(target.id)
+            bans = _global_ban_list(uid)
+            if target_id not in bans:
+                await event.edit("❌ این کاربر در لیست بن سراسری نیست.")
+                return True
+            bans.discard(target_id)
+            _save_global_ban_list(uid, bans)
+            await event.edit(f"✅ کاربر `{target_id}` از لیست بن سراسری حذف شد.")
+        except Exception as exc:
+            await event.edit(f"❌ حذف بن سراسری ناموفق بود: {html.escape(str(exc))}")
+        return True
+
+    if low == "لیست بن سراسری":
+        bans = sorted(_global_ban_list(uid))
+        if not bans:
+            await event.edit("🚫 لیست بن سراسری خالی است.")
+        else:
+            await event.edit("🚫 <b>لیست بن سراسری</b>\n\n" + "\n".join(f"{i}. <code>{x}</code>" for i, x in enumerate(bans, 1)), parse_mode="html")
+        return True
+
+    tag_match = re.fullmatch(r"تگ(?:\s+([0-9۰-۹]+))?", _fa_digits(text))
+    if tag_match or low == "همه":
+        if not event.is_group:
+            await event.edit("❌ تگ اعضا فقط داخل گروه قابل استفاده است.")
+            return True
+        count = None if low == "همه" else int(tag_match.group(1) or 0)
+        if count is not None and not 1 <= count <= 1000:
+            await event.edit("❌ تعداد تگ باید بین ۱ تا ۱۰۰۰ باشد.")
+            return True
+        replied = await event.get_reply_message() if event.is_reply else None
+        members = []
+        async for member in client.iter_participants(event.chat_id):
+            if getattr(member, "bot", False) or int(member.id) == int(uid):
+                continue
+            members.append(member)
+            if count is not None and len(members) >= count:
+                break
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if not members:
+            await client.send_message(event.chat_id, "❌ عضوی برای تگ پیدا نشد.")
+            return True
+        for start in range(0, len(members), 15):
+            chunk = members[start:start + 15]
+            lines = []
+            for member in chunk:
+                name = html.escape((getattr(member, "first_name", None) or getattr(member, "username", None) or "کاربر").strip())
+                lines.append(f'<a href="tg://user?id={int(member.id)}">{name}</a>')
+            kwargs = {"parse_mode": "html"}
+            if replied:
+                kwargs["reply_to"] = replied.id
+            await client.send_message(event.chat_id, "\n".join(lines), **kwargs)
+        return True
+
+    return False
 
 
 async def _handle_first_comment_command(event, uid, text):
