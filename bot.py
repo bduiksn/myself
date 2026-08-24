@@ -13,7 +13,7 @@ Required:
 
 import asyncio
 import base64
-import logging
+ logging
 import contextlib
 import html
 import json
@@ -354,6 +354,8 @@ _cleanup_panel_messages = {}
 # per owner. The progress message is always the exact same panel message.
 _channel_save_sessions = {}
 _channel_save_tasks = {}
+_first_comment_ui_target = {}
+_first_comment_sent_cache = set()
 # Independent state for media conversions; never shares channel-save state.
 media_convert_state = {}
 # Independent state for voice -> text jobs.  Kept separate from media conversion
@@ -1102,12 +1104,12 @@ def self_guide_text(page=1):
          "پیام همان لحظه با اکانت SELF در همان چت تکرار می‌شود.\nحداقل: <b>۱</b> • حداکثر: <b>۱۰۰۰</b>\n\n"
          "⚠️ استفاده زیاد ممکن است با محدودیت Flood تلگرام مواجه شود."),
         ("📚 <b>راهنمای سلف • کامنت اول</b>\n<i>صفحه ۹ از ۱۵</i>\n\n"
-         "💬 <b>۱) متن کامنت</b>\nروی یک پیام متنی ریپلای کن:\n<code>تنظیم کامنت</code>\n\n"
-         "📢 <b>۲) فعال‌سازی کانال</b>\n<code>تنظیم کامنت اول @channel</code>\nیا با آیدی کانال.\n\n"
-         "🗑 غیرفعال: <code>حذف کامنت اول @channel</code>"),
+         "💬 <b>۱) انتخاب کانال</b>\nاز پنل «کامنت اول»، کانال را دقیقاً مثل «ذخیره چنل» انتخاب کن.\n\n"
+         "✏️ <b>۲) متن کامنت</b>\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.\n\n"
+         "🟢/🔴 فعال و خاموش‌کردن و 🗑 حذف تنظیمات از پنل همان کانال انجام می‌شود."),
         ("📚 <b>راهنمای سلف • مدیریت کامنت</b>\n<i>صفحه ۱۰ از ۱۵</i>\n\n"
-         "📋 <code>لیست کامنت</code> → کانال‌های فعال + متن فعلی.\n🧹 <code>پاکسازی لیست کامنت</code> → حذف همه کانال‌ها.\n\n"
-         "وقتی پست کانال به‌صورت فوروارد توسط SELF داخل گروه گفت‌وگو ارسال شود، متن تنظیم‌شده به همان پست ریپلای می‌شود و به‌عنوان کامنت اول ارسال می‌گردد."),
+         "📋 <code>لیست کامنت</code> → وضعیت کانال‌ها و متن هر کانال.\n🧹 <code>پاکسازی لیست کامنت</code> → حذف همه تنظیمات کامنت.\n\n"
+         "SELF پست کانال را تشخیص می‌دهد، Discussion متصل را پیدا می‌کند و متن همان کانال را دقیقاً به پیام پست ریپلای می‌کند."),
         ("📚 <b>راهنمای سلف • منشی</b>\n<i>صفحه ۱۱ از ۱۵</i>\n\n"
          "🤵 <b>تنظیم پاسخ</b>\nروی پیام متنی یا مدیا ریپلای کن:\n<code>تنظیم منشی</code>\n\n"
          "🟢 <code>منشی روشن</code>\n🔴 <code>منشی خاموش</code>\n⏱ <code>تنظیم زمان منشی 15</code>\n\n"
@@ -1149,7 +1151,7 @@ SELF_FEATURE_GUIDES = {
     "channel_save": ("💾 <b>ذخیره چنل</b>\n\nاز پنل «ذخیره چنل» را بزن، کانال را انتخاب کن، نوع مدیا و تعداد را تعیین کن و تأیید را بزن.\n\nعملیات با اکانت SELF انجام می‌شود."),
     "tabchi": ("📢 <b>تبچی</b>\n\nساخت بنر با ریپلای:\n<code>تنظیم بنر فور</code>\n<code>تنظیم بنر کپی</code>\n\nتنظیم مقصد:\n<code>تنظیم گپ هدف بنر ۱</code>\n<code>حذف گپ هدف بنر ۱</code>\n<code>تنظیم هدف بنر ۱ تمام گپ ها</code>\n\nزمان:\n<code>تنظیم عدد بنر ۱ ۳۰ دقیقه</code>\n\nکنترل:\n<code>تبچی روشن</code> / <code>تبچی خاموش</code>"),
     "spam": ("🔁 <b>تکرار / اسپم</b>\n\nروی پیام ریپلای کن:\n<code>تکرار 160</code>\n\nحد مجاز از ۱ تا ۱۰۰۰ تکرار است.\nاین قابلیت دکمه اجرایی در پنل ندارد و فقط با دستور استفاده می‌شود."),
-    "comments": ("💬 <b>کامنت اول</b>\n\nمتن کامنت با ریپلای:\n<code>تنظیم کامنت</code>\n\nثبت کانال:\n<code>تنظیم کامنت اول @channel</code>\n\nحذف کانال:\n<code>حذف کامنت اول @channel</code>\n\nلیست:\n<code>لیست کامنت</code>\n\nپاکسازی:\n<code>پاکسازی لیست کامنت</code>"),
+    "comments": ("💬 <b>کامنت اول</b>\n\n📢 کانال را از پنل انتخاب کن؛ ظاهر لیست دقیقاً مثل «ذخیره چنل» است.\n\n✏️ روی پیام متنی ریپلای + <code>تنظیم کامنت</code>\n🟢/🔴 فعال یا خاموش از پنل کانال\n🗑 حذف تنظیمات از پنل کانال\n📋 <code>لیست کامنت</code>\n🧹 <code>پاکسازی لیست کامنت</code>"),
     "secretary": ("🤵 <b>منشی</b>\n\nروی پیام متن یا مدیا ریپلای:\n<code>تنظیم منشی</code>\n\nفعال:\n<code>منشی روشن</code>\n\nخاموش:\n<code>منشی خاموش</code>\n\nزمان:\n<code>تنظیم زمان منشی 15</code>\n\nزمان مجاز ۵ تا ۶۰ دقیقه است و منشی فقط در پیوی کار می‌کند."),
     "group": ("🛡 <b>مدیریت گروه</b>\n\nروی پیام ریپلای:\n<code>پین</code>\n<code>حذف پین</code>\n\nروی پیام کاربر ریپلای:\n<code>بن</code> یا <code>سیک</code>\n<code>آن بن</code>\n\nاین دستورات فقط وقتی SELF در گروه ادمین باشد اجرا می‌شوند."),
     "globalban": ("🚫 <b>بن سراسری</b>\n\nافزودن:\n<code>بن سراسری @username</code>\nیا با ریپلای فقط <code>بن سراسری</code>\n\nحذف:\n<code>حذف بن سراسری @username</code>\n\nلیست:\n<code>لیست بن سراسری</code>"),
@@ -2084,144 +2086,71 @@ async def handle_self_panel_callback(event):
         with contextlib.suppress(Exception):
             await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
-    if action == "comment_setup" or action.startswith("comment_page:"):
-        # IMPORTANT: Telegram has a hard limit on the size of inline reply
-        # markup.  Never render every channel in one keyboard.  Paginate the
-        # list so large accounts can never hit "data embedded in reply markup
-        # buttons was too much".
+    if action == "comment_setup":
         try:
-            client = self_clients.get(int(uid))
-            if client is None:
-                raise RuntimeError("SELF session is not connected")
-
-            channels = await _cs_channels(client)
-            if not channels:
-                await event.edit(
-                    "💬 <b>کامنت اول</b>\n\n❌ هیچ کانال پخشی که SELF به آن دسترسی دارد پیدا نشد.",
-                    parse_mode="html",
-                    buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]],
-                )
-                return True
-
-            try:
-                page = int(action.split(":", 1)[1]) if action.startswith("comment_page:") else 0
-            except Exception:
-                page = 0
-
-            page_size = 8
-            total_pages = max(1, (len(channels) + page_size - 1) // page_size)
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size
-            current = channels[start:start + page_size]
-
-            rows = []
-            for item in current:
-                title = html.escape(item["title"][:42])
-                # Keep callback data tiny: the channel id is enough.
-                rows.append([
-                    btn(f"📢 {title}", _self_cb(uid, f"comment_channel:{item['id']}"), "primary")
-                ])
-
-            nav = []
-            if page > 0:
-                nav.append(btn("⬅️ قبلی", _self_cb(uid, f"comment_page:{page-1}"), "danger"))
-            if page < total_pages - 1:
-                nav.append(btn("➡️ بعدی", _self_cb(uid, f"comment_page:{page+1}"), "success"))
-            if nav:
-                rows.append(nav)
-
-            rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")])
-
-            await event.edit(
-                "💬 <b>تنظیم کامنت اول</b>\n\n"
-                f"کانال موردنظر را از لیست کانال‌های SELF انتخاب کن.\n"
-                f"📄 صفحه {page + 1} از {total_pages}",
-                parse_mode="html",
-                buttons=rows,
-            )
+            client=self_clients.get(int(uid))
+            if not client: raise RuntimeError("SELF session is not connected")
+            channels=await _cs_channels(client)
+            rows=[]
+            for item in channels:
+                title=item["title"]
+                if len(title)>42: title=title[:39]+"..."
+                rows.append([btn(f"📢 {title}",_self_cb(uid,f"comment_pick:{item['id']}"),"primary")])
+            if not rows:
+                rows=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]]
+                text="💬 <b>کامنت اول</b>\n\n❌ هیچ کانال پخشی که SELF به آن دسترسی دارد پیدا نشد."
+            else:
+                rows.append([btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")])
+                text="💬 <b>کامنت اول</b>\n\nکانال را انتخاب کن. چینش و نمایش کانال‌ها دقیقاً مثل «ذخیره چنل» است."
+            await event.edit(text,parse_mode="html",buttons=rows)
         except Exception as exc:
-            print(f"[COMMENT {uid}] setup menu failed: {type(exc).__name__}: {exc}")
-            await event.edit(
-                f"❌ <b>دریافت لیست کانال‌ها ناموفق بود.</b>\n\n"
-                f"<code>{html.escape(str(exc))}</code>",
-                parse_mode="html",
-                buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]],
-            )
+            await event.edit(f"❌ <b>دریافت کانال‌ها ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]])
         return True
 
-    if action.startswith("comment_channel:"):
+    if action.startswith("comment_pick:"):
         try:
-            channel_id = int(action.split(":", 1)[1])
-            client = self_clients.get(int(uid))
-            if client is None:
-                raise RuntimeError("SELF session is not connected")
-            entity = await client.get_entity(channel_id)
-            if not isinstance(entity, types.Channel) or getattr(entity, "megagroup", False):
-                await safe_answer(event, "❌ این مورد کانال پخش نیست.", True)
+            cid=int(action.split(":",1)[1]); client=self_clients.get(int(uid))
+            if not client: raise RuntimeError("SELF session is not connected")
+            entity=await client.get_entity(cid)
+            if not isinstance(entity,types.Channel) or getattr(entity,"megagroup",False): raise RuntimeError("این مورد کانال پخش نیست")
+            full=await client(functions.channels.GetFullChannelRequest(channel=entity))
+            did=getattr(getattr(full,"full_chat",None),"linked_chat_id",None)
+            if not did:
+                await event.edit(f"❌ <b>{html.escape(getattr(entity,'title','کانال'))}</b>\n\nاین کانال Discussion متصل ندارد.",parse_mode="html",buttons=[[btn("🔄 انتخاب کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
                 return True
-
-            # Resolve Discussion NOW, during configuration. This removes the
-            # ambiguity that caused the old command-only flow to fail later.
-            full = await client(functions.channels.GetFullChannelRequest(channel=entity))
-            discussion_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
-            if not discussion_id:
-                await event.edit(
-                    f"❌ <b>{html.escape(getattr(entity, 'title', 'کانال'))}</b>\n\n"
-                    "این کانال گروه گفت‌وگو (Discussion) ندارد؛ کامنت اول قابل اجرا نیست.",
-                    parse_mode="html",
-                    buttons=[[btn("🔙 انتخاب کانال دیگر", _self_cb(uid, "comment_setup"), "primary")],
-                             [btn("🏠 پنل اصلی", _self_cb(uid, "panel"), "danger")]]
-                )
-                return True
-
-            discussion_id = int(discussion_id)
-            discussion = await client.get_entity(discussion_id)
-            item = {
-                "id": int(entity.id),
-                "access_hash": int(entity.access_hash) if getattr(entity, "access_hash", None) is not None else None,
-                "title": getattr(entity, "title", "کانال"),
-                "username": getattr(entity, "username", None),
-                "discussion_id": discussion_id,
-                "discussion_access_hash": int(discussion.access_hash) if getattr(discussion, "access_hash", None) is not None else None,
-            }
-            channels = [x for x in _first_comment_channels(uid) if int(x.get("id", 0)) != int(entity.id)]
-            channels.append(item)
-            _save_first_comment_channels(uid, channels)
-
-            text = _first_comment_text(uid).strip()
-            status = "🟢 فعال" if text else "🟡 کانال ثبت شد؛ متن کامنت هنوز تنظیم نشده"
-            await event.edit(
-                f"💬 <b>کامنت اول</b>\n\n"
-                f"📢 کانال: <b>{html.escape(item['title'])}</b>\n"
-                f"💬 Discussion: <b>{html.escape(getattr(discussion, 'title', 'گروه گفتگو'))}</b>\n\n"
-                f"وضعیت: {status}\n\n"
-                "برای تعیین متن، روی یک پیام متنی ریپلای کن و دستور <code>تنظیم کامنت</code> را بفرست.",
-                parse_mode="html",
-                buttons=[[btn("🔄 انتخاب کانال دیگر", _self_cb(uid, "comment_setup"), "primary")],
-                         [btn("📚 راهنمای کامنت", _self_cb(uid, "comment_help"), "primary")],
-                         [btn("🔙 پنل اصلی", _self_cb(uid, "panel"), "danger")]]
-            )
+            discussion=await client.get_entity(int(did)); old=_first_comment_config(uid,cid) or {}
+            item={"id":int(entity.id),"access_hash":getattr(entity,"access_hash",None),"title":getattr(entity,"title","کانال"),"username":getattr(entity,"username",None),"discussion_id":int(did),"discussion_access_hash":getattr(discussion,"access_hash",None),"text":str(old.get("text") or "")[:4096],"enabled":bool(old.get("enabled",True))}
+            _upsert_first_comment_config(uid,item); _set_comment_target(uid,cid)
+            status="🟢 فعال" if item["enabled"] and item["text"] else ("🟡 بدون متن" if item["enabled"] else "🔴 خاموش")
+            preview=html.escape(item["text"][:500]) if item["text"] else "❌ تنظیم نشده"
+            await event.edit(f"💬 <b>کامنت اول</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n💬 Discussion: <b>{html.escape(getattr(discussion,'title','گروه گفتگو'))}</b>\n\nوضعیت: <b>{status}</b>\n📝 متن فعلی: <blockquote>{preview}</blockquote>\n\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.",parse_mode="html",buttons=[[btn("✏️ راهنمای تنظیم متن",_self_cb(uid,"comment_text_help"),"success")],[btn("🔴 خاموش" if item["enabled"] else "🟢 فعال",_self_cb(uid,"comment_toggle"),"danger" if item["enabled"] else "success")],[btn("🗑 حذف تنظیم کانال",_self_cb(uid,"comment_remove"),"danger")],[btn("🔄 کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         except Exception as exc:
-            print(f"[COMMENT {uid}] channel setup failed: {type(exc).__name__}: {exc}")
-            await event.edit(
-                f"❌ <b>تنظیم کانال ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",
-                parse_mode="html",
-                buttons=[[btn("🔄 تلاش دوباره", _self_cb(uid, "comment_setup"), "primary")],
-                         [btn("🔙 پنل اصلی", _self_cb(uid, "panel"), "danger")]]
-            )
+            await event.edit(f"❌ <b>تنظیم کانال ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔄 تلاش دوباره",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+        return True
+
+    if action == "comment_toggle":
+        cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
+        if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
+        cfg["enabled"]=not bool(cfg.get("enabled",True)); _upsert_first_comment_config(uid,cfg)
+        await event.edit(f"{'🟢 کامنت اول فعال شد.' if cfg['enabled'] else '🔴 کامنت اول خاموش شد.'}",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,f"comment_pick:{cid}"),"primary")]])
+        return True
+
+    if action == "comment_remove":
+        cid=_comment_target(uid)
+        if not cid or not _remove_first_comment_config(uid,cid): await safe_answer(event,"❌ تنظیمی برای حذف پیدا نشد.",True); return True
+        await event.edit("✅ <b>تنظیمات این کانال کامل حذف شد.</b>",parse_mode="html",buttons=[[btn("📢 لیست کانال‌ها",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+        return True
+
+    if action == "comment_text_help":
+        cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
+        if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
+        await event.edit(f"✏️ <b>تنظیم متن کامنت</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n\nروی یک پیام متنی ریپلای کن و بنویس:\n<code>تنظیم کامنت</code>\n\nمتن برای همین کانال ذخیره و کامنت اول فعال می‌شود.",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,f"comment_pick:{cid}"),"primary")]])
         return True
 
     if action == "comment_help":
-        await event.edit(
-            "💬 <b>کامنت اول</b>\n\n"
-            "<code>تنظیم کامنت</code> + ریپلای روی متن\n"
-            "<code>تنظیم کامنت اول @channel</code>\n"
-            "<code>حذف کامنت اول @channel</code>\n"
-            "<code>لیست کامنت</code>\n"
-            "<code>پاکسازی لیست کامنت</code>",
-            parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
-        )
+        await event.edit("💬 <b>کامنت اول</b>\n\n📢 کانال را از لیست انتخاب کن.\n✏️ روی پیام متنی ریپلای + <code>تنظیم کامنت</code>\n🟢/🔴 فعال و خاموش از پنل همان کانال\n🗑 حذف تنظیمات از پنل همان کانال",parse_mode="html",buttons=[[btn("🔙 بازگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
+
     if action == "secretary_help":
         await event.edit(
             "🤵 <b>منشی</b>\n\n"
@@ -4369,12 +4298,10 @@ async def _profile_copy_restore(event, uid):
 # ============================================================
 
 GLOBAL_BAN_KEY = "global_ban_list"
-FIRST_COMMENT_CHANNELS_KEY = "first_comment_channels"
-FIRST_COMMENT_TEXT_KEY = "first_comment_text"
+FIRST_COMMENT_CONFIGS_KEY = "first_comment_configs_v2"
 SECRETARY_REPLY_KEY = "secretary_reply"
 SECRETARY_ENABLED_KEY = "secretary_enabled"
 SECRETARY_INTERVAL_KEY = "secretary_interval"
-
 
 def _json_setting(uid, key, default):
     try:
@@ -4383,46 +4310,54 @@ def _json_setting(uid, key, default):
     except Exception:
         return default
 
-
 def _global_ban_list(uid):
     return {int(x) for x in _json_setting(uid, GLOBAL_BAN_KEY, []) if str(x).lstrip("-").isdigit()}
-
 
 def _save_global_ban_list(uid, values):
     self_set(uid, GLOBAL_BAN_KEY, json.dumps(sorted({int(x) for x in values})))
 
+def _first_comment_configs(uid):
+    raw = _json_setting(uid, FIRST_COMMENT_CONFIGS_KEY, [])
+    out=[]
+    for x in raw:
+        if not isinstance(x, dict): continue
+        try: cid=int(x.get("id"))
+        except (TypeError,ValueError): continue
+        if cid<=0: continue
+        x=dict(x); x["id"]=cid; x["text"]=str(x.get("text") or "")[:4096]; x["enabled"]=bool(x.get("enabled",True))
+        try: x["discussion_id"]=int(x["discussion_id"]) if x.get("discussion_id") is not None else None
+        except (TypeError,ValueError): x["discussion_id"]=None
+        out.append(x)
+    return out
 
-def _first_comment_channels(uid):
-    raw = _json_setting(uid, FIRST_COMMENT_CHANNELS_KEY, [])
-    result = []
-    for item in raw:
-        if isinstance(item, dict) and item.get("id") is not None:
-            try:
-                item["id"] = int(item["id"])
-                result.append(item)
-            except Exception:
-                pass
-    return result
+def _save_first_comment_configs(uid, values):
+    seen=set(); out=[]
+    for x in values:
+        if not isinstance(x,dict): continue
+        try: cid=int(x.get("id"))
+        except (TypeError,ValueError): continue
+        if cid<=0 or cid in seen: continue
+        seen.add(cid); out.append(x)
+    self_set(uid, FIRST_COMMENT_CONFIGS_KEY, json.dumps(out, ensure_ascii=False))
 
+def _first_comment_config(uid, channel_id):
+    try: cid=int(channel_id)
+    except (TypeError,ValueError): return None
+    return next((x for x in _first_comment_configs(uid) if int(x["id"])==cid), None)
 
-def _save_first_comment_channels(uid, values):
-    self_set(uid, FIRST_COMMENT_CHANNELS_KEY, json.dumps(values, ensure_ascii=False))
+def _upsert_first_comment_config(uid, item):
+    cid=int(item["id"]); _save_first_comment_configs(uid,[x for x in _first_comment_configs(uid) if int(x["id"])!=cid]+[item])
 
+def _remove_first_comment_config(uid, channel_id):
+    try: cid=int(channel_id)
+    except (TypeError,ValueError): return False
+    old=_first_comment_configs(uid); new=[x for x in old if int(x["id"])!=cid]
+    if len(old)==len(new): return False
+    _save_first_comment_configs(uid,new); _first_comment_ui_target.pop(int(uid),None); return True
 
-def _first_comment_text(uid):
-    return self_get(uid, FIRST_COMMENT_TEXT_KEY, "") or ""
-
-
-def _secretary_reply(uid):
-    try:
-        value = json.loads(self_get(uid, SECRETARY_REPLY_KEY, "{}"))
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_secretary_reply(uid, value):
-    self_set(uid, SECRETARY_REPLY_KEY, json.dumps(value, ensure_ascii=False))
+def _set_comment_target(uid, channel_id): _first_comment_ui_target[int(uid)]=int(channel_id)
+def _comment_target(uid): return _first_comment_ui_target.get(int(uid))
+def _clear_comment_target(uid): _first_comment_ui_target.pop(int(uid),None)
 
 
 async def _is_group_admin(client, chat_id, uid):
@@ -4501,285 +4436,72 @@ async def _spam_replied(event, uid, count):
 
 
 async def _maybe_first_comment(event, uid):
-    """Post the configured first comment for a configured channel.
-
-    Primary flow: when SELF forwards a channel post into that channel's linked
-    discussion group, reply to the exact forwarded message received in the
-    discussion.  Direct channel-post flow uses GetDiscussionMessageRequest.
-    """
-    text = _first_comment_text(uid).strip()
-    channels = _first_comment_channels(uid)
-    if not text or not channels:
-        return
-
-    client = event.client
-    msg = event.message
-
-    configured = {}
-    for item in channels:
-        try:
-            cid = int(item.get("id"))
-            if cid > 0:
-                configured[cid] = item
-        except (TypeError, ValueError):
-            continue
-    if not configured:
-        return
-
-    # Current chat/entity.
-    current_entity = None
-    with contextlib.suppress(Exception):
-        current_entity = await event.get_chat()
-    current_entity_id = getattr(current_entity, "id", None)
-    current_is_broadcast = bool(
-        isinstance(current_entity, types.Channel)
-        and not getattr(current_entity, "megagroup", False)
-    )
-    current_is_group = bool(
-        isinstance(current_entity, types.Channel)
-        and getattr(current_entity, "megagroup", False)
-    )
-
-    # For channel-post updates, peer_id is more reliable than get_chat() for
-    # identifying the exact broadcast channel.  Use it as a direct fallback.
-    peer_channel_id = getattr(getattr(msg, "peer_id", None), "channel_id", None)
-    if peer_channel_id is not None:
-        try:
-            peer_channel_id = int(peer_channel_id)
-        except (TypeError, ValueError):
-            peer_channel_id = None
-
-    fwd = getattr(msg, "fwd_from", None)
-    forward = getattr(msg, "forward", None)
-
-    # Find the original channel from every Telethon representation we may get.
-    source_id = None
-    for peer in (
-        getattr(fwd, "from_id", None),
-        getattr(fwd, "saved_from_peer", None),
-        getattr(forward, "from_id", None),
-    ):
-        candidate = getattr(peer, "channel_id", None)
-        if candidate is not None:
-            source_id = int(candidate)
-            break
-    if source_id is None:
-        for obj in (fwd, forward):
-            candidate = getattr(obj, "channel_id", None)
-            if candidate is not None:
-                source_id = int(candidate)
-                break
-
-    # Original post id (forwarded or direct).
-    original_post_id = None
-    for obj in (fwd, forward):
-        candidate = getattr(obj, "channel_post", None)
-        if candidate is not None:
+    configs={int(x["id"]):x for x in _first_comment_configs(uid) if x.get("enabled") and str(x.get("text") or "").strip()}
+    if not configs: return
+    client=event.client; msg=event.message
+    chat=None
+    with contextlib.suppress(Exception): chat=await event.get_chat()
+    chat_id=getattr(chat,"id",None)
+    is_broadcast=isinstance(chat,types.Channel) and bool(getattr(chat,"broadcast",False)) and not bool(getattr(chat,"megagroup",False))
+    is_discussion=isinstance(chat,types.Channel) and bool(getattr(chat,"megagroup",False))
+    fwd=getattr(msg,"fwd_from",None); forward=getattr(msg,"forward",None)
+    source=None
+    for obj in (fwd,forward):
+        for peer in (getattr(obj,"from_id",None),getattr(obj,"saved_from_peer",None)):
+            val=getattr(peer,"channel_id",None)
+            if val is not None:
+                source=int(val); break
+        if source is None:
+            val=getattr(obj,"channel_id",None)
+            if val is not None: source=int(val)
+        if source is not None: break
+    peer_channel=getattr(getattr(msg,"peer_id",None),"channel_id",None)
+    if source is None and is_broadcast and peer_channel is not None and int(peer_channel) in configs: source=int(peer_channel)
+    if source is None and is_broadcast and chat_id is not None and int(chat_id) in configs: source=int(chat_id)
+    if source is None or source not in configs: return
+    cfg=configs[source]; original=None
+    for obj in (fwd,forward):
+        val=getattr(obj,"channel_post",None)
+        if val is not None:
+            original=int(val); break
+    if original is None and is_broadcast: original=int(msg.id)
+    did=cfg.get("discussion_id")
+    try: did=int(did) if did is not None else None
+    except (TypeError,ValueError): did=None
+    try:
+        channel=await client.get_entity(source)
+        if not did:
+            full=await client(functions.channels.GetFullChannelRequest(channel=channel)); did=getattr(getattr(full,"full_chat",None),"linked_chat_id",None)
+            if did:
+                cfg["discussion_id"]=int(did); _upsert_first_comment_config(uid,cfg)
+    except Exception as exc:
+        print(f"[COMMENT {uid}] resolve source failed: {type(exc).__name__}: {exc}"); return
+    if not did: return
+    try: discussion=await client.get_entity(int(did))
+    except Exception as exc: print(f"[COMMENT {uid}] discussion failed: {exc}"); return
+    reply_to=None
+    if is_discussion and chat_id is not None and int(chat_id)==int(getattr(discussion,"id",0)) and (fwd is not None or forward is not None): reply_to=int(msg.id)
+    if reply_to is None and original is not None:
+        for delay in (0,0.8,1.5,2.5,4.0):
+            if delay: await asyncio.sleep(delay)
             try:
-                original_post_id = int(candidate)
-                break
-            except (TypeError, ValueError):
-                pass
-
-    # Direct post made by SELF in a configured broadcast channel.
-    if source_id is None and peer_channel_id is not None and peer_channel_id in configured:
-        source_id = int(peer_channel_id)
-        original_post_id = original_post_id or int(msg.id)
-        print(
-            f"[COMMENT {uid}] direct channel post detected via peer_id "
-            f"channel={source_id} post={original_post_id}"
-        )
-
-    if (
-        source_id is None
-        and current_is_broadcast
-        and current_entity_id is not None
-        and int(current_entity_id) in configured
-    ):
-        source_id = int(current_entity_id)
-        original_post_id = original_post_id or int(msg.id)
-
-    if source_id is None or source_id not in configured:
-        return
-
-    # Resolve source channel.
+                result=await client(functions.messages.GetDiscussionMessageRequest(peer=channel,msg_id=int(original)))
+                messages=getattr(result,"messages",None) or []
+                candidates=[m for m in messages if getattr(getattr(m,"peer_id",None),"channel_id",None)==int(getattr(discussion,"id",0))]
+                if not candidates: candidates=[m for m in messages if int(getattr(m,"id",0) or 0)!=int(original)]
+                if candidates: reply_to=int(candidates[0].id); break
+            except Exception as exc: print(f"[COMMENT {uid}] lookup failed: {type(exc).__name__}: {exc}")
+    if reply_to is None and is_discussion and chat_id is not None and int(chat_id)==int(getattr(discussion,"id",0)): reply_to=int(msg.id)
+    if reply_to is None: return
+    text=str(cfg.get("text") or "").strip()[:4096]; key=(int(source),int(reply_to),text)
+    if key in _first_comment_sent_cache: return
+    async def send():
+        return await client(SendMessageRequest(peer=discussion,message=text,random_id=random.getrandbits(64),reply_to=types.InputReplyToMessage(reply_to_msg_id=int(reply_to))))
     try:
-        channel_entity = await client.get_entity(source_id)
-    except Exception as exc:
-        print(f"[COMMENT {uid}] source resolve failed {source_id}: {type(exc).__name__}: {exc}")
-        return
-    if not isinstance(channel_entity, types.Channel) or getattr(channel_entity, "megagroup", False):
-        print(f"[COMMENT {uid}] source={source_id} is not a broadcast channel")
-        return
-
-    # Resolve linked discussion.
-    try:
-        full = await client(functions.channels.GetFullChannelRequest(channel=channel_entity))
-        discussion_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
-        discussion_id = int(discussion_id) if discussion_id is not None else None
-    except Exception as exc:
-        print(f"[COMMENT {uid}] discussion lookup failed channel={source_id}: {type(exc).__name__}: {exc}")
-        return
-
-    if not discussion_id:
-        print(f"[COMMENT {uid}] channel={source_id} has no linked discussion group")
-        return
-
-    try:
-        discussion_entity = await client.get_entity(discussion_id)
-    except Exception as exc:
-        print(f"[COMMENT {uid}] discussion resolve failed {discussion_id}: {type(exc).__name__}: {exc}")
-        return
-
-    discussion_entity_id = getattr(discussion_entity, "id", None)
-    discussion_message_id = None
-
-    # IMPORTANT FIX:
-    # If the forwarded post is already inside the linked discussion, reply to
-    # THIS message. The old code queried GetDiscussionMessage first, which can
-    # select a different/root message and therefore makes the comment appear
-    # unrelated or fail to attach to the forwarded post.
-    if (
-        current_is_group
-        and current_entity_id is not None
-        and discussion_entity_id is not None
-        and int(current_entity_id) == int(discussion_entity_id)
-        and (original_post_id is not None or fwd is not None or forward is not None)
-    ):
-        discussion_message_id = int(msg.id)
-        print(
-            f"[COMMENT {uid}] using current forwarded discussion message "
-            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
-        )
-
-    # Direct channel post: Telegram may create the linked Discussion root
-    # message a little after the channel-post update reaches the SELF client.
-    # Therefore this MUST be retried instead of doing one immediate lookup.
-    if discussion_message_id is None and original_post_id is not None:
-        delays = (0.8, 1.5, 2.5, 4.0, 6.0)
-        for attempt, delay in enumerate(delays, 1):
-            if attempt > 1:
-                await asyncio.sleep(delay)
-            try:
-                result = await client(functions.messages.GetDiscussionMessageRequest(
-                    peer=channel_entity,
-                    msg_id=int(original_post_id),
-                ))
-                messages = getattr(result, "messages", None) or []
-                candidates = [
-                    m for m in messages
-                    if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
-                ]
-                if candidates:
-                    discussion_message_id = int(candidates[0].id)
-                else:
-                    # In some Telethon/API responses the peer information is
-                    # incomplete. Prefer a message that is not the original
-                    # channel-post id rather than blindly using messages[0].
-                    alternatives = [m for m in messages if int(getattr(m, "id", 0) or 0) != int(original_post_id)]
-                    if alternatives:
-                        discussion_message_id = int(alternatives[0].id)
-                print(
-                    f"[COMMENT {uid}] discussion lookup attempt={attempt} "
-                    f"channel={source_id} post={original_post_id} "
-                    f"discussion={discussion_id} msg={discussion_message_id}"
-                )
-                if discussion_message_id is not None:
-                    break
-            except Exception as exc:
-                print(
-                    f"[COMMENT {uid}] GetDiscussionMessage attempt={attempt} failed "
-                    f"channel={source_id} post={original_post_id}: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-    # Metadata-light fallback when Telegram delivered the forwarded post into
-    # the linked discussion but did not expose forward fields.
-    if (
-        discussion_message_id is None
-        and current_is_group
-        and current_entity_id is not None
-        and discussion_entity_id is not None
-        and int(current_entity_id) == int(discussion_entity_id)
-    ):
-        discussion_message_id = int(msg.id)
-        print(
-            f"[COMMENT {uid}] using current discussion message fallback "
-            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
-        )
-
-    if discussion_message_id is None and original_post_id is not None:
-        # Final short retry. This is deliberately separate from the main loop
-        # so a transient API propagation delay cannot silently lose the post.
-        for attempt in range(3):
-            await asyncio.sleep(2.0)
-            try:
-                result = await client(functions.messages.GetDiscussionMessageRequest(
-                    peer=channel_entity,
-                    msg_id=int(original_post_id),
-                ))
-                messages = getattr(result, "messages", None) or []
-                candidates = [
-                    m for m in messages
-                    if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
-                ]
-                if not candidates:
-                    candidates = [m for m in messages if int(getattr(m, "id", 0) or 0) != int(original_post_id)]
-                if candidates:
-                    discussion_message_id = int(candidates[0].id)
-                    print(f"[COMMENT {uid}] final retry succeeded attempt={attempt + 1} msg={discussion_message_id}")
-                    break
-            except Exception as exc:
-                print(f"[COMMENT {uid}] final retry attempt={attempt + 1} failed: {type(exc).__name__}: {exc}")
-
-    if discussion_message_id is None:
-        print(
-            f"[COMMENT {uid}] no discussion message found channel={source_id} "
-            f"post={original_post_id} current_chat={current_entity_id} "
-            f"discussion={discussion_id}"
-        )
-        return
-
-    cache_key = (int(source_id), int(discussion_message_id), text[:200])
-    if cache_key in _first_comment_sent_cache:
-        print(f"[COMMENT {uid}] duplicate prevented channel={source_id} reply_to={discussion_message_id}")
-        return
-
-    async def send_comment():
-        # Use the raw MTProto SendMessageRequest here instead of Telethon's
-        # high-level send_message(reply_to=...).  For linked channel
-        # discussions this makes the reply target explicit and avoids Telethon
-        # resolving the reply against the wrong peer/thread.
-        reply = types.InputReplyToMessage(
-            reply_to_msg_id=int(discussion_message_id)
-        )
-        sent = await client(SendMessageRequest(
-            peer=discussion_entity,
-            message=text[:4096],
-            random_id=random.getrandbits(64),
-            reply_to=reply,
-        ))
-        _first_comment_sent_cache.add(cache_key)
-        if len(_first_comment_sent_cache) > 5000:
-            _first_comment_sent_cache.clear()
-        return sent
-
-    try:
-        sent = await _tg_call_with_flood_retry(
-            send_comment,
-            label="first comment",
-            max_retries=5,
-        )
-        print(
-            f"[COMMENT {uid}] comment sent successfully channel={source_id} "
-            f"discussion={discussion_id} reply_to={discussion_message_id} "
-            f"message_id={getattr(sent, 'id', None)}"
-        )
-    except Exception as exc:
-        print(
-            f"[COMMENT {uid}] failed channel={source_id} discussion={discussion_id} "
-            f"reply_to={discussion_message_id}: {type(exc).__name__}: {exc}"
-        )
+        sent=await _tg_call_with_flood_retry(send,label="first comment",max_retries=5); _first_comment_sent_cache.add(key)
+        if len(_first_comment_sent_cache)>5000: _first_comment_sent_cache.clear()
+        print(f"[COMMENT {uid}] sent channel={source} reply_to={reply_to} message={getattr(sent,'id',None)}")
+    except Exception as exc: print(f"[COMMENT {uid}] send failed: {type(exc).__name__}: {exc}")
 
 
 async def _handle_group_command(event, uid, text):
@@ -4937,59 +4659,43 @@ async def _handle_group_command(event, uid, text):
 
 
 async def _handle_first_comment_command(event, uid, text):
-    low = text.casefold().strip()
-    if low.startswith("تنظیم کامنت اول"):
-        raw = text[len("تنظیم کامنت اول"):].strip()
-        if not raw:
-            await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن.")
-            return True
-        try:
-            entity = await event.client.get_entity(raw)
-            if not isinstance(entity, types.Channel) or getattr(entity, "megagroup", False):
-                await event.edit("❌ این مورد یک کانال پخش نیست.")
-                return True
-            channels = _first_comment_channels(uid)
-            item = {"id": int(entity.id), "title": getattr(entity, "title", "کانال"), "username": getattr(entity, "username", None)}
-            channels = [x for x in channels if int(x.get("id", 0)) != int(entity.id)]
-            channels.append(item)
-            _save_first_comment_channels(uid, channels)
-            await event.edit(f"✅ کامنت خودکار برای «{html.escape(item['title'])}» فعال شد.")
-        except Exception as exc:
-            await event.edit(f"❌ کانال پیدا نشد: {html.escape(str(exc))}")
-        return True
+    low=text.casefold().strip()
+    if low in {"تنظیم کامنت","تنظیم کامنت + ریپلای","تنظیم کامنت ریپلای"}:
+        if not event.is_reply: await event.edit("❌ روی پیام متنی موردنظر ریپلای کن."); return True
+        cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
+        if not cfg: await event.edit("❌ ابتدا از پنل «💬 کامنت اول» یک کانال را انتخاب کن."); return True
+        replied=await event.get_reply_message()
+        if not replied or not (replied.raw_text or "").strip(): await event.edit("❌ پیام ریپلای‌شده باید متنی باشد."); return True
+        cfg["text"]=replied.raw_text.strip()[:4096]; cfg["enabled"]=True; _upsert_first_comment_config(uid,cfg)
+        await event.edit(f"✅ <b>متن کامنت ذخیره شد.</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n🟢 فعال شد.",parse_mode="html"); return True
     if low.startswith("حذف کامنت اول"):
-        raw = text[len("حذف کامنت اول"):].strip()
+        raw=text[len("حذف کامنت اول"):].strip()
+        if not raw: await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن."); return True
         try:
-            entity = await event.client.get_entity(raw)
-            channels = [x for x in _first_comment_channels(uid) if int(x.get("id", 0)) != int(entity.id)]
-            _save_first_comment_channels(uid, channels)
-            await event.edit("✅ کامنت خودکار این کانال غیرفعال شد.")
-        except Exception as exc:
-            await event.edit(f"❌ حذف انجام نشد: {html.escape(str(exc))}")
+            ent=await event.client.get_entity(raw); ok=_remove_first_comment_config(uid,int(ent.id)); await event.edit("✅ تنظیمات کامنت کانال حذف شد." if ok else "❌ این کانال تنظیم نشده بود.")
+        except Exception as exc: await event.edit(f"❌ حذف انجام نشد: {html.escape(str(exc))}")
         return True
-    if low in {"تنظیم کامنت", "تنظیم کامنت + ریپلای", "تنظیم کامنت ریپلای"}:
-        if not event.is_reply:
-            await event.edit("❌ روی پیام متنی کامنت ریپلای کن.")
-            return True
-        replied = await event.get_reply_message()
-        if not replied or not (replied.raw_text or "").strip():
-            await event.edit("❌ پیام ریپلای‌شده باید متنی باشد.")
-            return True
-        self_set(uid, FIRST_COMMENT_TEXT_KEY, replied.raw_text.strip())
-        await event.edit("✅ متن کامنت اول ذخیره شد.")
-        return True
-    if low == "لیست کامنت":
-        channels = _first_comment_channels(uid)
-        body = ["💬 <b>لیست کامنت اول</b>\n"]
-        for i, item in enumerate(channels, 1):
-            title = html.escape(str(item.get("title") or item.get("username") or item.get("id")))
-            body.append(f"\n{i}. {title} • <code>{int(item['id'])}</code>")
-        body.append(f"\n\n📝 متن فعلی: {html.escape(_first_comment_text(uid)[:300]) if _first_comment_text(uid) else '❌ تنظیم نشده'}")
-        await event.edit("".join(body), parse_mode="html")
-        return True
-    if low == "پاکسازی لیست کامنت":
-        _save_first_comment_channels(uid, [])
-        await event.edit("✅ لیست کامنت اول پاک شد.")
+    if low=="لیست کامنت":
+        cfgs=_first_comment_configs(uid)
+        if not cfgs: await event.edit("💬 لیست کامنت اول خالی است."); return True
+        lines=["💬 <b>لیست کامنت اول</b>",""]
+        for i,cfg in enumerate(cfgs,1):
+            st="🟢 فعال" if cfg.get("enabled") and cfg.get("text") else ("🟡 بدون متن" if cfg.get("enabled") else "🔴 خاموش")
+            lines.append(f"{i}. 📢 <b>{html.escape(str(cfg.get('title') or cfg.get('id')))}</b> • {st}")
+        await event.edit("\n".join(lines),parse_mode="html"); return True
+    if low=="پاکسازی لیست کامنت":
+        _save_first_comment_configs(uid,[]); _clear_comment_target(uid); await event.edit("✅ تمام تنظیمات کامنت اول پاک شد."); return True
+    if low.startswith("تنظیم کامنت اول"):
+        raw=text[len("تنظیم کامنت اول"):].strip()
+        if not raw: await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن."); return True
+        try:
+            ent=await event.client.get_entity(raw)
+            full=await event.client(functions.channels.GetFullChannelRequest(channel=ent)); did=getattr(getattr(full,"full_chat",None),"linked_chat_id",None)
+            if not did: await event.edit("❌ این کانال Discussion متصل ندارد."); return True
+            d=await event.client.get_entity(int(did)); old=_first_comment_config(uid,int(ent.id)) or {}
+            item={"id":int(ent.id),"access_hash":getattr(ent,"access_hash",None),"title":getattr(ent,"title","کانال"),"username":getattr(ent,"username",None),"discussion_id":int(did),"discussion_access_hash":getattr(d,"access_hash",None),"text":str(old.get("text") or ""),"enabled":True}
+            _upsert_first_comment_config(uid,item); _set_comment_target(uid,int(ent.id)); await event.edit("✅ کانال ثبت شد. حالا روی پیام متن ریپلای کن و «تنظیم کامنت» بفرست.")
+        except Exception as exc: await event.edit(f"❌ ثبت کانال ناموفق بود: {html.escape(str(exc))}")
         return True
     return False
 
