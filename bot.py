@@ -2150,7 +2150,7 @@ async def handle_self_panel_callback(event):
             _upsert_first_comment_config(uid,item); _set_comment_target(uid,cid)
             status="🟢 فعال" if item["enabled"] and item["text"] else ("🟡 بدون متن" if item["enabled"] else "🔴 خاموش")
             preview=html.escape(item["text"][:500]) if item["text"] else "❌ تنظیم نشده"
-            await event.edit(f"💬 <b>کامنت اول</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n💬 Discussion: <b>{html.escape(getattr(discussion,'title','گروه گفتگو'))}</b>\n\nوضعیت: <b>{status}</b>\n📝 متن فعلی: <blockquote>{preview}</blockquote>\n\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.",parse_mode="html",buttons=[[btn("✏️ راهنمای تنظیم متن",_self_cb(uid,"comment_text_help"),"success")],[btn("🔴 خاموش" if item["enabled"] else "🟢 فعال",_self_cb(uid,"comment_toggle"),"danger" if item["enabled"] else "success")],[btn("🗑 حذف تنظیم کانال",_self_cb(uid,"comment_remove"),"danger")],[btn("🔄 کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+            await event.edit(f"💬 <b>کامنت اول</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n💬 Discussion: <b>{html.escape(getattr(discussion,'title','گروه گفتگو'))}</b>\n\nوضعیت: <b>{status}</b>\n📝 متن فعلی: <blockquote>{preview}</blockquote>\n\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.",parse_mode="html",buttons=[[btn("✏️ راهنمای تنظیم متن",_self_cb(uid,"comment_text_help"),"success"),btn("🗑 حذف تنظیم کانال",_self_cb(uid,"comment_remove"),"danger")],[btn("🔴 خاموش" if item["enabled"] else "🟢 فعال",_self_cb(uid,"comment_toggle"),"danger" if item["enabled"] else "success"),btn("🔄 کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         except Exception as exc:
             await event.edit(f"❌ <b>تنظیم کانال ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔄 تلاش دوباره",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         return True
@@ -2159,7 +2159,7 @@ async def handle_self_panel_callback(event):
         cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
         if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
         cfg["enabled"]=not bool(cfg.get("enabled",True)); _upsert_first_comment_config(uid,cfg)
-        await event.edit(f"{'🟢 کامنت اول فعال شد.' if cfg['enabled'] else '🔴 کامنت اول خاموش شد.'}",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,f"comment_pick:{cid}"),"primary")]])
+        await event.edit(f"{'🟢 کامنت اول فعال شد.' if cfg['enabled'] else '🔴 کامنت اول خاموش شد.'}",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
 
     if action == "comment_remove":
@@ -2171,7 +2171,7 @@ async def handle_self_panel_callback(event):
     if action == "comment_text_help":
         cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
         if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
-        await event.edit(f"✏️ <b>تنظیم متن کامنت</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n\nروی یک پیام متنی ریپلای کن و بنویس:\n<code>تنظیم کامنت</code>\n\nمتن برای همین کانال ذخیره و کامنت اول فعال می‌شود.",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,f"comment_pick:{cid}"),"primary")]])
+        await event.edit(f"✏️ <b>تنظیم متن کامنت</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n\nروی یک پیام متنی ریپلای کن و بنویس:\n<code>تنظیم کامنت</code>\n\nمتن برای همین کانال ذخیره و کامنت اول فعال می‌شود.",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
 
     if action == "comment_help":
