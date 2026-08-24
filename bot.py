@@ -2087,7 +2087,13 @@ async def handle_self_panel_callback(event):
         # Real panel entry: let the SELF account choose an actual broadcast
         # channel from its dialogs instead of relying on a manually typed ID.
         try:
-            client = event.client
+            # IMPORTANT: this callback is handled by the BOT client, but the
+            # channel list belongs to the logged-in SELF account. Using
+            # event.client here returns the bot's dialogs and can make the
+            # channel list fail even when SELF is correctly configured.
+            client = self_clients.get(uid)
+            if client is None:
+                raise RuntimeError("SELF client is not active")
             channels = await _cs_channels(client)
             if not channels:
                 await event.edit(
@@ -2108,13 +2114,17 @@ async def handle_self_panel_callback(event):
             )
         except Exception as exc:
             print(f"[COMMENT {uid}] setup menu failed: {type(exc).__name__}: {exc}")
-            await event.edit("❌ دریافت لیست کانال‌ها ناموفق بود.", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]])
+            await event.edit(f"❌ دریافت لیست کانال‌ها ناموفق بود.\n\n<code>{html.escape(str(exc))}</code>", parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")]])
         return True
 
     if action.startswith("comment_channel:"):
         try:
             channel_id = int(action.split(":", 1)[1])
-            client = event.client
+            # Callback events are received by the BOT, while channel entities
+            # and linked discussions must be resolved through the SELF session.
+            client = self_clients.get(uid)
+            if client is None:
+                raise RuntimeError("SELF client is not active")
             entity = await client.get_entity(channel_id)
             if not isinstance(entity, types.Channel) or getattr(entity, "megagroup", False):
                 await safe_answer(event, "❌ این مورد کانال پخش نیست.", True)
@@ -7521,5 +7531,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped.")
-
-            
