@@ -618,7 +618,7 @@ def main_buttons(user_id: int):
     return rows
 
 
-async def send_main(target, user_id: int, text="به سلـف‌ساز HusteRIX Dimond Self خوش آمدید! 💎\n\nبرای ساخت سلـف‌ربات، خرید الماس یا دریافت پاداش زیرمجـموعه‌گـیری، لطـفاً یکی از گزینـه‌های منوی زیر را انتـخاب کنـید:"):
+async def send_main(target, user_id: int, text="**به سلـف‌ساز 𝗛𝘂𝘀𝘁𝗲𝗥𝗜𝗫 𝗗𝗶𝗺𝗼𝗻𝗱 𝗦𝗲𝗹𝗳 خوش آمدید! 💎**\n\nبرای ساخت سلـف‌ربات، خرید الماس یا دریافت پاداش زیرمجـموعه‌گـیری، لطـفاً یکی از گزینـه‌های منوی زیر را انتـخاب کنـید:"):
     buttons = main_buttons(user_id)
     if BOT_IMAGE_PATH.exists():
         return await bot.send_file(
@@ -762,21 +762,60 @@ async def _banner_dispatch_now(client, uid, banner, targets):
     return sent, failed
 
 async def _banner_dispatch_configured_now(client, uid, banner):
-    """Send a configured banner immediately, then start its normal interval."""
+    """Send one configured banner immediately and record the send time.
+
+    The caller may be the self worker or the exact client that received the
+    command.  Keeping this function independent of self_clients avoids a
+    race where the command arrives while the worker is still registering.
+    """
     if not banner or not banner.get("enabled", True):
         return 0, 0
-    targets = []
-    for gid in banner.get("targets", []):
+
+    target_ids = []
+    for raw_gid in banner.get("targets", []):
         try:
-            targets.append(await client.get_entity(int(gid)))
+            gid = int(raw_gid)
+        except (TypeError, ValueError):
+            print(f"[BANNER {uid}] invalid target id: {raw_gid!r}")
+            continue
+        if gid not in target_ids:
+            target_ids.append(gid)
+
+    if not target_ids:
+        return 0, 0
+
+    targets = []
+    for gid in target_ids:
+        try:
+            targets.append(await client.get_entity(gid))
         except Exception as exc:
             print(f"[BANNER {uid}] target resolve failed for {gid}: {exc}")
+
     if not targets:
-        return 0, 0
+        return 0, len(target_ids)
+
     sent, failed = await _banner_dispatch_now(client, uid, banner, targets)
     if sent:
         banner["last_sent"] = time.time()
-    return sent, failed
+    return sent, failed + max(0, len(target_ids) - len(targets))
+
+
+async def _banner_dispatch_all_configured(client, uid):
+    """Immediately send every configured banner that has at least one target."""
+    banners = self_banners(uid)
+    total_sent = total_failed = 0
+    changed = False
+    for banner in banners:
+        if not banner.get("enabled", True) or not banner.get("targets"):
+            continue
+        sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
+        total_sent += sent
+        total_failed += failed
+        if sent:
+            changed = True
+    if changed:
+        self_save_banners(uid, banners)
+    return total_sent, total_failed
 
 
 async def _banner_worker_tick(client, uid):
@@ -2043,15 +2082,7 @@ async def handle_self_panel_callback(event):
         if value == "on":
             client = self_clients.get(uid)
             if client:
-                banners = self_banners(uid)
-                changed = False
-                for banner in banners:
-                    if banner.get("enabled", True) and banner.get("targets"):
-                        sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
-                        if sent:
-                            changed = True
-                if changed:
-                    self_save_banners(uid, banners)
+                await _banner_dispatch_all_configured(client, uid)
 
         banners = self_banners(uid)
         status = "روشن ✅" if value == "on" else "خاموش ❌"
@@ -4242,12 +4273,11 @@ async def self_handle_outgoing(event, uid):
             return
         banner["interval"] = minutes
 
-        # If the banner is already fully configured and tabchi is ON,
-        # changing the interval is an activation/configuration event: send
-        # the first banner immediately instead of waiting N minutes.
+        # Changing the interval is also a configuration event.  If Tabchi is
+        # already ON and this banner has targets, send the first copy now.
         sent = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
-            client = self_clients.get(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
 
@@ -4268,7 +4298,7 @@ async def self_handle_outgoing(event, uid):
 
         sent = 0
         if self_get(uid, "banner_auto", "off") == "on":
-            client = self_clients.get(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
 
@@ -4303,7 +4333,7 @@ async def self_handle_outgoing(event, uid):
         banner["targets"] = sorted(set(targets))
         sent = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
-            client = self_clients.get(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
         self_save_banners(uid, self_banners(uid))
@@ -4361,8 +4391,24 @@ async def self_handle_outgoing(event, uid):
     if low in switches:
         key, val = switches[low]
         self_set(uid, key, val)
+
+        # Tabchi is driven by the logged-in self client.  Use the event's
+        # client first so the command works even during worker/client startup
+        # races; self_clients is only a fallback cache.
+        if key == "banner_auto" and val == "on":
+            client = getattr(event, "client", None) or self_clients.get(uid)
+            if client:
+                sent, failed = await _banner_dispatch_all_configured(client, uid)
+                status = f"روشن ✅\n📨 ارسال فوری: {sent} مقصد"
+                if failed:
+                    status += f"\n⚠️ ناموفق: {failed}"
+            else:
+                status = "روشن ✅\n⏳ Worker سلف هنوز آماده نیست؛ بعد از اتصال اجرا می‌شود."
+        else:
+            status = "روشن" if val == "on" else "خاموش"
+
         with contextlib.suppress(Exception):
-            await event.edit(f"✅ {text}\nوضعیت: {'روشن' if val == 'on' else 'خاموش'}")
+            await event.edit(f"✅ {text}\nوضعیت: {status}")
         return
 
     if low.startswith("پاسخ خودکار جدید"):
@@ -5655,16 +5701,19 @@ async def callbacks(event):
     user_id = event.sender_id
 
     if data == "fj_check":
-        if await ensure_force_join(user_id):
-            await safe_answer(event, "✅ عضویت تأیید شد.")
-            with contextlib.suppress(Exception):
-                await event.delete()
-            if not has_registered_phone(user_id):
-                await send_phone_request(user_id)
-            else:
-                await send_main(user_id, user_id)
-        else:
+        # Verify FIRST.  Never delete/skip the force-join gate while any
+        # required channel is still missing.
+        if not await ensure_force_join(user_id, event):
             await safe_answer(event, "❌ هنوز در همه کانال‌ها عضو نشده‌اید.", True)
+            return
+
+        await safe_answer(event, "✅ عضویت تأیید شد.")
+        with contextlib.suppress(Exception):
+            await event.delete()
+        if not has_registered_phone(user_id):
+            await send_phone_request(user_id)
+        else:
+            await send_main(user_id, user_id)
         return
 
     if data.startswith("sp:"):
