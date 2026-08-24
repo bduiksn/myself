@@ -4370,18 +4370,11 @@ async def _spam_replied(event, uid, count):
 
 
 async def _maybe_first_comment(event, uid):
-    """Send the configured first comment for a channel post.
+    """Post the configured first comment for a configured channel.
 
-    Supports two common flows:
-      1) Forward a configured channel post into its linked discussion group.
-         The comment is posted as a real reply in that discussion thread.
-      2) Post directly to the configured channel with the SELF account.
-         Telegram's GetDiscussionMessageRequest is used to find the mirrored
-         discussion message, then the comment is posted as a reply to it.
-
-    Important: Telegram's linked_chat_id is a raw positive channel/group ID,
-    while Telethon's event.chat_id for supergroups is usually -100... .
-    Compare entity.id values, not event.chat_id directly.
+    Primary flow: when SELF forwards a channel post into that channel's linked
+    discussion group, reply to the exact forwarded message received in the
+    discussion.  Direct channel-post flow uses GetDiscussionMessageRequest.
     """
     text = _first_comment_text(uid).strip()
     channels = _first_comment_channels(uid)
@@ -4395,158 +4388,197 @@ async def _maybe_first_comment(event, uid):
     for item in channels:
         try:
             cid = int(item.get("id"))
-            configured[cid] = item
+            if cid > 0:
+                configured[cid] = item
         except (TypeError, ValueError):
             continue
     if not configured:
         return
 
-    source_id = None
-    fwd = getattr(msg, "fwd_from", None)
+    # Current chat/entity.
+    current_entity = None
+    with contextlib.suppress(Exception):
+        current_entity = await event.get_chat()
+    current_entity_id = getattr(current_entity, "id", None)
+    current_is_broadcast = bool(
+        isinstance(current_entity, types.Channel)
+        and not getattr(current_entity, "megagroup", False)
+    )
+    current_is_group = bool(
+        isinstance(current_entity, types.Channel)
+        and getattr(current_entity, "megagroup", False)
+    )
 
-    # If this is a forwarded channel post, get the original source channel.
+    fwd = getattr(msg, "fwd_from", None)
+    forward = getattr(msg, "forward", None)
+
+    # Find the original channel from every Telethon representation we may get.
+    source_id = None
     for peer in (
         getattr(fwd, "from_id", None),
         getattr(fwd, "saved_from_peer", None),
-        getattr(getattr(msg, "forward", None), "from_id", None),
+        getattr(forward, "from_id", None),
     ):
         candidate = getattr(peer, "channel_id", None)
         if candidate is not None:
             source_id = int(candidate)
             break
-
     if source_id is None:
-        forward = getattr(msg, "forward", None)
-        candidate = getattr(forward, "channel_id", None)
+        for obj in (fwd, forward):
+            candidate = getattr(obj, "channel_id", None)
+            if candidate is not None:
+                source_id = int(candidate)
+                break
+
+    # Original post id (forwarded or direct).
+    original_post_id = None
+    for obj in (fwd, forward):
+        candidate = getattr(obj, "channel_post", None)
         if candidate is not None:
-            source_id = int(candidate)
+            try:
+                original_post_id = int(candidate)
+                break
+            except (TypeError, ValueError):
+                pass
 
-    # Direct post into a configured channel: the current channel itself is
-    # the source. This path needs GetDiscussionMessageRequest below.
-    current_entity = None
-    with contextlib.suppress(Exception):
-        current_entity = await event.get_chat()
-
-    current_entity_id = getattr(current_entity, "id", None)
-    current_is_broadcast = bool(
-        current_entity is not None
-        and isinstance(current_entity, types.Channel)
-        and not getattr(current_entity, "megagroup", False)
-    )
-
-    if source_id is None and current_is_broadcast and current_entity_id is not None:
-        if int(current_entity_id) in configured:
-            source_id = int(current_entity_id)
+    # Direct post made by SELF in a configured broadcast channel.
+    if (
+        source_id is None
+        and current_is_broadcast
+        and current_entity_id is not None
+        and int(current_entity_id) in configured
+    ):
+        source_id = int(current_entity_id)
+        original_post_id = original_post_id or int(msg.id)
 
     if source_id is None or source_id not in configured:
         return
 
-    # Resolve the configured source channel.
+    # Resolve source channel.
     try:
         channel_entity = await client.get_entity(source_id)
     except Exception as exc:
-        print(f"[COMMENT {uid}] source channel resolve failed {source_id}: {exc}")
+        print(f"[COMMENT {uid}] source resolve failed {source_id}: {type(exc).__name__}: {exc}")
         return
-
     if not isinstance(channel_entity, types.Channel) or getattr(channel_entity, "megagroup", False):
-        print(f"[COMMENT {uid}] source {source_id} is not a broadcast channel")
+        print(f"[COMMENT {uid}] source={source_id} is not a broadcast channel")
         return
 
-    # Resolve the linked discussion group.
-    discussion_id = None
+    # Resolve linked discussion.
     try:
-        full = await client(functions.channels.GetFullChannelRequest(
-            channel=channel_entity
-        ))
-        discussion_id = getattr(
-            getattr(full, "full_chat", None),
-            "linked_chat_id",
-            None,
-        )
-        if discussion_id is not None:
-            discussion_id = int(discussion_id)
+        full = await client(functions.channels.GetFullChannelRequest(channel=channel_entity))
+        discussion_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+        discussion_id = int(discussion_id) if discussion_id is not None else None
     except Exception as exc:
-        print(f"[COMMENT {uid}] discussion lookup failed for {source_id}: {exc}")
+        print(f"[COMMENT {uid}] discussion lookup failed channel={source_id}: {type(exc).__name__}: {exc}")
         return
 
     if not discussion_id:
-        print(f"[COMMENT {uid}] channel {source_id} has no linked discussion group")
+        print(f"[COMMENT {uid}] channel={source_id} has no linked discussion group")
         return
 
-    # Get the actual discussion-thread message corresponding to the channel
-    # post whenever the original channel post ID is available.
-    original_post_id = getattr(fwd, "channel_post", None)
-    if original_post_id is not None:
-        try:
-            original_post_id = int(original_post_id)
-        except (TypeError, ValueError):
-            original_post_id = None
+    try:
+        discussion_entity = await client.get_entity(discussion_id)
+    except Exception as exc:
+        print(f"[COMMENT {uid}] discussion resolve failed {discussion_id}: {type(exc).__name__}: {exc}")
+        return
 
-    # Direct channel post: msg.id is the channel post ID.
-    if original_post_id is None and current_is_broadcast and int(current_entity_id or 0) == source_id:
-        original_post_id = int(msg.id)
-
+    discussion_entity_id = getattr(discussion_entity, "id", None)
     discussion_message_id = None
 
-    if original_post_id:
+    # IMPORTANT FIX:
+    # If the forwarded post is already inside the linked discussion, reply to
+    # THIS message. The old code queried GetDiscussionMessage first, which can
+    # select a different/root message and therefore makes the comment appear
+    # unrelated or fail to attach to the forwarded post.
+    if (
+        current_is_group
+        and current_entity_id is not None
+        and discussion_entity_id is not None
+        and int(current_entity_id) == int(discussion_entity_id)
+        and (original_post_id is not None or fwd is not None or forward is not None)
+    ):
+        discussion_message_id = int(msg.id)
+        print(
+            f"[COMMENT {uid}] using current forwarded discussion message "
+            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
+        )
+
+    # Direct channel post: Telegram maps the channel post to its discussion
+    # message through GetDiscussionMessageRequest.
+    if discussion_message_id is None and original_post_id is not None:
         try:
             result = await client(functions.messages.GetDiscussionMessageRequest(
                 peer=channel_entity,
-                msg_id=original_post_id,
+                msg_id=int(original_post_id),
             ))
             messages = getattr(result, "messages", None) or []
-            if messages:
-                discussion_message_id = int(getattr(messages[0], "id"))
+            # Prefer a message whose peer is the linked discussion.
+            candidates = [
+                m for m in messages
+                if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
+            ]
+            if candidates:
+                discussion_message_id = int(candidates[0].id)
+            elif messages:
+                discussion_message_id = int(messages[0].id)
+            print(
+                f"[COMMENT {uid}] discussion lookup channel={source_id} "
+                f"post={original_post_id} discussion={discussion_id} "
+                f"msg={discussion_message_id}"
+            )
         except Exception as exc:
             print(
-                f"[COMMENT {uid}] GetDiscussionMessage failed for "
-                f"{source_id}:{original_post_id}: {type(exc).__name__}: {exc}"
+                f"[COMMENT {uid}] GetDiscussionMessage failed "
+                f"channel={source_id} post={original_post_id}: "
+                f"{type(exc).__name__}: {exc}"
             )
 
-    # Forwarded-post fallback: if Telegram already delivered the forwarded
-    # post into the linked discussion group, its message ID can be replied to.
-    if discussion_message_id is None:
-        discussion_entity = None
-        with contextlib.suppress(Exception):
-            discussion_entity = await client.get_entity(discussion_id)
-
-        if discussion_entity is None:
-            print(f"[COMMENT {uid}] discussion entity resolve failed: {discussion_id}")
-            return
-
-        current_id = int(current_entity_id) if current_entity_id is not None else None
-        if current_id == int(getattr(discussion_entity, "id", 0)):
-            discussion_message_id = int(msg.id)
+    # Metadata-light fallback when Telegram delivered the forwarded post into
+    # the linked discussion but did not expose forward fields.
+    if (
+        discussion_message_id is None
+        and current_is_group
+        and current_entity_id is not None
+        and discussion_entity_id is not None
+        and int(current_entity_id) == int(discussion_entity_id)
+    ):
+        discussion_message_id = int(msg.id)
+        print(
+            f"[COMMENT {uid}] using current discussion message fallback "
+            f"channel={source_id} discussion={discussion_id} msg={msg.id}"
+        )
 
     if discussion_message_id is None:
         print(
-            f"[COMMENT {uid}] no discussion message found for "
-            f"channel={source_id}, post={original_post_id}"
+            f"[COMMENT {uid}] no discussion message found channel={source_id} "
+            f"post={original_post_id} current_chat={current_entity_id} "
+            f"discussion={discussion_id}"
         )
         return
 
     async def send_comment():
         return await client.send_message(
-            entity=discussion_id,
+            entity=discussion_entity,
             message=text[:4096],
-            reply_to=discussion_message_id,
+            reply_to=int(discussion_message_id),
         )
 
     try:
-        await _tg_call_with_flood_retry(
+        sent = await _tg_call_with_flood_retry(
             send_comment,
             label="first comment",
             max_retries=5,
         )
         print(
-            f"[COMMENT {uid}] comment sent: channel={source_id} "
-            f"discussion={discussion_id} msg={discussion_message_id}"
+            f"[COMMENT {uid}] comment sent successfully channel={source_id} "
+            f"discussion={discussion_id} reply_to={discussion_message_id} "
+            f"message_id={getattr(sent, 'id', None)}"
         )
     except Exception as exc:
         print(
-            f"[COMMENT {uid}] failed: channel={source_id} "
-            f"discussion={discussion_id} msg={discussion_message_id} "
-            f"{type(exc).__name__}: {exc}"
+            f"[COMMENT {uid}] failed channel={source_id} discussion={discussion_id} "
+            f"reply_to={discussion_message_id}: {type(exc).__name__}: {exc}"
         )
 
 
