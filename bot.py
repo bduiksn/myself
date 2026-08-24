@@ -765,16 +765,30 @@ def _banner_media_dir(uid):
     path.mkdir(parents=True, exist_ok=True)
     return path
 
+def _get_tabchi_client(uid):
+    """Return only the SELF client assigned to this user for Tabchi operations."""
+    return self_clients.get(int(uid))
+
+
 async def _banner_send(client, uid, banner, target):
+    # Never trust the caller-provided client for Tabchi sends.
+    self_client = _get_tabchi_client(uid)
+    if not self_client:
+        raise RuntimeError("SELF client is not active")
     if banner.get("mode", "forward") == "forward":
-        return await client.forward_messages(target, int(banner["source_msg_id"]), from_peer=int(banner["source_chat_id"]))
+        return await self_client.forward_messages(
+            target, int(banner["source_msg_id"]),
+            from_peer=int(banner["source_chat_id"])
+        )
     media_path = banner.get("media_path")
     caption = banner.get("text") or ""
     if media_path and Path(media_path).exists():
-        return await client.send_file(target, media_path, caption=caption)
-    return await client.send_message(target, caption)
+        return await self_client.send_file(target, media_path, caption=caption)
+    return await self_client.send_message(target, caption)
 
 async def _banner_recent_pv(client, count):
+    if not client:
+        raise RuntimeError("SELF client is not active")
     result = []
     me = await client.get_me()
     async for dialog in client.iter_dialogs():
@@ -789,6 +803,9 @@ async def _banner_recent_pv(client, count):
     return result
 
 async def _banner_dispatch_now(client, uid, banner, targets):
+    client = _get_tabchi_client(uid)
+    if not client:
+        raise RuntimeError("SELF client is not active")
     sent = failed = 0
     for target in targets:
         try:
@@ -806,6 +823,10 @@ async def _banner_dispatch_configured_now(client, uid, banner):
     command.  Keeping this function independent of self_clients avoids a
     race where the command arrives while the worker is still registering.
     """
+    client = _get_tabchi_client(uid)
+    if not client:
+        raise RuntimeError("SELF client is not active")
+
     if not banner or not banner.get("enabled", True):
         return 0, 0
 
@@ -843,6 +864,9 @@ async def _banner_dispatch_configured_now(client, uid, banner):
 
 async def _banner_dispatch_all_configured(client, uid):
     """Immediately send every configured banner that has at least one target."""
+    client = _get_tabchi_client(uid)
+    if not client:
+        raise RuntimeError("SELF client is not active")
     banners = self_banners(uid)
     total_sent = total_failed = 0
     changed = False
@@ -860,6 +884,9 @@ async def _banner_dispatch_all_configured(client, uid):
 
 
 async def _banner_worker_tick(client, uid):
+    client = _get_tabchi_client(uid)
+    if not client:
+        raise RuntimeError("SELF client is not active")
     if self_get(uid, "banner_auto", "off") != "on":
         return
     now = time.time()
@@ -2119,13 +2146,21 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "banner_toggle":
-        value = "off" if self_get(uid, "banner_auto", "off") == "on" else "on"
-        self_set(uid, "banner_auto", value)
+        current = self_get(uid, "banner_auto", "off")
+        value = "off" if current == "on" else "on"
         sent = failed = 0
         if value == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
-            if client:
-                sent, failed = await _banner_dispatch_all_configured(client, uid)
+            client = _get_tabchi_client(uid)
+            if not client:
+                await event.edit(
+                    "❌ <b>سلف فعال نیست.</b>\n\nتبچی فقط با اکانت SELF اجرا می‌شود و با BOT ارسال نخواهد کرد.",
+                    parse_mode="html",
+                )
+                return
+            self_set(uid, "banner_auto", value)
+            sent, failed = await _banner_dispatch_all_configured(client, uid)
+        else:
+            self_set(uid, "banner_auto", value)
         banners = self_banners(uid)
         status = "روشن ✅" if value == "on" else "خاموش ❌"
         body = [f"📢 <b>مدیریت بنرها</b>\n\n🔘 ارسال خودکار: {status}"]
@@ -4319,7 +4354,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = _get_tabchi_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4344,7 +4379,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = _get_tabchi_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4376,8 +4411,12 @@ async def self_handle_outgoing(event, uid):
         if not banner:
             await event.edit("❌ بنر موردنظر پیدا نشد.")
             return
+        client = _get_tabchi_client(uid)
+        if not client:
+            await event.edit("❌ سلف فعال نیست.")
+            return
         targets = set()
-        async for dialog in event.client.iter_dialogs():
+        async for dialog in client.iter_dialogs():
             entity = getattr(dialog, "entity", None)
             if getattr(dialog, "is_group", False) and not getattr(entity, "broadcast", False):
                 try:
@@ -4388,7 +4427,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = _get_tabchi_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4405,8 +4444,12 @@ async def self_handle_outgoing(event, uid):
         if not banner or count < 1:
             await event.edit("❌ بنر یا تعداد نامعتبر است.")
             return
-        targets = await _banner_recent_pv(event.client, count)
-        sent, failed = await _banner_dispatch_now(event.client, uid, banner, targets)
+        client = _get_tabchi_client(uid)
+        if not client:
+            await event.edit("❌ سلف فعال نیست.")
+            return
+        targets = await _banner_recent_pv(client, count)
+        sent, failed = await _banner_dispatch_now(client, uid, banner, targets)
         await event.edit(f"✅ بنر #{bid} به {sent} پیوی اخیر ارسال شد.\n❌ ناموفق: {failed}")
         return
 
@@ -4447,21 +4490,18 @@ async def self_handle_outgoing(event, uid):
     }
     if low in switches:
         key, val = switches[low]
-        self_set(uid, key, val)
-
-        # Tabchi is driven by the logged-in self client.  Use the event's
-        # client first so the command works even during worker/client startup
-        # races; self_clients is only a fallback cache.
         if key == "banner_auto" and val == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
-            if client:
-                sent, failed = await _banner_dispatch_all_configured(client, uid)
-                status = f"روشن ✅\n📨 ارسال فوری: {sent} مقصد"
-                if failed:
-                    status += f"\n⚠️ ناموفق: {failed}"
-            else:
-                status = "روشن ✅\n⏳ Worker سلف هنوز آماده نیست؛ بعد از اتصال اجرا می‌شود."
+            client = _get_tabchi_client(uid)
+            if not client:
+                await event.edit("❌ سلف فعال نیست.")
+                return
+            self_set(uid, key, val)
+            sent, failed = await _banner_dispatch_all_configured(client, uid)
+            status = f"روشن ✅\n📨 ارسال فوری: {sent} مقصد"
+            if failed:
+                status += f"\n⚠️ ناموفق: {failed}"
         else:
+            self_set(uid, key, val)
             status = "روشن" if val == "on" else "خاموش"
 
         with contextlib.suppress(Exception):
