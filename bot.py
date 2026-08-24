@@ -1036,6 +1036,7 @@ def self_panel_buttons(uid):
         ],
         [
             btn(f"👁 سین {'روشن' if self_get(uid,'auto_read')=='on' else 'خاموش'}", _self_cb(uid, "read"), toggle_style("auto_read")),
+            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
         ],
         [
             btn(f"⌨️ تایپینگ {'روشن' if self_get(uid,'typing')=='on' else 'خاموش'}", _self_cb(uid, "typing"), toggle_style("typing")),
@@ -1051,9 +1052,6 @@ def self_panel_buttons(uid):
         ],
         [
             btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
-        ],
-        [
-            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
         ],
         [btn("❌ بستن", _self_cb(uid, "close"), "danger")],
     ]
