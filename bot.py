@@ -4342,7 +4342,7 @@ async def self_handle_outgoing(event, uid):
         await event.edit("✅ لیست تمام بنرها پاک شد.")
         return
 
-    m = re.fullmatch(r"تنظیم عدد بنر\s+(\d+)\s+دقیقه", _fa_digits(text))
+    m = re.fullmatch(r"تنظیم عدد بنر\s+(\d+)\s+(\d+)\s+دقیقه", _fa_digits(text))
     if m:
         bid, minutes = int(m.group(1)), int(m.group(2))
         banners = self_banners(uid)
