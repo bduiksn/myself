@@ -391,17 +391,6 @@ def btn(text: str, data, style: str | None = None):
         return Button.inline(text, data)
 
 
-def force_join_url_button(text: str, url: str):
-    """URL button for force-join targets; request primary/purple style when supported."""
-    try:
-        return Button.url(text, url, style="primary")
-    except Exception:
-        try:
-            return Button.url(text, url)
-        except Exception:
-            return btn(text, url, "primary")
-
-
 # ============================================================
 # FORCE JOIN + BACKUP
 # ============================================================
@@ -441,42 +430,19 @@ def _channel_url(channel):
 
 
 async def _is_joined_channel(user_id: int, channel):
-    """Reliably verify membership for both channels and groups."""
     try:
-        entity_ref = channel.get("id") or channel.get("username")
-        if not entity_ref:
-            return False
+        entity_ref = channel.get("username") or channel.get("id")
         entity = await bot.get_entity(entity_ref)
-
-        if isinstance(entity, types.Channel):
-            participant = await bot(functions.channels.GetParticipantRequest(
-                channel=entity,
-                participant=await bot.get_input_entity(int(user_id)),
-            ))
-            p = getattr(participant, "participant", None)
-            if p is None:
-                return False
-            if getattr(p, "left", False) or getattr(p, "kicked", False):
-                return False
-            banned_cls = getattr(types, "ChannelParticipantBanned", None)
-            left_cls = getattr(types, "ChannelParticipantLeft", None)
-            if banned_cls and isinstance(p, banned_cls):
-                return False
-            if left_cls and isinstance(p, left_cls):
-                return False
-            return True
-
-        if isinstance(entity, types.Chat):
-            await bot.get_permissions(entity, int(user_id))
-            return True
-
-        return False
-    except Exception as exc:
-        print(
-            f"[FORCE JOIN] membership check failed "
-            f"user={user_id} channel={channel.get('id')}: "
-            f"{type(exc).__name__}: {exc}"
+        participant = await bot(functions.channels.GetParticipantRequest(
+            channel=entity,
+            participant=await bot.get_input_entity(user_id),
+        ))
+        return isinstance(
+            getattr(participant, "participant", None),
+            (types.ChannelParticipant, types.ChannelParticipantAdmin, types.ChannelParticipantCreator)
         )
+    except Exception:
+        # A bot that cannot verify a channel must fail closed for force-join.
         return False
 
 
@@ -494,7 +460,7 @@ def force_join_buttons(channels):
         url = _channel_url(channel)
         title = str(channel.get("title") or channel.get("username") or "کانال")
         if url:
-            rows.append([force_join_url_button(f"📢 {title}", url)])
+            rows.append([Button.url(f"📢 {title}", url)])
     rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
     return rows
 
@@ -636,16 +602,10 @@ async def stop_all_self_workers_for_backup():
 # ============================================================
 
 def main_buttons(user_id: int):
-    # Activation must never remain available while a self session is active.
-    # After a backup restore, the DB session is the source of truth.
-    first_self_button = (
-        btn("⚙️ مدیریت سلف", b"manage_self", "primary")
-        if get_active_session(user_id)
-        else btn("💎 خرید سلف", b"buy_self", "success")
-    )
     rows = [
-        [first_self_button],
+        [btn("💎 خرید سلف", b"buy_self", "success")],
         [
+            btn("⚙️ مدیریت سلف", b"manage_self", "primary"),
             btn("👤 حساب کاربری", b"user_account", "primary"),
         ],
         [
@@ -2163,7 +2123,7 @@ async def handle_self_panel_callback(event):
         self_set(uid, "banner_auto", value)
         sent = failed = 0
         if value == "on":
-            client = await _get_banner_self_client(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, failed = await _banner_dispatch_all_configured(client, uid)
         banners = self_banners(uid)
@@ -4359,7 +4319,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
-            client = await _get_banner_self_client(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4384,7 +4344,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on":
-            client = await _get_banner_self_client(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4428,7 +4388,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
-            client = await _get_banner_self_client(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4493,7 +4453,7 @@ async def self_handle_outgoing(event, uid):
         # client first so the command works even during worker/client startup
         # races; self_clients is only a fallback cache.
         if key == "banner_auto" and val == "on":
-            client = await _get_banner_self_client(uid)
+            client = getattr(event, "client", None) or self_clients.get(uid)
             if client:
                 sent, failed = await _banner_dispatch_all_configured(client, uid)
                 status = f"روشن ✅\n📨 ارسال فوری: {sent} مقصد"
@@ -5055,39 +5015,6 @@ async def stop_self_worker(user_id: int):
     deactivate_session(user_id)
 
 
-async def _get_banner_self_client(uid: int):
-    """Return the logged-in self client, starting/restoring it when needed.
-
-    IMPORTANT: event.client inside bot callbacks is the BOT client, not the
-    user's logged-in self account. Tabchi must always send through the self
-    client stored in self_clients.
-    """
-    client = self_clients.get(int(uid))
-    if client is not None:
-        with contextlib.suppress(Exception):
-            if client.is_connected():
-                return client
-
-    session = get_active_session(int(uid))
-    if not session:
-        return None
-
-    task = self_workers.get(int(uid))
-    if task is None or task.done():
-        await start_self_worker(int(uid), session[0], int(session[1]))
-
-    # Give the worker a short window to connect/register self_clients.
-    for _ in range(30):
-        client = self_clients.get(int(uid))
-        if client is not None:
-            with contextlib.suppress(Exception):
-                if client.is_connected():
-                    return client
-        await asyncio.sleep(0.1)
-
-    return self_clients.get(int(uid))
-
-
 # ============================================================
 # LOGIN FLOW
 # ============================================================
@@ -5109,32 +5036,13 @@ async def code_timeout(user_id: int):
 
 
 async def begin_self_login(user_id: int, event=None):
-    # Never start a second login flow when a self session is already active.
+    # Never start a new login/activation flow when this user already has
+    # an active self. The management panel remains available separately.
     if get_active_session(user_id):
         if event:
-            await safe_answer(event, "⚠️ شما سلف فعال دارید.", True)
-            await show_manage_self(event)
+            await safe_answer(event, "❌ شما یه سلف فعال دارید!", True)
         else:
-            await bot.send_message(
-                user_id,
-                "⚠️ <b>شما سلف فعال دارید.</b>\n\nاز بخش «مدیریت سلف» استفاده کنید.",
-                parse_mode="html",
-            )
-        return
-
-    # A restored/active session is already the user's self account.
-    # Never start a second login flow or send another Telegram login code.
-    active_session = get_active_session(user_id)
-    if active_session:
-        if event:
-            await safe_answer(event, "✅ سلف شما از قبل فعال است؛ از بخش «مدیریت سلف» استفاده کنید.", True)
-            with contextlib.suppress(Exception):
-                await show_manage_self(event)
-        else:
-            await bot.send_message(
-                user_id,
-                "✅ سلف شما از قبل فعال است؛ برای مدیریت آن وارد «مدیریت سلف» شوید."
-            )
+            await bot.send_message(user_id, "❌ شما یه سلف فعال دارید!")
         return
 
     balance = get_balance(user_id)
@@ -5208,6 +5116,15 @@ async def finish_login(user_id: int):
 
     if not session_string:
         await bot.send_message(user_id, "❌ ساخت SessionString ناموفق بود.")
+        return
+
+    # Re-check here as well so a pending login can never activate a second
+    # self if another activation/backup restore became active meanwhile.
+    if get_active_session(user_id):
+        await bot.send_message(user_id, "❌ شما یه سلف فعال دارید!")
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+        pending.pop(user_id, None)
         return
 
     # Charge only after successful authorization.
@@ -5894,10 +5811,6 @@ async def callbacks(event):
         return
 
     if data == "buy_self":
-        if get_active_session(user_id):
-            await safe_answer(event, "⚠️ شما سلف فعال دارید.", True)
-            await show_manage_self(event)
-            return
         await begin_self_login(user_id, event)
         return
 
@@ -6247,7 +6160,7 @@ async def callbacks(event):
             return
 
         buttons = [
-            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("Backups", b"backups", "primary")],
+            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("💾 Backups", b"backups", "primary")],
             [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
             [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
             [btn("🔙 برگشت", b"back", "danger")],
