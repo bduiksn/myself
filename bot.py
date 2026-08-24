@@ -455,7 +455,14 @@ async def get_missing_force_joins(user_id: int):
 
 
 def force_join_buttons(channels):
-    return [[btn("🟢 عضو شدم، ادامه", b"fj_check", "success")]]
+    rows = []
+    for channel in channels:
+        url = _channel_url(channel)
+        title = str(channel.get("title") or channel.get("username") or "کانال")
+        if url:
+            rows.append([Button.url(f"📢 {title}", url)])
+    rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
+    return rows
 
 
 async def show_force_join(event, channels=None):
@@ -611,7 +618,7 @@ def main_buttons(user_id: int):
     return rows
 
 
-async def send_main(target, user_id: int, text="به سلف‌ساز خوش آمدید! 💎"):
+async def send_main(target, user_id: int, text="به سلـف‌ساز HusteRIX Dimond Self خوش آمدید! 💎\n\nبرای ساخت سلـف‌ربات، خرید الماس یا دریافت پاداش زیرمجـموعه‌گـیری، لطـفاً یکی از گزینـه‌های منوی زیر را انتـخاب کنـید:"):
     buttons = main_buttons(user_id)
     if BOT_IMAGE_PATH.exists():
         return await bot.send_file(
@@ -754,6 +761,24 @@ async def _banner_dispatch_now(client, uid, banner, targets):
             print(f"[BANNER {uid}] send {banner.get('id')} -> {getattr(target, 'id', target)} failed: {exc}")
     return sent, failed
 
+async def _banner_dispatch_configured_now(client, uid, banner):
+    """Send a configured banner immediately, then start its normal interval."""
+    if not banner or not banner.get("enabled", True):
+        return 0, 0
+    targets = []
+    for gid in banner.get("targets", []):
+        try:
+            targets.append(await client.get_entity(int(gid)))
+        except Exception as exc:
+            print(f"[BANNER {uid}] target resolve failed for {gid}: {exc}")
+    if not targets:
+        return 0, 0
+    sent, failed = await _banner_dispatch_now(client, uid, banner, targets)
+    if sent:
+        banner["last_sent"] = time.time()
+    return sent, failed
+
+
 async def _banner_worker_tick(client, uid):
     if self_get(uid, "banner_auto", "off") != "on":
         return
@@ -764,19 +789,11 @@ async def _banner_worker_tick(client, uid):
         if not banner.get("enabled", True):
             continue
         interval = max(1, int(banner.get("interval", 60))) * 60
-        if float(banner.get("last_sent", 0) or 0) and now - float(banner.get("last_sent", 0)) < interval:
+        last_sent = float(banner.get("last_sent", 0) or 0)
+        if last_sent and now - last_sent < interval:
             continue
-        targets = []
-        for gid in banner.get("targets", []):
-            try:
-                targets.append(await client.get_entity(int(gid)))
-            except Exception:
-                pass
-        if not targets:
-            continue
-        sent, _ = await _banner_dispatch_now(client, uid, banner, targets)
+        sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
         if sent:
-            banner["last_sent"] = now
             changed = True
     if changed:
         self_save_banners(uid, banners)
@@ -1039,7 +1056,7 @@ def self_guide_text(page=1):
             "پیام دستور حذف می‌شود و یک سناریوی هک کاملاً نمایشی با نوار پیشرفت نمایش داده می‌شود.\n\n"
             "💎 <b>انتقال الماس</b>\n"
             "نمونه: <code>انتقال ۵۰۰</code>\n\n"
-            "<blockquote>✨ برای برگشت، دکمه «🔙 بازگشت» را بزن.</blockquote>"
+            ""
         ),
         (
             "🤖 <b>تبچی • شروع از صفر</b>\n<i>صفحه ۹ از ۱۱</i>\n\n"
@@ -1063,7 +1080,8 @@ def self_guide_text(page=1):
             "<b>۵) ارسال فوری به پیوی‌های اخیر</b>\n<code>فور بنر ۱ در ۲۰ پیوی اخیر</code>\n"
             "بنر ۱ را فوراً برای ۲۰ پیوی اخیر می‌فرستد و منتظر زمان‌بندی نمی‌ماند.\n\n"
             "<b>۶) مدیریت</b>\n<code>حذف بنر ۱</code> → حذف یک بنر\n<code>پاکسازی لیست بنر ها</code> → حذف همه بنرها\n<code>وضعیت تبچی</code> → نمایش وضعیت و تعداد بنرها\n\n"
-            "<blockquote>✅ ترتیب پیشنهادی: ساخت → مقصد → زمان → تبچی روشن.</blockquote>"
+            "<blockquote>✅ ترتیب پیشنهادی: ساخت → مقصد → زمان → تبچی روشن.</blockquote>\n\n"
+            "✨ برای برگشت، دکمه «🔙 بازگشت» را بزن."
         ),
     ]
     page = max(1, min(int(page), len(pages)))
@@ -2019,9 +2037,44 @@ async def handle_self_panel_callback(event):
     if action == "banner_toggle":
         value = "off" if self_get(uid, "banner_auto", "off") == "on" else "on"
         self_set(uid, "banner_auto", value)
+
+        # Turning the feature on must be immediately reflected in the same
+        # banner-management screen and must not wait for the worker's next tick.
+        if value == "on":
+            client = self_clients.get(uid)
+            if client:
+                banners = self_banners(uid)
+                changed = False
+                for banner in banners:
+                    if banner.get("enabled", True) and banner.get("targets"):
+                        sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
+                        if sent:
+                            changed = True
+                if changed:
+                    self_save_banners(uid, banners)
+
+        banners = self_banners(uid)
+        status = "روشن ✅" if value == "on" else "خاموش ❌"
+        body = [f"📢 <b>مدیریت بنرها</b>\n\n🔘 ارسال خودکار: {status}"]
+        for b in banners:
+            body.append(
+                f"\n<b>#{b['id']}</b> • "
+                f"{'فوروارد' if b.get('mode') == 'forward' else 'کپی'} • "
+                f"هر {int(b.get('interval', 60))} دقیقه • "
+                f"مقصد: {len(b.get('targets', []))}"
+            )
+        if not banners:
+            body.append("\nهنوز بنری ثبت نشده است.")
         await event.edit(
-            "📢 <b>ارسال خودکار بنر روشن شد.</b>" if value == "on" else "🔴 <b>ارسال خودکار بنر خاموش شد.",
-            parse_mode="html", buttons=self_panel_buttons(uid)
+            "".join(body),
+            parse_mode="html",
+            buttons=[
+                [btn("🟢 بنر روشن" if value != "on" else "🔴 بنر خاموش",
+                     _self_cb(uid, "banner_toggle"),
+                     "success" if value != "on" else "danger")],
+                [btn("📚 راهنمای دستورات بنر", _self_cb(uid, "banner_help"), "primary")],
+                [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
+            ],
         )
         return True
 
@@ -4188,8 +4241,19 @@ async def self_handle_outgoing(event, uid):
             await event.edit("❌ بنر یا زمان نامعتبر است.")
             return
         banner["interval"] = minutes
+
+        # If the banner is already fully configured and tabchi is ON,
+        # changing the interval is an activation/configuration event: send
+        # the first banner immediately instead of waiting N minutes.
+        sent = 0
+        if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
+            client = self_clients.get(uid)
+            if client:
+                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
+
         self_save_banners(uid, self_banners(uid))
-        await event.edit(f"✅ فاصله ارسال بنر #{bid} روی {minutes} دقیقه تنظیم شد.")
+        extra = f"\n📨 ارسال فوری: {sent} مقصد" if sent else ""
+        await event.edit(f"✅ فاصله ارسال بنر #{bid} روی {minutes} دقیقه تنظیم شد.{extra}")
         return
 
     m = re.fullmatch(r"تنظیم گپ هدف بنر\s+(\d+)", _fa_digits(text))
@@ -4201,8 +4265,16 @@ async def self_handle_outgoing(event, uid):
             return
         if int(event.chat_id) not in [int(x) for x in banner.get("targets", [])]:
             banner.setdefault("targets", []).append(int(event.chat_id))
+
+        sent = 0
+        if self_get(uid, "banner_auto", "off") == "on":
+            client = self_clients.get(uid)
+            if client:
+                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
+
         self_save_banners(uid, self_banners(uid))
-        await event.edit(f"✅ این گپ به مقصدهای بنر #{bid} اضافه شد.")
+        extra = f"\n📨 ارسال فوری انجام شد." if sent else ""
+        await event.edit(f"✅ این گپ به مقصدهای بنر #{bid} اضافه شد.{extra}")
         return
 
     m = re.fullmatch(r"حذف گپ هدف بنر\s+(\d+)", _fa_digits(text))
@@ -4229,8 +4301,14 @@ async def self_handle_outgoing(event, uid):
             if getattr(dialog, "is_group", False):
                 targets.append(int(dialog.id))
         banner["targets"] = sorted(set(targets))
+        sent = 0
+        if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
+            client = self_clients.get(uid)
+            if client:
+                sent, _ = await _banner_dispatch_configured_now(client, uid, banner)
         self_save_banners(uid, self_banners(uid))
-        await event.edit(f"✅ بنر #{bid} برای {len(targets)} گپ تنظیم شد.")
+        extra = f"\n📨 ارسال فوری: {sent} مقصد" if sent else ""
+        await event.edit(f"✅ بنر #{bid} برای {len(targets)} گپ تنظیم شد.{extra}")
         return
 
     m = re.fullmatch(r"فور بنر در\s+(\d+)\s+پیوی اخیر", _fa_digits(text))
@@ -4993,7 +5071,7 @@ async def inline_query_handler(event):
     if query == "راهنما":
         result = event.builder.article(
             title="📚 راهنمای سلف",
-            description="راهنمای ۹ صفحه‌ای سلف با قابلیت‌های جدید نرخ ارز و لوگوساز.",
+            description="راهنمای ۱۱ صفحه‌ای سلف با آموزش کامل قابلیت‌ها.",
             text=self_guide_text(1),
             parse_mode="html",
             buttons=self_guide_buttons(uid, 1),
@@ -5692,7 +5770,8 @@ async def callbacks(event):
     if data == "back":
         await edit_or_send(
             event,
-            "به سلف‌ساز خوش آمدید",
+            "به سلـف‌ساز HusteRIX Dimond Self خوش آمدید! 💎\n\n"
+            "برای ساخت سلـف‌ربات، خرید الماس یا دریافت پاداش زیرمجـموعه‌گـیری، لطـفاً یکی از گزینـه‌های منوی زیر را انتـخاب کنـید:",
             main_buttons(user_id)
         )
         return
@@ -5970,7 +6049,7 @@ async def callbacks(event):
         rows = []
         for c in channels:
             rows.append([
-                btn(f"📢 {c.get('title', c.get('username', 'کانال'))}", f"fj_remove:{c.get('id')}", "primary")
+                btn(f"📢 {c.get('title', c.get('username', 'کانال'))}", f"fj_info:{c.get('id')}", "primary")
             ])
         rows.append([btn("➕ افزودن کانال", b"fj_add", "success"), btn("🗑 حذف همه", b"fj_clear", "danger")])
         rows.append([btn("🔙 برگشت", b"admin_panel", "danger")])
@@ -5988,6 +6067,39 @@ async def callbacks(event):
             return
         pending[user_id] = {"step": "force_join_add"}
         await edit_or_send(event, "📢 لینک عمومی را بفرست؛ برای چنل/گروه خصوصی، یک پیام از همان‌جا را فوروارد کن:", [[btn("🔙 برگشت", b"force_join", "danger")]])
+        return
+
+    if data.startswith("fj_info:"):
+        if user_id not in ADMINS:
+            return
+        try:
+            cid = int(data.split(":", 1)[1])
+        except ValueError:
+            await safe_answer(event, "❌ کانال نامعتبر است.", True)
+            return
+        channel = next((c for c in get_force_join_channels() if int(c.get("id", 0)) == cid), None)
+        if not channel:
+            await safe_answer(event, "❌ کانال پیدا نشد.", True)
+            return
+        title = html.escape(str(channel.get("title") or "کانال"))
+        username = str(channel.get("username") or "")
+        url = _channel_url(channel)
+        kind = "خصوصی" if channel.get("private") else "عمومی"
+        text = (
+            f"📢 <b>اطلاعات جوین اجباری</b>\n\n"
+            f"🏷 نام: <b>{title}</b>\n"
+            f"🔐 نوع: <b>{kind}</b>\n"
+            f"🆔 آیدی: <code>{int(channel.get('id', 0))}</code>\n"
+            f"🔗 لینک: <code>{html.escape(url or 'ندارد')}</code>"
+        )
+        await event.edit(
+            text,
+            parse_mode="html",
+            buttons=[
+                [btn("🗑 حذف جوین اجباری", f"fj_remove:{cid}", "danger")],
+                [btn("🔙 بازگشت", b"force_join", "primary")],
+            ],
+        )
         return
 
     if data.startswith("fj_remove:"):
