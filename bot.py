@@ -391,6 +391,17 @@ def btn(text: str, data, style: str | None = None):
         return Button.inline(text, data)
 
 
+def force_join_url_button(text: str, url: str):
+    """URL button for force-join targets; request primary/purple style when supported."""
+    try:
+        return Button.url(text, url, style="primary")
+    except Exception:
+        try:
+            return Button.url(text, url)
+        except Exception:
+            return btn(text, url, "primary")
+
+
 # ============================================================
 # FORCE JOIN + BACKUP
 # ============================================================
@@ -430,19 +441,42 @@ def _channel_url(channel):
 
 
 async def _is_joined_channel(user_id: int, channel):
+    """Reliably verify membership for both channels and groups."""
     try:
-        entity_ref = channel.get("username") or channel.get("id")
+        entity_ref = channel.get("id") or channel.get("username")
+        if not entity_ref:
+            return False
         entity = await bot.get_entity(entity_ref)
-        participant = await bot(functions.channels.GetParticipantRequest(
-            channel=entity,
-            participant=await bot.get_input_entity(user_id),
-        ))
-        return isinstance(
-            getattr(participant, "participant", None),
-            (types.ChannelParticipant, types.ChannelParticipantAdmin, types.ChannelParticipantCreator)
+
+        if isinstance(entity, types.Channel):
+            participant = await bot(functions.channels.GetParticipantRequest(
+                channel=entity,
+                participant=await bot.get_input_entity(int(user_id)),
+            ))
+            p = getattr(participant, "participant", None)
+            if p is None:
+                return False
+            if getattr(p, "left", False) or getattr(p, "kicked", False):
+                return False
+            banned_cls = getattr(types, "ChannelParticipantBanned", None)
+            left_cls = getattr(types, "ChannelParticipantLeft", None)
+            if banned_cls and isinstance(p, banned_cls):
+                return False
+            if left_cls and isinstance(p, left_cls):
+                return False
+            return True
+
+        if isinstance(entity, types.Chat):
+            await bot.get_permissions(entity, int(user_id))
+            return True
+
+        return False
+    except Exception as exc:
+        print(
+            f"[FORCE JOIN] membership check failed "
+            f"user={user_id} channel={channel.get('id')}: "
+            f"{type(exc).__name__}: {exc}"
         )
-    except Exception:
-        # A bot that cannot verify a channel must fail closed for force-join.
         return False
 
 
@@ -460,7 +494,7 @@ def force_join_buttons(channels):
         url = _channel_url(channel)
         title = str(channel.get("title") or channel.get("username") or "کانال")
         if url:
-            rows.append([Button.url(f"📢 {title}", url)])
+            rows.append([force_join_url_button(f"📢 {title}", url)])
     rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
     return rows
 
@@ -5075,6 +5109,19 @@ async def code_timeout(user_id: int):
 
 
 async def begin_self_login(user_id: int, event=None):
+    # Never start a second login flow when a self session is already active.
+    if get_active_session(user_id):
+        if event:
+            await safe_answer(event, "⚠️ شما سلف فعال دارید.", True)
+            await show_manage_self(event)
+        else:
+            await bot.send_message(
+                user_id,
+                "⚠️ <b>شما سلف فعال دارید.</b>\n\nاز بخش «مدیریت سلف» استفاده کنید.",
+                parse_mode="html",
+            )
+        return
+
     # A restored/active session is already the user's self account.
     # Never start a second login flow or send another Telegram login code.
     active_session = get_active_session(user_id)
@@ -5847,6 +5894,10 @@ async def callbacks(event):
         return
 
     if data == "buy_self":
+        if get_active_session(user_id):
+            await safe_answer(event, "⚠️ شما سلف فعال دارید.", True)
+            await show_manage_self(event)
+            return
         await begin_self_login(user_id, event)
         return
 
@@ -6196,7 +6247,7 @@ async def callbacks(event):
             return
 
         buttons = [
-            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("💾 Backups", b"backups", "primary")],
+            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("Backups", b"backups", "primary")],
             [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
             [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
             [btn("🔙 برگشت", b"back", "danger")],
