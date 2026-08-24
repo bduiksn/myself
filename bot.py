@@ -2766,7 +2766,7 @@ async def _self_transcribe_reply(event, uid):
         def load_and_transcribe():
             model = getattr(_self_transcribe_reply, "_model", None)
             if model is None:
-                model_name = os.getenv("WHISPER_MODEL", "large-v3")
+                model_name = os.getenv("WHISPER_MODEL", "small")
                 device = os.getenv("WHISPER_DEVICE", "cpu")
                 compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
                 model = WhisperModel(
@@ -4370,26 +4370,41 @@ async def _spam_replied(event, uid, count):
 
 
 async def _maybe_first_comment(event, uid):
-    """Send the configured first comment under a forwarded channel post.
+    """Send the configured first comment for a channel post.
 
-    A Telegram channel comment is actually a reply in the channel's linked
-    discussion supergroup.  The old implementation assumed the current group
-    was always that discussion group and silently failed otherwise.  This
-    version verifies the link, uses the real discussion peer, and retries the
-    actual reply operation after FloodWait.
+    Supports two common flows:
+      1) Forward a configured channel post into its linked discussion group.
+         The comment is posted as a real reply in that discussion thread.
+      2) Post directly to the configured channel with the SELF account.
+         Telegram's GetDiscussionMessageRequest is used to find the mirrored
+         discussion message, then the comment is posted as a reply to it.
+
+    Important: Telegram's linked_chat_id is a raw positive channel/group ID,
+    while Telethon's event.chat_id for supergroups is usually -100... .
+    Compare entity.id values, not event.chat_id directly.
     """
-    if not event.is_group:
-        return
-
     text = _first_comment_text(uid).strip()
     channels = _first_comment_channels(uid)
     if not text or not channels:
         return
 
+    client = event.client
     msg = event.message
+
+    configured = {}
+    for item in channels:
+        try:
+            cid = int(item.get("id"))
+            configured[cid] = item
+        except (TypeError, ValueError):
+            continue
+    if not configured:
+        return
+
     source_id = None
     fwd = getattr(msg, "fwd_from", None)
 
+    # If this is a forwarded channel post, get the original source channel.
     for peer in (
         getattr(fwd, "from_id", None),
         getattr(fwd, "saved_from_peer", None),
@@ -4406,25 +4421,40 @@ async def _maybe_first_comment(event, uid):
         if candidate is not None:
             source_id = int(candidate)
 
-    if source_id is None:
+    # Direct post into a configured channel: the current channel itself is
+    # the source. This path needs GetDiscussionMessageRequest below.
+    current_entity = None
+    with contextlib.suppress(Exception):
+        current_entity = await event.get_chat()
+
+    current_entity_id = getattr(current_entity, "id", None)
+    current_is_broadcast = bool(
+        current_entity is not None
+        and isinstance(current_entity, types.Channel)
+        and not getattr(current_entity, "megagroup", False)
+    )
+
+    if source_id is None and current_is_broadcast and current_entity_id is not None:
+        if int(current_entity_id) in configured:
+            source_id = int(current_entity_id)
+
+    if source_id is None or source_id not in configured:
         return
 
-    configured = {
-        int(x.get("id"))
-        for x in channels
-        if x.get("id") is not None
-    }
-    if source_id not in configured:
-        return
-
-    client = event.client
-    discussion_id = None
-
-    # Resolve the source channel's linked discussion group.  This prevents
-    # sending an ordinary group reply when the current group is not the
-    # channel's real comments thread.
+    # Resolve the configured source channel.
     try:
         channel_entity = await client.get_entity(source_id)
+    except Exception as exc:
+        print(f"[COMMENT {uid}] source channel resolve failed {source_id}: {exc}")
+        return
+
+    if not isinstance(channel_entity, types.Channel) or getattr(channel_entity, "megagroup", False):
+        print(f"[COMMENT {uid}] source {source_id} is not a broadcast channel")
+        return
+
+    # Resolve the linked discussion group.
+    discussion_id = None
+    try:
         full = await client(functions.channels.GetFullChannelRequest(
             channel=channel_entity
         ))
@@ -4437,29 +4467,69 @@ async def _maybe_first_comment(event, uid):
             discussion_id = int(discussion_id)
     except Exception as exc:
         print(f"[COMMENT {uid}] discussion lookup failed for {source_id}: {exc}")
+        return
 
-    # If Telegram did not expose a linked discussion, the channel has no
-    # native comment thread and there is nowhere valid to post a comment.
     if not discussion_id:
         print(f"[COMMENT {uid}] channel {source_id} has no linked discussion group")
         return
 
-    current_chat = int(event.chat_id) if event.chat_id is not None else None
-    if current_chat != discussion_id:
-        # The forwarded post was not delivered into the channel's linked
-        # discussion group.  Do not create a fake/unrelated comment elsewhere.
+    # Get the actual discussion-thread message corresponding to the channel
+    # post whenever the original channel post ID is available.
+    original_post_id = getattr(fwd, "channel_post", None)
+    if original_post_id is not None:
+        try:
+            original_post_id = int(original_post_id)
+        except (TypeError, ValueError):
+            original_post_id = None
+
+    # Direct channel post: msg.id is the channel post ID.
+    if original_post_id is None and current_is_broadcast and int(current_entity_id or 0) == source_id:
+        original_post_id = int(msg.id)
+
+    discussion_message_id = None
+
+    if original_post_id:
+        try:
+            result = await client(functions.messages.GetDiscussionMessageRequest(
+                peer=channel_entity,
+                msg_id=original_post_id,
+            ))
+            messages = getattr(result, "messages", None) or []
+            if messages:
+                discussion_message_id = int(getattr(messages[0], "id"))
+        except Exception as exc:
+            print(
+                f"[COMMENT {uid}] GetDiscussionMessage failed for "
+                f"{source_id}:{original_post_id}: {type(exc).__name__}: {exc}"
+            )
+
+    # Forwarded-post fallback: if Telegram already delivered the forwarded
+    # post into the linked discussion group, its message ID can be replied to.
+    if discussion_message_id is None:
+        discussion_entity = None
+        with contextlib.suppress(Exception):
+            discussion_entity = await client.get_entity(discussion_id)
+
+        if discussion_entity is None:
+            print(f"[COMMENT {uid}] discussion entity resolve failed: {discussion_id}")
+            return
+
+        current_id = int(current_entity_id) if current_entity_id is not None else None
+        if current_id == int(getattr(discussion_entity, "id", 0)):
+            discussion_message_id = int(msg.id)
+
+    if discussion_message_id is None:
         print(
-            f"[COMMENT {uid}] forwarded post is in chat {current_chat}, "
-            f"but channel {source_id} discussion is {discussion_id}"
+            f"[COMMENT {uid}] no discussion message found for "
+            f"channel={source_id}, post={original_post_id}"
         )
         return
 
     async def send_comment():
-        # reply_to is the real Telegram comment/thread relation.
         return await client.send_message(
             entity=discussion_id,
             message=text[:4096],
-            reply_to=int(msg.id),
+            reply_to=discussion_message_id,
         )
 
     try:
@@ -4468,10 +4538,14 @@ async def _maybe_first_comment(event, uid):
             label="first comment",
             max_retries=5,
         )
-        print(f"[COMMENT {uid}] comment sent for channel {source_id}")
+        print(
+            f"[COMMENT {uid}] comment sent: channel={source_id} "
+            f"discussion={discussion_id} msg={discussion_message_id}"
+        )
     except Exception as exc:
         print(
-            f"[COMMENT {uid}] failed for channel {source_id}: "
+            f"[COMMENT {uid}] failed: channel={source_id} "
+            f"discussion={discussion_id} msg={discussion_message_id} "
             f"{type(exc).__name__}: {exc}"
         )
 
@@ -5217,7 +5291,7 @@ async def self_handle_outgoing(event, uid):
         # Telegram's supported reaction set changes over time.  Never keep a
         # small hard-coded whitelist here.  Accept the complete user-supplied
         # emoji sequence and let Telegram validate whether it is a reaction.
-        emoji = re.sub(r"\\s+", "", emoji)
+        emoji = re.sub(r"\s+", "", emoji)
         if not emoji or len(emoji) > 32:
             await event.edit("❌ ایموجی ریاکشن نامعتبر است. مثال: ریاکشن 🔥")
             return
@@ -5259,8 +5333,7 @@ async def self_handle_outgoing(event, uid):
             return
 
         await event.edit(
-            f"✅ ریاکشن {normalized_emoji} برای کاربر `{target}` فعال شد.\n"
-            "از این به بعد پیام‌های او با همین ریاکشن پاسخ داده می‌شوند."
+            f"✅ ریاکشن {normalized_emoji} برای کاربر `{target}` فعال شد."
         )
         return
 
