@@ -355,6 +355,7 @@ _cleanup_panel_messages = {}
 _channel_save_sessions = {}
 _channel_save_tasks = {}
 _first_comment_ui_target = {}
+_first_comment_channel_sessions = {}
 _first_comment_sent_cache = set()
 # Independent state for media conversions; never shares channel-save state.
 media_convert_state = {}
@@ -2078,7 +2079,11 @@ async def handle_self_panel_callback(event):
 
         return True
 
+    if action == "panel":
+        _first_comment_channel_sessions.pop(int(uid), None)
+
     if action == "close":
+        _first_comment_channel_sessions.pop(int(uid), None)
         # The panel is a bot-owned inline-result message.  Do not delete it:
         # edit it and remove every button, so the user gets a visible
         # confirmation instead of a dead/unchanged inline panel.
@@ -2089,27 +2094,49 @@ async def handle_self_panel_callback(event):
     if action == "comment_setup":
         try:
             client=self_clients.get(int(uid))
-            if not client: raise RuntimeError("SELF session is not connected")
+            if not client:
+                raise RuntimeError("SELF session is not connected")
+
+            # IMPORTANT: channel discovery and rendering deliberately mirror
+            # «💾 ذخیره چنل».  Do not put channel ids/entities inside callback_data.
+            # Only a tiny numeric index is sent; the full channel data stays in
+            # this in-memory session. This avoids Telegram's reply-markup limit.
             channels=await _cs_channels(client)
+            _first_comment_channel_sessions[int(uid)] = channels
+
             rows=[]
-            for item in channels:
+            for idx,item in enumerate(channels):
                 title=item["title"]
-                if len(title)>42: title=title[:39]+"..."
-                rows.append([btn(f"📢 {title}",_self_cb(uid,f"comment_pick:{item['id']}"),"primary")])
+                if len(title)>42:
+                    title=title[:39]+"..."
+                rows.append([btn(f"📢 {title}",_self_cb(uid,f"fc_pick:{idx}"),"primary")])
+
             if not rows:
                 rows=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]]
                 text="💬 <b>کامنت اول</b>\n\n❌ هیچ کانال پخشی که SELF به آن دسترسی دارد پیدا نشد."
             else:
                 rows.append([btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")])
-                text="💬 <b>کامنت اول</b>\n\nکانال را انتخاب کن. چینش و نمایش کانال‌ها دقیقاً مثل «ذخیره چنل» است."
+                text="💬 <b>کامنت اول</b>\n\nکانال را انتخاب کن:"
+
             await event.edit(text,parse_mode="html",buttons=rows)
         except Exception as exc:
-            await event.edit(f"❌ <b>دریافت کانال‌ها ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]])
+            logging.exception("first comment channel list failed")
+            await event.edit(
+                f"❌ <b>دریافت کانال‌ها ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",
+                parse_mode="html",
+                buttons=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]]
+            )
         return True
 
-    if action.startswith("comment_pick:"):
+    if action.startswith("fc_pick:"):
         try:
-            cid=int(action.split(":",1)[1]); client=self_clients.get(int(uid))
+            idx=int(action.split(":",1)[1])
+            channels=_first_comment_channel_sessions.get(int(uid),[])
+            item=channels[idx]
+            cid=int(item["id"])
+            client=self_clients.get(int(uid))
+            if not client:
+                raise RuntimeError("SELF session is not connected")
             if not client: raise RuntimeError("SELF session is not connected")
             entity=await client.get_entity(cid)
             if not isinstance(entity,types.Channel) or getattr(entity,"megagroup",False): raise RuntimeError("این مورد کانال پخش نیست")
