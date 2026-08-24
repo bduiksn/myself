@@ -1162,11 +1162,10 @@ def self_feature_guide_buttons(uid):
         ("🌐 ترجمه", "translate"), ("👁 سین / تایپینگ / بازی", "presence"),
         ("💬 پاسخ خودکار", "autoreply"), ("❤️ ریاکشن", "reaction"),
         ("🔒 قفل چت", "lock"), ("🎙️ رسانه و تبدیل‌ها", "media"),
-        ("📦 فایل و دانلود", "files"), ("💾 ذخیره چنل", "channel_save"),
-        ("📢 تبچی", "tabchi"), ("🔁 تکرار / اسپم", "spam"),
-        ("💬 کامنت اول", "comments"), ("🤵 منشی", "secretary"),
-        ("🛡 مدیریت گروه", "group"), ("🚫 بن سراسری", "globalban"),
-        ("🏷 تگ اعضا", "tag"),
+        ("📦 فایل و دانلود", "files"), ("📢 تبچی", "tabchi"),
+        ("🔁 تکرار / اسپم", "spam"), ("💬 کامنت اول", "comments"),
+        ("🤵 منشی", "secretary"), ("🛡 مدیریت گروه", "group"),
+        ("🚫 بن سراسری", "globalban"), ("🏷 تگ اعضا", "tag"),
         ("💱 نرخ ارز", "currency"), ("🎨 لوگوساز", "logo"),
     ]
     rows=[]
@@ -1175,7 +1174,8 @@ def self_feature_guide_buttons(uid):
         if i+1 < len(labels):
             row.append(btn(labels[i+1][0], _self_cb(uid, "feature_help:"+labels[i+1][1]), "primary"))
         rows.append(row)
-    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
+    rows.append([btn("💾 ذخیره چنل", _self_cb(uid, "feature_help:channel_save"), "primary")])
+    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")])
     return rows
 
 def self_guide_buttons(uid, page=1):
