@@ -4634,35 +4634,46 @@ async def _maybe_first_comment(event, uid):
             f"channel={source_id} discussion={discussion_id} msg={msg.id}"
         )
 
-    # Direct channel post: Telegram maps the channel post to its discussion
-    # message through GetDiscussionMessageRequest.
+    # Direct channel post: Telegram may create the linked Discussion root
+    # message a little after the channel-post update reaches the SELF client.
+    # Therefore this MUST be retried instead of doing one immediate lookup.
     if discussion_message_id is None and original_post_id is not None:
-        try:
-            result = await client(functions.messages.GetDiscussionMessageRequest(
-                peer=channel_entity,
-                msg_id=int(original_post_id),
-            ))
-            messages = getattr(result, "messages", None) or []
-            # Prefer a message whose peer is the linked discussion.
-            candidates = [
-                m for m in messages
-                if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
-            ]
-            if candidates:
-                discussion_message_id = int(candidates[0].id)
-            elif messages:
-                discussion_message_id = int(messages[0].id)
-            print(
-                f"[COMMENT {uid}] discussion lookup channel={source_id} "
-                f"post={original_post_id} discussion={discussion_id} "
-                f"msg={discussion_message_id}"
-            )
-        except Exception as exc:
-            print(
-                f"[COMMENT {uid}] GetDiscussionMessage failed "
-                f"channel={source_id} post={original_post_id}: "
-                f"{type(exc).__name__}: {exc}"
-            )
+        delays = (0.8, 1.5, 2.5, 4.0, 6.0)
+        for attempt, delay in enumerate(delays, 1):
+            if attempt > 1:
+                await asyncio.sleep(delay)
+            try:
+                result = await client(functions.messages.GetDiscussionMessageRequest(
+                    peer=channel_entity,
+                    msg_id=int(original_post_id),
+                ))
+                messages = getattr(result, "messages", None) or []
+                candidates = [
+                    m for m in messages
+                    if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
+                ]
+                if candidates:
+                    discussion_message_id = int(candidates[0].id)
+                else:
+                    # In some Telethon/API responses the peer information is
+                    # incomplete. Prefer a message that is not the original
+                    # channel-post id rather than blindly using messages[0].
+                    alternatives = [m for m in messages if int(getattr(m, "id", 0) or 0) != int(original_post_id)]
+                    if alternatives:
+                        discussion_message_id = int(alternatives[0].id)
+                print(
+                    f"[COMMENT {uid}] discussion lookup attempt={attempt} "
+                    f"channel={source_id} post={original_post_id} "
+                    f"discussion={discussion_id} msg={discussion_message_id}"
+                )
+                if discussion_message_id is not None:
+                    break
+            except Exception as exc:
+                print(
+                    f"[COMMENT {uid}] GetDiscussionMessage attempt={attempt} failed "
+                    f"channel={source_id} post={original_post_id}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     # Metadata-light fallback when Telegram delivered the forwarded post into
     # the linked discussion but did not expose forward fields.
@@ -4678,6 +4689,30 @@ async def _maybe_first_comment(event, uid):
             f"[COMMENT {uid}] using current discussion message fallback "
             f"channel={source_id} discussion={discussion_id} msg={msg.id}"
         )
+
+    if discussion_message_id is None and original_post_id is not None:
+        # Final short retry. This is deliberately separate from the main loop
+        # so a transient API propagation delay cannot silently lose the post.
+        for attempt in range(3):
+            await asyncio.sleep(2.0)
+            try:
+                result = await client(functions.messages.GetDiscussionMessageRequest(
+                    peer=channel_entity,
+                    msg_id=int(original_post_id),
+                ))
+                messages = getattr(result, "messages", None) or []
+                candidates = [
+                    m for m in messages
+                    if getattr(getattr(m, "peer_id", None), "channel_id", None) == discussion_entity_id
+                ]
+                if not candidates:
+                    candidates = [m for m in messages if int(getattr(m, "id", 0) or 0) != int(original_post_id)]
+                if candidates:
+                    discussion_message_id = int(candidates[0].id)
+                    print(f"[COMMENT {uid}] final retry succeeded attempt={attempt + 1} msg={discussion_message_id}")
+                    break
+            except Exception as exc:
+                print(f"[COMMENT {uid}] final retry attempt={attempt + 1} failed: {type(exc).__name__}: {exc}")
 
     if discussion_message_id is None:
         print(
