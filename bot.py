@@ -455,24 +455,25 @@ async def get_missing_force_joins(user_id: int):
 
 
 def force_join_buttons(channels):
-    rows = []
-    for channel in channels:
-        title = str(channel.get("title") or channel.get("username") or "کانال")
-        url = _channel_url(channel)
-        if url:
-            rows.append([Button.url(f"📢 {title}", url, style="primary")])
-    rows.append([btn("🟢 عضو شدم، ادامه", b"fj_check", "success")])
-    return rows
+    return [[btn("🟢 عضو شدم، ادامه", b"fj_check", "success")]]
 
 
 async def show_force_join(event, channels=None):
     channels = channels if channels is not None else get_force_join_channels()
     if not channels:
         return False
+    link_lines = []
+    for channel in channels:
+        title = html.escape(str(channel.get("title") or channel.get("username") or "کانال"))
+        url = _channel_url(channel)
+        if url:
+            link_lines.append(f'• <a href="{html.escape(url, quote=True)}">📢 {title}</a>')
+        else:
+            link_lines.append(f"• {title}")
     text = (
         "🔐 <b>عضویت اجباری</b>\\n\\n"
-        "برای ادامه استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید:\\n\\n"
-        + "\\n".join(f"• {html.escape(str(c.get('title') or c.get('username') or 'کانال'))}" for c in channels)
+        "برای ادامه، روی نام هر کانال/گروه زیر بزن و عضو شو:\\n\\n"
+        + "\\n".join(link_lines)
         + "\\n\\nبعد از عضویت روی «🟢 عضو شدم، ادامه» بزن."
     )
     await edit_or_send(event, text, force_join_buttons(channels))
@@ -610,7 +611,7 @@ def main_buttons(user_id: int):
     return rows
 
 
-async def send_main(target, user_id: int, text="به سلف‌ساز خوش آمدید"):
+async def send_main(target, user_id: int, text="به سلف‌ساز خوش آمدید! 💎"):
     buttons = main_buttons(user_id)
     if BOT_IMAGE_PATH.exists():
         return await bot.send_file(
@@ -684,6 +685,102 @@ def self_get(uid, key, default=None):
 
 def self_set(uid, key, value):
     set_setting(uid, key, value)
+
+def self_auto_reply_map(uid):
+    try:
+        raw = json.loads(self_get(uid, "auto_reply_keywords", "{}"))
+        return {str(k).casefold(): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+def self_save_auto_reply_map(uid, mapping):
+    self_set(uid, "auto_reply_keywords", json.dumps(mapping, ensure_ascii=False))
+
+def self_banners(uid):
+    try:
+        raw = json.loads(self_get(uid, "banners", "[]"))
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+def self_save_banners(uid, banners):
+    self_set(uid, "banners", json.dumps(banners, ensure_ascii=False))
+
+def _next_banner_id(banners):
+    return max([int(b.get("id", 0)) for b in banners] or [0]) + 1
+
+def _banner_by_id(uid, banner_id):
+    for banner in self_banners(uid):
+        if int(banner.get("id", 0)) == int(banner_id):
+            return banner
+    return None
+
+def _banner_media_dir(uid):
+    path = BASE_DIR / "banner_media" / str(int(uid))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+async def _banner_send(client, uid, banner, target):
+    if banner.get("mode", "forward") == "forward":
+        return await client.forward_messages(target, int(banner["source_msg_id"]), from_peer=int(banner["source_chat_id"]))
+    media_path = banner.get("media_path")
+    caption = banner.get("text") or ""
+    if media_path and Path(media_path).exists():
+        return await client.send_file(target, media_path, caption=caption)
+    return await client.send_message(target, caption)
+
+async def _banner_recent_pv(client, count):
+    result = []
+    me = await client.get_me()
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", None)
+        if not entity or getattr(dialog, "is_group", False) or getattr(dialog, "is_channel", False):
+            continue
+        if getattr(entity, "bot", False) or getattr(entity, "id", None) == me.id:
+            continue
+        result.append(entity)
+        if len(result) >= int(count):
+            break
+    return result
+
+async def _banner_dispatch_now(client, uid, banner, targets):
+    sent = failed = 0
+    for target in targets:
+        try:
+            await _banner_send(client, uid, banner, target)
+            sent += 1
+        except Exception as exc:
+            failed += 1
+            print(f"[BANNER {uid}] send {banner.get('id')} -> {getattr(target, 'id', target)} failed: {exc}")
+    return sent, failed
+
+async def _banner_worker_tick(client, uid):
+    if self_get(uid, "banner_auto", "off") != "on":
+        return
+    now = time.time()
+    banners = self_banners(uid)
+    changed = False
+    for banner in banners:
+        if not banner.get("enabled", True):
+            continue
+        interval = max(1, int(banner.get("interval", 60))) * 60
+        if float(banner.get("last_sent", 0) or 0) and now - float(banner.get("last_sent", 0)) < interval:
+            continue
+        targets = []
+        for gid in banner.get("targets", []):
+            try:
+                targets.append(await client.get_entity(int(gid)))
+            except Exception:
+                pass
+        if not targets:
+            continue
+        sent, _ = await _banner_dispatch_now(client, uid, banner, targets)
+        if sent:
+            banner["last_sent"] = now
+            changed = True
+    if changed:
+        self_save_banners(uid, banners)
+
 
 def self_reaction_targets(uid):
     try:
@@ -816,12 +913,16 @@ def self_panel_buttons(uid):
             btn(f"🎮 بازی {'روشن' if self_get(uid,'game_mode')=='on' else 'خاموش'}", _self_cb(uid, "game"), toggle_style("game_mode")),
         ],
         [
-            btn(f"🤖 تبچی {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
-            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
+            btn(f"💬 پاسخ خودکار {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
+            btn("🏓 پینگ", _self_cb(uid, "ping"), "success"),
         ],
         [
+            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
             btn("💱 نرخ ارز", _self_cb(uid, "currency"), "success"),
+        ],
+        [
             btn("🎨 لوگوساز", _self_cb(uid, "logo"), "primary"),
+            btn("📢 بنرها", _self_cb(uid, "banners"), "primary"),
         ],
         [
             btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
@@ -872,12 +973,13 @@ def self_guide_text(page=1):
         (
             "📚 <b>راهنمای سلف • تبچی و ریاکشن</b>\n"
             "<i>صفحه ۳ از ۹</i>\n\n"
-            "🤖 <b>تبچی</b>\n"
-            "با دکمه «تبچی» پاسخ خودکار را روشن یا خاموش کن.\n\n"
-            "✏️ <b>تغییر متن تبچی</b>\n"
-            "این دستور را بفرست: \n"
-            "<code>تبچی متن سلام! الان در دسترسم.</code>\n"
-            "هر متنی بعد از «تبچی متن» نوشته شود، متن پاسخ خودکار می‌شود و تبچی هم فعال می‌شود.\n\n"
+            "💬 <b>پاسخ خودکار</b>\n"
+            "با دکمه «پاسخ خودکار» یا دستورهای زیر مدیریت می‌شود.\n\n"
+            "<code>پاسخ خودکار روشن</code> / <code>پاسخ خودکار خاموش</code>\n"
+            "<code>پاسخ خودکار جدید [کلمه]</code>\n"
+            "<code>ذخیره پاسخ خودکار [کلمه]</code> + ریپلای روی متن پاسخ\n"
+            "<code>حذف پاسخ خودکار [کلمه]</code>\n"
+            "<code>لیست پاسخ خودکار</code>\n\n"
             "❤️ <b>ریاکشن خودکار</b>\n"
             "روی پیام کاربر ریپلای کن و دستور ریاکشن را بفرست تا برای همان کاربر تنظیم شود.\n"
             "برای حذف تنظیم همان کاربر، «حذف ریاکشن» یا «ریاکشن خاموش» را استفاده کن."
@@ -1858,6 +1960,64 @@ async def handle_self_panel_callback(event):
             print(f"[SELF {uid}] guide callback failed: {exc}")
             await safe_answer(event, "❌ راهنما باز نشد؛ دوباره تلاش کن.", True)
         return True
+    if action == "ping":
+        started = time.perf_counter()
+        with contextlib.suppress(Exception):
+            await event.edit("🏓 <b>در حال محاسبه پینگ...</b>", parse_mode="html")
+        latency = round((time.perf_counter() - started) * 1000, 2)
+        await event.edit(
+            f"🏓 <b>پینگ سلف</b>\\n\\n⚡ <code>{latency} ms</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+
+    if action == "banners":
+        banners = self_banners(uid)
+        status = "روشن ✅" if self_get(uid, "banner_auto", "off") == "on" else "خاموش ❌"
+        body = [f"📢 <b>مدیریت بنرها</b>\\n\\n🔘 ارسال خودکار: {status}"]
+        for b in banners:
+            body.append(f"\\n<b>#{b['id']}</b> • {'فوروارد' if b.get('mode') == 'forward' else 'کپی'} • هر {int(b.get('interval', 60))} دقیقه • مقصد: {len(b.get('targets', []))}")
+        if not banners:
+            body.append("\\nهنوز بنری ثبت نشده است.")
+        value = self_get(uid, "banner_auto", "off")
+        await event.edit(
+            "".join(body),
+            parse_mode="html",
+            buttons=[
+                [btn("🟢 بنر روشن" if value != "on" else "🔴 بنر خاموش", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
+                [btn("📚 راهنمای دستورات بنر", _self_cb(uid, "banner_help"), "primary")],
+                [btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")],
+            ],
+        )
+        return True
+
+    if action == "banner_toggle":
+        value = "off" if self_get(uid, "banner_auto", "off") == "on" else "on"
+        self_set(uid, "banner_auto", value)
+        await event.edit(
+            "📢 <b>ارسال خودکار بنر روشن شد.</b>" if value == "on" else "🔴 <b>ارسال خودکار بنر خاموش شد.",
+            parse_mode="html", buttons=self_panel_buttons(uid)
+        )
+        return True
+
+    if action == "banner_help":
+        await event.edit(
+            "📢 <b>دستورات بنر</b>\\n\\n"
+            "<code>تبچی روشن</code> / <code>تبچی خاموش</code>\\n"
+            "<code>تنظیم بنر فور</code> یا <code>تنظیم بنر کپی</code> (با ریپلای)\\n"
+            "<code>حذف بنر عدد</code>\\n"
+            "<code>پاکسازی لیست بنر ها</code>\\n"
+            "<code>تنظیم عدد بنر عدد دقیقه</code>\\n"
+            "<code>تنظیم گپ هدف بنر عدد</code>\\n"
+            "<code>حذف گپ هدف بنر عدد</code>\\n"
+            "<code>تنظیم هدف بنر عدد تمام گپ ها</code>\\n"
+            "<code>فور بنر در عدد پیوی اخیر</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
+        )
+        return True
+
     if action == "currency":
         await event.edit(
             "💱 <b>نرخ لحظه‌ای ارز</b>\n\n"
@@ -2025,6 +2185,23 @@ async def handle_self_panel_callback(event):
             self_panel_text(uid) + "\n\n" + self_font_preview(uid, "english"),
             parse_mode="html",
             buttons=self_panel_buttons(uid),
+        )
+        return True
+
+    if action == "autoreply":
+        current = self_get(uid, "auto_reply", "off")
+        self_set(uid, "auto_reply", "off" if current == "on" else "on")
+        mapping = self_auto_reply_map(uid)
+        status = "روشن ✅" if self_get(uid, "auto_reply") == "on" else "خاموش ❌"
+        await event.edit(
+            f"💬 <b>پاسخ خودکار</b>\\n\\nوضعیت: {status}\\nکلمات ثبت‌شده: {len(mapping)}\\n\\n"
+            "دستورات:\\n"
+            "<code>پاسخ خودکار جدید [کلمه]</code>\\n"
+            "<code>ذخیره پاسخ خودکار [کلمه]</code> + ریپلای\\n"
+            "<code>حذف پاسخ خودکار [کلمه]</code>\\n"
+            "<code>لیست پاسخ خودکار</code>",
+            parse_mode="html",
+            buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
         )
         return True
 
@@ -3614,6 +3791,148 @@ async def _fake_hack_prank(event, uid):
         await progress.edit(final_text, parse_mode="html")
 
 
+async def _delete_all_profile_photos(client):
+    try:
+        photos = await client(functions.photos.GetUserPhotosRequest(
+            user_id=await client.get_input_entity("me"),
+            offset=0,
+            max_id=0,
+            limit=20,
+        ))
+        ids = []
+        for photo in getattr(photos, "photos", []) or []:
+            if isinstance(photo, types.Photo):
+                ids.append(types.InputPhoto(
+                    id=photo.id,
+                    access_hash=photo.access_hash,
+                    file_reference=photo.file_reference,
+                ))
+        if ids:
+            await client(functions.photos.DeletePhotosRequest(id=ids))
+    except Exception as exc:
+        print(f"[PROFILE] delete photos failed: {exc}")
+
+
+async def _update_profile_birthday(client, birthday):
+    try:
+        from telethon.tl import functions as tl_functions
+        if not hasattr(tl_functions.account, "UpdateBirthdayRequest"):
+            return
+        req_cls = tl_functions.account.UpdateBirthdayRequest
+        if birthday:
+            bday = types.Birthday(
+                day=int(getattr(birthday, "day", 1)),
+                month=int(getattr(birthday, "month", 1)),
+                year=int(getattr(birthday, "year", 0) or 0),
+            )
+        else:
+            # Telegram uses an empty birthday object to clear the date.
+            bday = types.Birthday(day=1, month=1, year=0)
+        await client(req_cls(birthday=bday))
+    except Exception as exc:
+        print(f"[PROFILE] birthday update skipped: {exc}")
+
+
+async def _profile_copy(event, uid):
+    if not event.is_reply:
+        await event.edit("❌ روی پیام همان کاربر ریپلای کن و «کپی پروفایل» را بفرست.")
+        return
+    replied = await event.get_reply_message()
+    if not replied or not replied.sender_id:
+        await event.edit("❌ کاربر هدف پیدا نشد.")
+        return
+    client = event.client
+    try:
+        source = await client.get_entity(int(replied.sender_id))
+        me = await client.get_me()
+
+        original = {
+            "first_name": me.first_name or "",
+            "last_name": me.last_name or "",
+            "about": getattr(me, "about", None) or "",
+            "birthday": None,
+            "photo_path": None,
+        }
+        bday = getattr(me, "birthday", None)
+        if bday:
+            original["birthday"] = {
+                "day": int(getattr(bday, "day", 1)),
+                "month": int(getattr(bday, "month", 1)),
+                "year": int(getattr(bday, "year", 0) or 0),
+            }
+
+        profile_dir = BASE_DIR / "profile_copy" / str(uid)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        if getattr(me, "photo", None):
+            original_photo = await client.download_profile_photo(me, file=str(profile_dir / "original.jpg"))
+            if original_photo:
+                original["photo_path"] = original_photo
+
+        self_set(uid, "profile_copy_original", json.dumps(original, ensure_ascii=False))
+
+        from telethon.tl.functions.account import UpdateProfileRequest
+        await client(UpdateProfileRequest(
+            first_name=(getattr(source, "first_name", None) or "")[:64],
+            last_name=(getattr(source, "last_name", None) or "")[:64],
+            about=(getattr(source, "about", None) or "")[:70],
+        ))
+
+        source_birthday = getattr(source, "birthday", None)
+        if source_birthday:
+            await _update_profile_birthday(client, source_birthday)
+        else:
+            await _update_profile_birthday(client, None)
+
+        if getattr(source, "photo", None):
+            photo_path = await client.download_profile_photo(source, file=str(profile_dir / "source.jpg"))
+            if photo_path:
+                uploaded = await client.upload_file(photo_path)
+                await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+                with contextlib.suppress(Exception):
+                    os.remove(photo_path)
+        else:
+            await _delete_all_profile_photos(client)
+
+        await event.edit("✅ پروفایل کپی شد. آیدی/یوزرنیم دست‌نخورده ماند.")
+    except Exception as exc:
+        print(f"[PROFILE] copy failed: {exc}")
+        await event.edit("❌ کپی پروفایل انجام نشد؛ اطلاعات اصلی دست‌نخورده ماند.")
+
+
+async def _profile_copy_restore(event, uid):
+    raw = self_get(uid, "profile_copy_original", "")
+    if not raw:
+        await event.edit("❌ پروفایل قبلی برای بازگردانی ذخیره نشده است.")
+        return
+    try:
+        original = json.loads(raw)
+        client = event.client
+        from telethon.tl.functions.account import UpdateProfileRequest
+        await client(UpdateProfileRequest(
+            first_name=str(original.get("first_name") or "")[:64],
+            last_name=str(original.get("last_name") or "")[:64],
+            about=str(original.get("about") or "")[:70],
+        ))
+        bday = original.get("birthday")
+        if bday:
+            await _update_profile_birthday(client, types.Birthday(
+                day=int(bday.get("day", 1)), month=int(bday.get("month", 1)), year=int(bday.get("year", 0) or 0)
+            ))
+        else:
+            await _update_profile_birthday(client, None)
+
+        await _delete_all_profile_photos(client)
+        photo_path = original.get("photo_path")
+        if photo_path and Path(photo_path).exists():
+            uploaded = await client.upload_file(photo_path)
+            await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+        self_set(uid, "profile_copy_original", "")
+        await event.edit("✅ پروفایل به حالت قبل برگردانده شد.")
+    except Exception as exc:
+        print(f"[PROFILE] restore failed: {exc}")
+        await event.edit("❌ بازگردانی پروفایل انجام نشد.")
+
+
 async def self_handle_outgoing(event, uid):
     text = (event.raw_text or "").strip()
     low = text.casefold()
@@ -3624,6 +3943,14 @@ async def self_handle_outgoing(event, uid):
     if await _self_currency_command(event, uid, text):
         return
     if await _self_logo_command(event, uid, text):
+        return
+
+    if low == "کپی پروفایل":
+        await _profile_copy(event, uid)
+        return
+
+    if low == "حذف کپی پروفایل":
+        await _profile_copy_restore(event, uid)
         return
 
     if low in _UNZIP_COMMANDS:
@@ -3764,11 +4091,159 @@ async def self_handle_outgoing(event, uid):
             await event.client.send_message(event.chat_id, result)
         return
 
+    if low in {"تنظیم بنر فور", "تنظیم بنر کپی"}:
+        if not event.is_reply:
+            await event.edit("❌ روی پیام بنر ریپلای کن.")
+            return
+        replied = await event.get_reply_message()
+        if not replied:
+            await event.edit("❌ پیام بنر پیدا نشد.")
+            return
+        banners = self_banners(uid)
+        banner_id = _next_banner_id(banners)
+        mode = "forward" if low.endswith("فور") else "copy"
+        banner = {
+            "id": banner_id,
+            "mode": mode,
+            "source_chat_id": int(event.chat_id),
+            "source_msg_id": int(replied.id),
+            "text": replied.raw_text or "",
+            "media_path": None,
+            "interval": 60,
+            "targets": [],
+            "enabled": True,
+            "last_sent": 0,
+        }
+        if mode == "copy" and getattr(replied, "media", None):
+            media_dir = _banner_media_dir(uid)
+            media_path = await replied.download_media(file=str(media_dir / f"{banner_id}"))
+            if media_path:
+                banner["media_path"] = str(media_path)
+        banners.append(banner)
+        self_save_banners(uid, banners)
+        await event.edit(f"✅ بنر #{banner_id} با حالت «{'فوروارد' if mode == 'forward' else 'کپی'}» ثبت شد.")
+        return
+
+    m = re.fullmatch(r"حذف بنر\s+(\d+)", _fa_digits(text))
+    if m:
+        bid = int(m.group(1))
+        banners = self_banners(uid)
+        new = [b for b in banners if int(b.get("id", 0)) != bid]
+        if len(new) == len(banners):
+            await event.edit("❌ بنر موردنظر پیدا نشد.")
+            return
+        old_b = _banner_by_id(uid, bid)
+        if old_b and old_b.get("media_path"):
+            with contextlib.suppress(Exception):
+                Path(old_b["media_path"]).unlink(missing_ok=True)
+        self_save_banners(uid, new)
+        await event.edit(f"✅ بنر #{bid} حذف شد.")
+        return
+
+    if low == "پاکسازی لیست بنر ها":
+        for b in self_banners(uid):
+            if b.get("media_path"):
+                with contextlib.suppress(Exception):
+                    Path(b["media_path"]).unlink(missing_ok=True)
+        self_save_banners(uid, [])
+        await event.edit("✅ لیست تمام بنرها پاک شد.")
+        return
+
+    m = re.fullmatch(r"تنظیم عدد بنر\s+(\d+)\s+دقیقه", _fa_digits(text))
+    if m:
+        bid, minutes = int(m.group(1)), int(m.group(2))
+        banner = _banner_by_id(uid, bid)
+        if not banner or minutes < 1:
+            await event.edit("❌ بنر یا زمان نامعتبر است.")
+            return
+        banner["interval"] = minutes
+        self_save_banners(uid, self_banners(uid))
+        await event.edit(f"✅ فاصله ارسال بنر #{bid} روی {minutes} دقیقه تنظیم شد.")
+        return
+
+    m = re.fullmatch(r"تنظیم گپ هدف بنر\s+(\d+)", _fa_digits(text))
+    if m:
+        bid = int(m.group(1))
+        banner = _banner_by_id(uid, bid)
+        if not banner or event.chat_id is None or not event.is_group:
+            await event.edit("❌ این دستور را داخل گروه هدف اجرا کن.")
+            return
+        if int(event.chat_id) not in [int(x) for x in banner.get("targets", [])]:
+            banner.setdefault("targets", []).append(int(event.chat_id))
+        self_save_banners(uid, self_banners(uid))
+        await event.edit(f"✅ این گپ به مقصدهای بنر #{bid} اضافه شد.")
+        return
+
+    m = re.fullmatch(r"حذف گپ هدف بنر\s+(\d+)", _fa_digits(text))
+    if m:
+        bid = int(m.group(1))
+        banner = _banner_by_id(uid, bid)
+        if not banner or event.chat_id is None or not event.is_group:
+            await event.edit("❌ این دستور را داخل گروه هدف اجرا کن.")
+            return
+        banner["targets"] = [int(x) for x in banner.get("targets", []) if int(x) != int(event.chat_id)]
+        self_save_banners(uid, self_banners(uid))
+        await event.edit(f"✅ این گپ از مقصدهای بنر #{bid} حذف شد.")
+        return
+
+    m = re.fullmatch(r"تنظیم هدف بنر\s+(\d+)\s+تمام گپ ها", _fa_digits(text))
+    if m:
+        bid = int(m.group(1))
+        banner = _banner_by_id(uid, bid)
+        if not banner:
+            await event.edit("❌ بنر موردنظر پیدا نشد.")
+            return
+        targets = []
+        async for dialog in event.client.iter_dialogs():
+            if getattr(dialog, "is_group", False):
+                targets.append(int(dialog.id))
+        banner["targets"] = sorted(set(targets))
+        self_save_banners(uid, self_banners(uid))
+        await event.edit(f"✅ بنر #{bid} برای {len(targets)} گپ تنظیم شد.")
+        return
+
+    m = re.fullmatch(r"فور بنر در\s+(\d+)\s+پیوی اخیر", _fa_digits(text))
+    if m:
+        bid, count = int(m.group(1)), int(m.group(2))
+        banner = _banner_by_id(uid, bid)
+        if not banner or count < 1:
+            await event.edit("❌ بنر یا تعداد نامعتبر است.")
+            return
+        targets = await _banner_recent_pv(event.client, count)
+        sent, failed = await _banner_dispatch_now(event.client, uid, banner, targets)
+        await event.edit(f"✅ بنر #{bid} به {sent} پیوی اخیر ارسال شد.\n❌ ناموفق: {failed}")
+        return
+
+    if low == "وضعیت تبچی":
+        status = "روشن ✅" if self_get(uid, "banner_auto", "off") == "on" else "خاموش ❌"
+        banners = self_banners(uid)
+        await event.edit(
+            f"📢 <b>وضعیت تبچی</b>\\n\\n"
+            f"🔘 ارسال خودکار بنرها: {status}\\n"
+            f"📦 تعداد بنرهای ثبت‌شده: {len(banners)}"
+        )
+        return
+
+    if low == "لیست بنر هام":
+        banners = self_banners(uid)
+        if not banners:
+            await event.edit("📢 <b>لیست بنرها خالی است.</b>", parse_mode="html")
+            return
+        body = ["📢 <b>بنرهای فعال</b>\\n"]
+        for b in banners:
+            body.append(
+                f"\\n<b>#{b['id']}</b> • {'فوروارد' if b.get('mode') == 'forward' else 'کپی'}"
+                f" • هر {int(b.get('interval', 60))} دقیقه • مقصد: {len(b.get('targets', []))}"
+            )
+        await event.edit("".join(body), parse_mode="html")
+        return
+
     switches = {
         "بولد روشن": ("bold", "on"), "بولد خاموش": ("bold", "off"),
         "فونت فارسی روشن": ("persian_font", "on"), "فونت فارسی خاموش": ("persian_font", "off"),
         "ترنسلیت روشن": ("translate", "on"), "ترنسلیت خاموش": ("translate", "off"),
-        "تبچی روشن": ("auto_reply", "on"), "تبچی خاموش": ("auto_reply", "off"),
+        "تبچی روشن": ("banner_auto", "on"), "تبچی خاموش": ("banner_auto", "off"),
+        "پاسخ خودکار روشن": ("auto_reply", "on"), "پاسخ خودکار خاموش": ("auto_reply", "off"),
         "سین روشن": ("auto_read", "on"), "سین خاموش": ("auto_read", "off"),
         "تایپینگ روشن": ("typing", "on"), "تایپینگ خاموش": ("typing", "off"),
         "حالت بازی روشن": ("game_mode", "on"), "حالت بازی خاموش": ("game_mode", "off"),
@@ -3781,14 +4256,62 @@ async def self_handle_outgoing(event, uid):
             await event.edit(f"✅ {text}\nوضعیت: {'روشن' if val == 'on' else 'خاموش'}")
         return
 
-    if low.startswith("تبچی متن"):
-        value = text[len("تبچی متن"):].strip()
-        if not value:
-            await event.edit("❌ متن تبچی نمی‌تواند خالی باشد.")
+    if low.startswith("پاسخ خودکار جدید"):
+        keyword = text[len("پاسخ خودکار جدید"):].strip().casefold()
+        if not keyword:
+            await event.edit("❌ بعد از «پاسخ خودکار جدید» کلمه را بنویس.")
             return
-        self_set(uid, "auto_reply_text", value)
-        self_set(uid, "auto_reply", "on")
-        await event.edit("✅ متن تبچی ذخیره و فعال شد.")
+        mapping = self_auto_reply_map(uid)
+        mapping[keyword] = mapping.get(keyword, "")
+        self_save_auto_reply_map(uid, mapping)
+        await event.edit(f"✅ کلمه «{html.escape(keyword)}» برای پاسخ خودکار ثبت شد.")
+        return
+
+    if low.startswith("ذخیره پاسخ خودکار"):
+        if not event.is_reply:
+            await event.edit("❌ این دستور باید روی پیام پاسخ ریپلای شود.")
+            return
+        keyword = text[len("ذخیره پاسخ خودکار"):].strip().casefold()
+        replied = await event.get_reply_message()
+        if not keyword or not replied or not (replied.raw_text or "").strip():
+            await event.edit("❌ کلمه را مشخص کن و روی پیام متنی موردنظر ریپلای کن.")
+            return
+        mapping = self_auto_reply_map(uid)
+        if keyword not in mapping:
+            mapping[keyword] = ""
+        mapping[keyword] = replied.raw_text.strip()
+        self_save_auto_reply_map(uid, mapping)
+        await event.edit(f"✅ پاسخ خودکار برای «{html.escape(keyword)}» ذخیره شد.")
+        return
+
+    if low.startswith("حذف پاسخ خودکار"):
+        keyword = text[len("حذف پاسخ خودکار"):].strip().casefold()
+        mapping = self_auto_reply_map(uid)
+        if not keyword or keyword not in mapping:
+            await event.edit("❌ این کلمه در لیست پاسخ خودکار وجود ندارد.")
+            return
+        mapping.pop(keyword, None)
+        self_save_auto_reply_map(uid, mapping)
+        await event.edit(f"✅ پاسخ خودکار «{html.escape(keyword)}» حذف شد.")
+        return
+
+    if low == "لیست پاسخ خودکار":
+        mapping = self_auto_reply_map(uid)
+        if not mapping:
+            await event.edit("💬 <b>لیست پاسخ خودکار خالی است.</b>", parse_mode="html")
+            return
+        body = ["💬 <b>لیست پاسخ خودکار</b>\n"]
+        for i, (keyword, reply) in enumerate(mapping.items(), 1):
+            body.append(f"\n{i}. <code>{html.escape(keyword)}</code> → {html.escape(reply[:120]) if reply else '❌ بدون پاسخ'}")
+        await event.edit("".join(body), parse_mode="html")
+        return
+
+    if low == "پینگ":
+        started = time.perf_counter()
+        with contextlib.suppress(Exception):
+            await event.edit("🏓 در حال محاسبه پینگ...")
+        latency = round((time.perf_counter() - started) * 1000, 2)
+        await event.edit(f"🏓 پینگ سلف: {latency} ms")
         return
 
     if low.startswith("فونت ساعت"):
@@ -4051,12 +4574,15 @@ async def self_handle_incoming(event, uid):
             ))
 
     if event.is_private and self_get(uid, "auto_reply", "off") == "on" and event.sender_id and int(event.sender_id) != int(uid):
-        cache_key = (int(uid), int(event.sender_id))
-        if cache_key not in _self_reply_cache:
-            _self_reply_cache.add(cache_key)
-            with contextlib.suppress(Exception):
-                await event.respond(self_get(uid, "auto_reply_text", "سلام، فعلاً در دسترس نیستم."))
-            asyncio.create_task(_clear_self_reply_cache(cache_key))
+        incoming_text = (event.raw_text or "").strip().casefold()
+        replies = self_auto_reply_map(uid)
+        if incoming_text in replies and replies.get(incoming_text):
+            cache_key = (int(uid), int(event.sender_id), incoming_text)
+            if cache_key not in _self_reply_cache:
+                _self_reply_cache.add(cache_key)
+                with contextlib.suppress(Exception):
+                    await event.respond(replies[incoming_text])
+                asyncio.create_task(_clear_self_reply_cache(cache_key))
 
 async def _clear_self_reply_cache(key):
     await asyncio.sleep(60)
@@ -4206,6 +4732,9 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
             if clock_value and clock_value != last_clock_value:
                 await update_time_name(user_id, client)
                 last_clock_value = clock_value
+
+            with contextlib.suppress(Exception):
+                await _banner_worker_tick(client, user_id)
 
             # Billing: 2.5 diamonds/hour, accumulated safely using whole-diamond balance.
             # We charge floor(total_elapsed * 2.5), so the average rate is exactly 2.5/hour.
@@ -4554,30 +5083,55 @@ async def private_message(event):
 
     if user_id in ADMINS and state and state.get("step") == "force_join_add":
         raw = (event.raw_text or "").strip()
-        username = raw.split("/")[-1].lstrip("@").strip()
-        if not username or " " in username:
-            await event.reply("❌ یوزرنیم یا لینک عمومی کانال معتبر نیست.")
-            return
         try:
-            entity = await bot.get_entity("@" + username)
-            if not isinstance(entity, types.Channel):
-                raise RuntimeError("not_channel")
+            entity = None
+            url = ""
+
+            # Private channel/group: forward any message from it to the bot.
+            fwd = getattr(event.message, "fwd_from", None)
+            fwd_peer = getattr(fwd, "from_id", None) if fwd else None
+            if fwd_peer is not None:
+                entity = await bot.get_entity(fwd_peer)
+                url = ""
+                # Generate a direct invite link when the bot has permission.
+                with contextlib.suppress(Exception):
+                    invite = await bot(functions.messages.ExportChatInviteRequest(peer=entity))
+                    url = getattr(invite, "link", None) or ""
+            else:
+                # Public channel/group: @username or https://t.me/username
+                username = raw.split("/")[-1].lstrip("@").strip()
+                if not username or " " in username:
+                    raise RuntimeError("invalid_username")
+                entity = await bot.get_entity("@" + username)
+                username_value = getattr(entity, "username", None) or username
+                url = f"https://t.me/{username_value}"
+
+            if not isinstance(entity, (types.Channel, types.Chat)):
+                raise RuntimeError("not_supported_chat")
+
+            title = getattr(entity, "title", None) or getattr(entity, "username", None) or "گروه/کانال"
             channel = {
                 "id": int(entity.id),
-                "title": getattr(entity, "title", None) or username,
-                "username": getattr(entity, "username", None) or username,
-                "url": f"https://t.me/{getattr(entity, 'username', None) or username}",
+                "title": title,
+                "username": getattr(entity, "username", None),
+                "url": url,
+                "private": not bool(getattr(entity, "username", None)),
             }
             channels = [c for c in get_force_join_channels() if int(c.get("id", 0)) != channel["id"]]
             channels.append(channel)
             save_force_join_channels(channels)
             pending.pop(user_id, None)
-            await event.reply(f"✅ کانال «{channel['title']}» به جوین اجباری اضافه شد.", buttons=[
-                [btn("📢 مدیریت جوین اجباری", b"force_join", "primary")]
-            ])
+            link_note = " لینک دعوت خصوصی هم ساخته شد." if channel["private"] and url else ""
+            await event.reply(
+                f"✅ «{channel['title']}» به جوین اجباری اضافه شد.{link_note}",
+                buttons=[[btn("📢 مدیریت جوین اجباری", b"force_join", "primary")]],
+            )
         except Exception as exc:
             print(f"[FORCE JOIN] add failed: {exc}")
-            await event.reply("❌ کانال پیدا نشد. مطمئن شو یوزرنیم عمومی است و بات به کانال دسترسی دارد.")
+            await event.reply(
+                "❌ افزودن انجام نشد. برای کانال خصوصی، یک پیام از همان کانال را فوروارد کن "
+                "و مطمئن شو بات داخل کانال/گروه دسترسی لازم برای بررسی عضویت و ساخت لینک دعوت را دارد."
+            )
         return
 
     if user_id in ADMINS and state and state.get("step") == "backup_restore":
@@ -5402,7 +5956,7 @@ async def callbacks(event):
         if user_id not in ADMINS:
             return
         pending[user_id] = {"step": "force_join_add"}
-        await edit_or_send(event, "📢 یوزرنیم یا لینک عمومی کانال را بفرست:", [[btn("🔙 برگشت", b"force_join", "danger")]])
+        await edit_or_send(event, "📢 لینک عمومی را بفرست؛ برای چنل/گروه خصوصی، یک پیام از همان‌جا را فوروارد کن:", [[btn("🔙 برگشت", b"force_join", "danger")]])
         return
 
     if data.startswith("fj_remove:"):
