@@ -602,10 +602,16 @@ async def stop_all_self_workers_for_backup():
 # ============================================================
 
 def main_buttons(user_id: int):
+    # Activation must never remain available while a self session is active.
+    # After a backup restore, the DB session is the source of truth.
+    first_self_button = (
+        btn("⚙️ مدیریت سلف", b"manage_self", "primary")
+        if get_active_session(user_id)
+        else btn("💎 خرید سلف", b"buy_self", "success")
+    )
     rows = [
-        [btn("💎 خرید سلف", b"buy_self", "success")],
+        [first_self_button],
         [
-            btn("⚙️ مدیریت سلف", b"manage_self", "primary"),
             btn("👤 حساب کاربری", b"user_account", "primary"),
         ],
         [
@@ -2123,7 +2129,7 @@ async def handle_self_panel_callback(event):
         self_set(uid, "banner_auto", value)
         sent = failed = 0
         if value == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = await _get_banner_self_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_all_configured(client, uid)
         banners = self_banners(uid)
@@ -4319,7 +4325,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner.get("targets"):
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = await _get_banner_self_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4344,7 +4350,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = await _get_banner_self_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4388,7 +4394,7 @@ async def self_handle_outgoing(event, uid):
         self_save_banners(uid, banners)
         sent = failed = 0
         if self_get(uid, "banner_auto", "off") == "on" and banner["targets"]:
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = await _get_banner_self_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_configured_now(client, uid, banner)
                 self_save_banners(uid, banners)
@@ -4453,7 +4459,7 @@ async def self_handle_outgoing(event, uid):
         # client first so the command works even during worker/client startup
         # races; self_clients is only a fallback cache.
         if key == "banner_auto" and val == "on":
-            client = getattr(event, "client", None) or self_clients.get(uid)
+            client = await _get_banner_self_client(uid)
             if client:
                 sent, failed = await _banner_dispatch_all_configured(client, uid)
                 status = f"روشن ✅\n📨 ارسال فوری: {sent} مقصد"
@@ -5015,6 +5021,39 @@ async def stop_self_worker(user_id: int):
     deactivate_session(user_id)
 
 
+async def _get_banner_self_client(uid: int):
+    """Return the logged-in self client, starting/restoring it when needed.
+
+    IMPORTANT: event.client inside bot callbacks is the BOT client, not the
+    user's logged-in self account. Tabchi must always send through the self
+    client stored in self_clients.
+    """
+    client = self_clients.get(int(uid))
+    if client is not None:
+        with contextlib.suppress(Exception):
+            if client.is_connected():
+                return client
+
+    session = get_active_session(int(uid))
+    if not session:
+        return None
+
+    task = self_workers.get(int(uid))
+    if task is None or task.done():
+        await start_self_worker(int(uid), session[0], int(session[1]))
+
+    # Give the worker a short window to connect/register self_clients.
+    for _ in range(30):
+        client = self_clients.get(int(uid))
+        if client is not None:
+            with contextlib.suppress(Exception):
+                if client.is_connected():
+                    return client
+        await asyncio.sleep(0.1)
+
+    return self_clients.get(int(uid))
+
+
 # ============================================================
 # LOGIN FLOW
 # ============================================================
@@ -5036,6 +5075,21 @@ async def code_timeout(user_id: int):
 
 
 async def begin_self_login(user_id: int, event=None):
+    # A restored/active session is already the user's self account.
+    # Never start a second login flow or send another Telegram login code.
+    active_session = get_active_session(user_id)
+    if active_session:
+        if event:
+            await safe_answer(event, "✅ سلف شما از قبل فعال است؛ از بخش «مدیریت سلف» استفاده کنید.", True)
+            with contextlib.suppress(Exception):
+                await show_manage_self(event)
+        else:
+            await bot.send_message(
+                user_id,
+                "✅ سلف شما از قبل فعال است؛ برای مدیریت آن وارد «مدیریت سلف» شوید."
+            )
+        return
+
     balance = get_balance(user_id)
     if balance < MIN_SELF_BALANCE:
         text = (
@@ -6242,8 +6296,8 @@ async def callbacks(event):
             "💾 **Backups**\n\n"
             "بکاپ شامل database_users، موجودی کاربران، وضعیت سلف، sessionها، تنظیمات و جوین اجباری است.",
             [
-                [btn("🟢 بکاپ‌گیری", b"backup_create", "success"), btn("🟣 بارگزاری بکاپ", b"backup_restore", "primary")],
-                [btn("🔴 بازگشت", b"admin_panel", "danger")]
+                [btn("بکاپ‌گیری", b"backup_create", "success"), btn("بارگزاری بکاپ", b"backup_restore", "primary")],
+                [btn("بازگشت", b"admin_panel", "danger")]
             ]
         )
         return
@@ -6257,10 +6311,10 @@ async def callbacks(event):
             await bot.send_file(user_id, str(path), caption="💾 بکاپ کامل ربات آماده است.")
             with contextlib.suppress(Exception):
                 path.unlink()
-            await event.edit("✅ بکاپ کامل با موفقیت ارسال شد.", buttons=[[btn("🔙 Backups", b"backups", "danger")]])
+            await event.edit("✅ بکاپ کامل با موفقیت ارسال شد.", buttons=[[btn("Backups", b"backups", "danger")]])
         except Exception as exc:
             print(f"[BACKUP] create failed: {exc}")
-            await event.edit("❌ ساخت بکاپ ناموفق بود.", buttons=[[btn("🔙 Backups", b"backups", "danger")]])
+            await event.edit("❌ ساخت بکاپ ناموفق بود.", buttons=[[btn("Backups", b"backups", "danger")]])
         return
 
     if data == "backup_restore":
@@ -6271,7 +6325,7 @@ async def callbacks(event):
             event,
             "🟣 **بارگزاری بکاپ**\n\nفایل ZIP بکاپ را همین‌جا ارسال کن.\n"
             "قبل از بازگردانی، Workerهای سلف متوقف و بعد از اتمام دوباره بازیابی می‌شوند.",
-            [[btn("🔴 لغو", b"backups", "danger")]]
+            [[btn("لغو", b"backups", "danger")]]
         )
         return
 
