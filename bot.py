@@ -2319,8 +2319,18 @@ async def _channel_progress_done(state, *, successful, failed, requested, availa
     )
 
 
+
 async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
-    """Copy requested items from a private channel to Saved Messages; never forward."""
+    """
+    Production-safe private-channel saver.
+
+    Flow:
+      1) Resolve the private channel.
+      2) Scan messages without blocking the UI.
+      3) Immediately expose a real 0% progress state once the target set is known.
+      4) Save oldest -> newest, updating the same panel after every item.
+      5) Never forward; copy to Saved Messages.
+    """
     kind = state.get("media", "all")
     channel_id = state.get("channel_id")
     labels = {
@@ -2331,12 +2341,10 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
         "text": "متن",
         "all": "مدیا",
     }
+
     if not channel_id:
         return {
-            "saved": 0,
-            "failed": 0,
-            "processed": 0,
-            "available": 0,
+            "saved": 0, "failed": 0, "processed": 0, "available": 0,
             "error": "❌ چنل انتخاب نشده است.",
         }
 
@@ -2355,46 +2363,76 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                 label="resolve private channel",
             )
 
-        async def collect_selected():
-            selected_items = []
-            async for msg in client.iter_messages(
-                entity,
-                limit=max(count * 8, count + 30),
-            ):
-                if not msg:
-                    continue
-                if kind == "photos":
-                    matched = bool(getattr(msg, "photo", None))
-                elif kind == "videos":
-                    matched = bool(getattr(msg, "video", None))
-                elif kind == "music":
-                    matched = bool(getattr(msg, "audio", None)) and not bool(
-                        getattr(msg, "voice", None)
-                    )
-                elif kind == "voice":
-                    matched = bool(getattr(msg, "voice", None))
-                elif kind == "text":
-                    matched = bool((msg.raw_text or "").strip()) and not getattr(
-                        msg, "media", None
-                    )
-                else:
-                    matched = bool(
-                        getattr(msg, "media", None) or (msg.raw_text or "").strip()
-                    )
+        # --------------------------------------------------------
+        # PHASE 1: collect the requested messages.
+        # This phase deliberately has its own live UI because Telegram
+        # can take a while to walk a large/private channel history.
+        # --------------------------------------------------------
+        selected_items = []
+        scanned = 0
+        last_scan_ui = 0.0
 
-                if matched:
-                    selected_items.append(msg)
-                    if len(selected_items) >= count:
-                        break
-            return selected_items
+        if progress_cb:
+            await progress_cb(
+                0, 0,
+                successful=0,
+                failed=0,
+                force=True,
+                label=f"🔎 درحال پیدا کردن {count} {labels.get(kind, 'مدیا')} آخر…",
+            )
 
-        selected = await _tg_call_with_flood_retry(
-            collect_selected,
-            label="read private channel messages",
-        )
-        total = len(selected)
+        async for msg in client.iter_messages(
+            entity,
+            limit=max(count * 8, count + 30),
+        ):
+            if not msg:
+                continue
 
-        if not selected:
+            scanned += 1
+
+            if kind == "photos":
+                matched = bool(getattr(msg, "photo", None))
+            elif kind == "videos":
+                matched = bool(getattr(msg, "video", None))
+            elif kind == "music":
+                matched = bool(getattr(msg, "audio", None)) and not bool(
+                    getattr(msg, "voice", None)
+                )
+            elif kind == "voice":
+                matched = bool(getattr(msg, "voice", None))
+            elif kind == "text":
+                matched = bool((msg.raw_text or "").strip()) and not getattr(
+                    msg, "media", None
+                )
+            else:
+                matched = bool(
+                    getattr(msg, "media", None) or (msg.raw_text or "").strip()
+                )
+
+            if matched:
+                selected_items.append(msg)
+                if len(selected_items) >= count:
+                    break
+
+            # Do not edit Telegram for every scanned message.
+            # A small live heartbeat prevents the UI from looking frozen.
+            now = time.monotonic()
+            if progress_cb and (now - last_scan_ui >= 0.8):
+                last_scan_ui = now
+                await progress_cb(
+                    0, 0,
+                    successful=0,
+                    failed=0,
+                    force=True,
+                    label=(
+                        f"🔎 درحال بررسی چنل… "
+                        f"{len(selected_items)}/{count} مورد پیدا شد"
+                    ),
+                )
+
+        total = len(selected_items)
+
+        if not selected_items:
             if kind == "photos":
                 error = "❌ <b>مدیای قابل ذخیره پیدا نشد.</b>"
             else:
@@ -2410,6 +2448,10 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                 "error": error,
             }
 
+        # --------------------------------------------------------
+        # PHASE 2: real progress starts HERE.
+        # This call is forced, so the first 0% state is always visible.
+        # --------------------------------------------------------
         if progress_cb:
             await progress_cb(
                 0,
@@ -2417,21 +2459,35 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                 successful=0,
                 failed=0,
                 force=True,
-                label=f"ذخیره {labels.get(kind, 'مدیا')}",
+                label=f"💾 درحال ذخیره {labels.get(kind, 'مدیا')}…",
             )
 
         saved = 0
         failed = 0
         processed = 0
 
-        # Oldest -> newest, but copied rather than forwarded so there is no Telegram forward header.
-        for msg in reversed(selected):
+        # Oldest -> newest. Copying instead of forwarding removes the
+        # Telegram forward header.
+        for msg in reversed(selected_items):
+            media_id = getattr(msg, "id", "?")
+
+            # Give the user an immediate visual transition before a
+            # potentially slow upload/download starts.
+            if progress_cb:
+                await progress_cb(
+                    processed,
+                    total,
+                    successful=saved,
+                    failed=failed,
+                    force=True,
+                    label=f"💾 درحال ذخیره مورد {processed + 1} از {total}…",
+                )
+
             try:
                 media = getattr(msg, "media", None)
                 caption = msg.raw_text or None
 
                 if media:
-                    media_id = getattr(msg, "id", "?")
                     direct_error = None
                     try:
                         await _tg_call_with_flood_retry(
@@ -2446,6 +2502,7 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                             f"[CHANNEL_SAVE {uid}] direct media copy failed "
                             f"{media_id}: {direct_exc}; using download fallback"
                         )
+
                         path = await _tg_call_with_flood_retry(
                             lambda m=msg: m.download_media(),
                             label=f"download media {media_id}",
@@ -2454,6 +2511,7 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                             raise RuntimeError(
                                 f"media download failed: {direct_error}"
                             )
+
                         try:
                             await _tg_call_with_flood_retry(
                                 lambda p=path, c=caption: client.send_file(
@@ -2464,37 +2522,44 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
                         finally:
                             with contextlib.suppress(Exception):
                                 os.remove(path)
+
                 elif caption:
                     await _tg_call_with_flood_retry(
                         lambda c=caption: client.send_message("me", c),
-                        label=f"save text {getattr(msg, 'id', '?')}",
+                        label=f"save text {media_id}",
                     )
                 else:
-                    raise RuntimeError("matched message contained no savable content")
+                    raise RuntimeError(
+                        "matched message contained no savable content"
+                    )
 
                 saved += 1
+
             except asyncio.CancelledError:
                 raise
+
             except Exception as exc:
                 failed += 1
                 print(
                     f"[CHANNEL_SAVE {uid}] item failed "
-                    f"channel={channel_id} message={getattr(msg, 'id', '?')}: {exc}"
+                    f"channel={channel_id} message={media_id}: {exc}"
                 )
+
             finally:
                 processed += 1
+
                 if progress_cb:
                     await progress_cb(
                         processed,
                         total,
                         successful=saved,
                         failed=failed,
-                        force=(
-                            processed == 1
-                            or processed == total
-                            or failed > 0
+                        force=True,
+                        label=(
+                            "💾 درحال ذخیره…"
+                            if processed < total
+                            else "✅ همه موارد بررسی شدند"
                         ),
-                        label=f"ذخیره {labels.get(kind, 'مدیا')}",
                     )
 
         return {
@@ -2507,41 +2572,60 @@ async def _self_save_channel_media(client, uid, state, count, progress_cb=None):
 
     except asyncio.CancelledError:
         raise
+
     except Exception as exc:
         print(f"[CHANNEL_SAVE {uid}] channel save failed: {exc}")
+        import traceback
+        traceback.print_exc()
         return {
             "saved": 0,
             "failed": 0,
             "processed": 0,
             "available": 0,
-            "error": f"❌ ذخیره از چنل انجام نشد.\n<code>{html.escape(str(exc))}</code>",
+            "error": (
+                f"❌ ذخیره از چنل انجام نشد.\n"
+                f"<code>{html.escape(str(exc))}</code>"
+            ),
         }
 
 
 async def _channel_save_worker(client, uid, state, count, operation_id):
-    """Background owner for the complete private-channel save lifecycle."""
+    """
+    Owns the complete save lifecycle.
+
+    The callback only changes the state and starts this task.
+    All heavy Telegram work happens here, so the callback never freezes
+    while channel history/media is being processed.
+    """
     controller = _ChannelProgressController(state)
     current_task = asyncio.current_task()
 
+    async def progress(processed, total, *, successful=0, failed=0,
+                        force=False, label="درحال ذخیره…"):
+        await controller.update(
+            processed,
+            total,
+            successful=successful,
+            failed=failed,
+            force=force,
+            label=label,
+        )
+
     try:
-        # The worker owns every heavy operation. The callback only creates it.
-        await controller.phase("⏳ <b>در حال بررسی چنل...</b>")
+        # Smooth transition, matching the game's "resolving" phase.
+        await controller.phase("⏳ <b>درحال آماده‌سازی ذخیره…</b>")
+        await asyncio.sleep(0.15)
+
         if not client:
             raise RuntimeError("سلف فعال نیست")
 
         await controller.phase(
-            f"🔎 <b>در حال پیدا کردن {count} {html.escape(str(state.get('media') or 'مدیا'))} آخر...</b>"
+            f"🔎 <b>درحال پیدا کردن {count} "
+            f"{html.escape(str(state.get('media') or 'مدیا'))} آخر…</b>"
         )
 
-        async def progress(processed, total, *, successful=0, failed=0, force=False, label="در حال ذخیره…"):
-            await controller.update(
-                processed,
-                total,
-                successful=successful,
-                failed=failed,
-                force=force,
-                label=label,
-            )
+        # Yield to the event loop before the potentially long channel scan.
+        await asyncio.sleep(0)
 
         result = await _self_save_channel_media(
             client,
@@ -2562,10 +2646,18 @@ async def _channel_save_worker(client, uid, state, count, operation_id):
             else:
                 await controller.edit(
                     result["error"],
-                    buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                    buttons=[[
+                        btn(
+                            "🔙 بازگشت به پنل",
+                            _self_cb(uid, "panel"),
+                            "primary",
+                        )
+                    ]],
                 )
             return
 
+        # Let 100% remain visible briefly before replacing it with
+        # the final summary. This makes the transition feel deliberate.
         await controller.finish(
             successful=result.get("saved", 0),
             failed=result.get("failed", 0),
@@ -2573,29 +2665,46 @@ async def _channel_save_worker(client, uid, state, count, operation_id):
             available=result.get("available", 0),
         )
 
+        await asyncio.sleep(0.35)
+
     except asyncio.CancelledError:
         print(f"[CHANNEL_SAVE {uid}] worker cancelled")
         with contextlib.suppress(Exception):
             await controller.edit(
                 "⚠️ <b>ذخیره مدیا متوقف شد.</b>",
-                buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                buttons=[[
+                    btn(
+                        "🔙 بازگشت به پنل",
+                        _self_cb(uid, "panel"),
+                        "primary",
+                    )
+                ]],
             )
         raise
+
     except Exception as exc:
         print(f"[CHANNEL_SAVE {uid}] fatal worker error")
         import traceback
         traceback.print_exc()
         with contextlib.suppress(Exception):
             await controller.edit(
-                f"❌ <b>ذخیره مدیا با خطا متوقف شد.</b>\n"
+                "❌ <b>ذخیره مدیا با خطا متوقف شد.</b>\n"
                 f"خطا: <code>{html.escape(str(exc))}</code>",
-                buttons=[[btn("🔙 بازگشت به پنل", _self_cb(uid, "panel"), "primary")]],
+                buttons=[[
+                    btn(
+                        "🔙 بازگشت به پنل",
+                        _self_cb(uid, "panel"),
+                        "primary",
+                    )
+                ]],
             )
+
     finally:
-        # Never let an older worker clear a newer operation's state/task.
+        # Never let an old worker clear a newer operation.
         saved_state = self_channel_save_state(uid)
         if saved_state.get("operation_id") == operation_id:
             self_clear_channel_save_state(uid)
+
         if _channel_save_tasks.get(uid) is current_task:
             _channel_save_tasks.pop(uid, None)
 
