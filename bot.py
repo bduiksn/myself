@@ -1434,8 +1434,9 @@ async def handle_self_panel_callback(event):
                 "channel_id": int(state["channel_id"]),
                 "channel_access_hash": state.get("channel_access_hash"),
                 "channel_title": str(state.get("channel_title") or "چنل"),
-                "panel_chat_id": int(event.chat_id),
-                "panel_message_id": int(event.message_id),
+                "panel_chat_id": int(event.chat_id) if getattr(event, "chat_id", None) is not None else None,
+                "panel_message_id": int(event.message_id) if getattr(event, "message_id", None) is not None else None,
+                "inline_message_id": getattr(event, "inline_message_id", None),
                 "processing_started": time.time(),
                 "operation_id": operation_id,
             })
@@ -1443,12 +1444,21 @@ async def handle_self_panel_callback(event):
             worker_state = dict(state)
 
             # Remove the numeric keyboard before any heavy Telegram work.
+            # Inline mode MUST use the callback event's inline message editor;
+            # bot.edit_message(chat_id, message_id) cannot edit an inline result.
             try:
-                await _channel_save_ui_edit(
-                    worker_state,
-                    "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
-                    buttons=None,
-                )
+                if getattr(event, "inline_message_id", None):
+                    await event.edit(
+                        "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
+                        parse_mode="html",
+                        buttons=None,
+                    )
+                else:
+                    await _channel_save_ui_edit(
+                        worker_state,
+                        "⏳ <b>در حال آماده‌سازی ذخیره...</b>",
+                        buttons=None,
+                    )
             except Exception as exc:
                 print(
                     "[CHANNEL_SAVE UI] initial processing edit failed: "
@@ -1468,6 +1478,7 @@ async def handle_self_panel_callback(event):
                     state=worker_state,
                     count=count,
                     operation_id=operation_id,
+                    inline_event=event if getattr(event, "inline_message_id", None) else None,
                 )
             )
             _channel_save_tasks[uid] = task
@@ -2132,12 +2143,12 @@ def _channel_count_text(state):
 
 def _channel_progress_text(percent, label="درحال ذخیره سازی…", processed=None, total=None, successful=None, failed=None):
     percent = max(0, min(100, int(percent)))
-    slots = 24
+    slots = 10
     filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
+    bar = "━" * filled + "─" * (slots - filled)
     counts = ""
     if total is not None:
-        counts = f"\n\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
+        counts = f"\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
         if successful is not None or failed is not None:
             counts += f"  •  ✅ {int(successful or 0)}  ❌ {int(failed or 0)}"
     return f"💾 <b>ذخیره مدیا</b>\n{bar} <b>{percent}%</b>\n<i>{html.escape(label)}</i>{counts}"
@@ -2189,27 +2200,25 @@ def _channel_progress_text(
     failed=None,
 ):
     percent = max(0, min(100, int(percent)))
-    slots = 24
+    slots = 10
     filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
+    bar = "━" * filled + "─" * (slots - filled)
     counts = ""
     if total is not None:
-        counts = f"\n\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
+        counts = f"\n📦 <b>{int(processed or 0)}/{int(total)}</b>"
         if successful is not None or failed is not None:
-            counts += (
-                f"\n✅ موفق: {int(successful or 0)}"
-                f"\n❌ ناموفق: {int(failed or 0)}"
-            )
+            counts += f"  •  ✅ {int(successful or 0)}  ❌ {int(failed or 0)}"
     return f"💾 <b>ذخیره مدیا</b>\n{bar} <b>{percent}%</b>\n<i>{html.escape(label)}</i>{counts}"
 
 
 class _ChannelProgressController:
-    """Single UI owner for the channel-save panel message."""
+    """Single UI owner for channel-save progress, including inline messages."""
 
-    def __init__(self, state, *, min_interval=0.5):
+    def __init__(self, state, *, min_interval=0.5, inline_event=None):
         self.state = state
         self.chat_id = int(state["panel_chat_id"])
         self.message_id = int(state["panel_message_id"])
+        self.inline_event = inline_event
         self.min_interval = float(min_interval)
         self.last_edit = 0.0
         self.last_percent = None
@@ -2218,6 +2227,13 @@ class _ChannelProgressController:
         self.last_failed = -1
 
     async def edit(self, text, buttons=None):
+        # Inline-mode callback messages do not have a normal chat_id/message_id.
+        # Telegram exposes them through the callback event's inline_message_id;
+        # event.edit() uses the correct inline edit route. Normal bot-chat panels
+        # continue using the existing bot.edit_message path unchanged.
+        if self.inline_event is not None and getattr(self.inline_event, "inline_message_id", None):
+            await self.inline_event.edit(text, parse_mode="html", buttons=buttons)
+            return True
         return await _channel_save_ui_edit(self.state, text, buttons=buttons)
 
     async def update(
@@ -3173,9 +3189,9 @@ def _extract_archive_sync(archive_path: Path, output_dir: Path):
 
 def _archive_progress_text(percent: int, phase: str = "در حال استخراج…", current: int = 0, total: int = 0):
     percent = max(0, min(100, int(percent)))
-    slots = 24
+    slots = 10
     filled = round(slots * percent / 100)
-    bar = "▰" * filled + "▱" * (slots - filled)
+    bar = "━" * filled + "─" * (slots - filled)
     counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
     return (
         f"📦 <b>استخراج آرشیو</b>\n\n"
