@@ -1193,8 +1193,8 @@ async def _cs_edit(editor, text, buttons=None):
 def _cs_progress_bar(done, total, width=16):
     if total <= 0:
         return "░" * width, 0
-    ratio = max(0.0, min(1.0, done / total))
-    filled = int(round(ratio * width))
+    ratio = max(0.0, min(1.0, float(done) / float(total)))
+    filled = round(width * ratio)
     return "█" * filled + "░" * (width - filled), int(ratio * 100)
 
 
@@ -1364,11 +1364,14 @@ async def _cs_worker(uid, client, state, editor):
             selected.append(message)
             found = len(selected)
             now = time.monotonic()
-            if now - last_ui >= CHANNEL_SAVE_PROGRESS_INTERVAL:
+            if now - last_ui >= CHANNEL_SAVE_PROGRESS_INTERVAL or found == requested:
                 last_ui = now
+                scan_percent = min(20, int(found * 20 / max(1, requested)))
+                scan_bar, _ = _cs_progress_bar(scan_percent, 100)
                 await update(
                     f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(title)}</b>\n\n"
                     f"🔎 در حال یافتن پیام‌ها... <b>{found}/{requested}</b>\n"
+                    f"<code>{scan_bar}</code> <b>{scan_percent}%</b>\n\n"
                     "⏳ تاریخچه در حال بررسی است..."
                 )
             if len(selected) >= requested:
@@ -1403,7 +1406,9 @@ async def _cs_worker(uid, client, state, editor):
                 print(f"[CHANNEL_SAVE {uid}] item {index} failed: {exc}")
 
             now = time.monotonic()
-            if now - last_ui >= CHANNEL_SAVE_PROGRESS_INTERVAL or index == total:
+            # Every completed item advances the same message immediately.
+            # This avoids a fast save appearing stuck at 0% because of UI throttling.
+            if True:
                 last_ui = now
                 bar, percent = _cs_progress_bar(index, total)
                 await update(
@@ -2799,10 +2804,9 @@ def _archive_progress_text(percent: int, phase: str = "در حال استخرا�
     slots = 16
     filled = round(slots * percent / 100)
     bar = "█" * filled + "░" * (slots - filled)
-    counter = f"  <code>{int(current)}/{int(total)}</code>" if total else ""
     return (
-        f"📦 استخراج آرشیو"
-        f"<code>{bar}</code> <b>{percent}%</b>{counter}\n"
+        f"📦 <b>استخراج آرشیو</b>\n\n"
+        f"<code>{bar}</code> <b>{percent}%</b>\n\n"
         f"<i>{html.escape(phase)}</i>"
     )
 
