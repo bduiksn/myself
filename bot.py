@@ -1046,7 +1046,7 @@ def self_panel_buttons(uid):
             btn(f"🅵 فارسی {'روشن' if self_get(uid,'persian_font')=='on' else 'خاموش'}", _self_cb(uid, "persian"), toggle_style("persian_font")),
         ],
         [
-            btn(f"🔤 انگلیسی: {_font_label('english', english)}", _self_cb(uid, "engfont"), "primary"),
+            btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
             btn(f"🌐 ترجمه {'روشن' if self_get(uid,'translate')=='on' else 'خاموش'}", _self_cb(uid, "translate"), toggle_style("translate")),
         ],
         [
@@ -1058,16 +1058,16 @@ def self_panel_buttons(uid):
             btn(f"🎮 بازی {'روشن' if self_get(uid,'game_mode')=='on' else 'خاموش'}", _self_cb(uid, "game"), toggle_style("game_mode")),
         ],
         [
-            btn(f"💬 پاسخ خودکار {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
+            btn(f"🔤 انگلیسی: {_font_label('english', english)}", _self_cb(uid, "engfont"), "primary"),
             btn("🏓 پینگ", _self_cb(uid, "ping"), "success"),
         ],
         [
             btn("🤖 تبچی", _self_cb(uid, "banners"), "primary"),
-            btn("🧹 پاکسازی", _self_cb(uid, "cleanup"), "danger"),
+            btn(f"💬 پاسخ خودکار {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
         ],
         [
-            btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
             btn("💬 کامنت اول", _self_cb(uid, "comment_setup"), "primary"),
+            btn("📚 راهنما", _self_cb(uid, "guide"), "primary"),
         ],
         [btn("❌ بستن", _self_cb(uid, "close"), "danger")],
     ]
