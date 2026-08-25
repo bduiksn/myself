@@ -1051,7 +1051,7 @@ def self_panel_buttons(uid):
         ],
         [
             btn(f"👁 سین {'روشن' if self_get(uid,'auto_read')=='on' else 'خاموش'}", _self_cb(uid, "read"), toggle_style("auto_read")),
-            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
+            btn(f"💬 پاسخ خودکار {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
         ],
         [
             btn(f"⌨️ تایپینگ {'روشن' if self_get(uid,'typing')=='on' else 'خاموش'}", _self_cb(uid, "typing"), toggle_style("typing")),
@@ -1063,7 +1063,7 @@ def self_panel_buttons(uid):
         ],
         [
             btn("🤖 تبچی", _self_cb(uid, "banners"), "primary"),
-            btn(f"💬 پاسخ خودکار {'روشن' if self_get(uid,'auto_reply')=='on' else 'خاموش'}", _self_cb(uid, "autoreply"), toggle_style("auto_reply")),
+            btn("💾 ذخیره چنل", _self_cb(uid, "cs_open"), "primary"),
         ],
         [
             btn("💬 کامنت اول", _self_cb(uid, "comment_setup"), "primary"),
