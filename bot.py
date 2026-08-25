@@ -73,10 +73,18 @@ MIN_SELF_BALANCE = 100
 MIN_DIAMOND_PURCHASE = 500
 DIAMOND_PRICE_TOMAN = 40
 
-# Optional high-accuracy cloud speech-to-text. Set OPENAI_API_KEY in the server environment.
-# If it is not configured, the bot falls back to local faster-whisper.
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+# Local, free speech-to-text configuration.
+# No API key is required. The Persian STT engine is faster-whisper + Whisper large-v3.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "fa")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv(
+    "WHISPER_COMPUTE_TYPE",
+    "int8" if WHISPER_DEVICE == "cpu" else "float16",
+)
+WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "8"))
+WHISPER_BEST_OF = int(os.getenv("WHISPER_BEST_OF", "8"))
+WHISPER_PATIENCE = float(os.getenv("WHISPER_PATIENCE", "1.2"))
 
 # Free providers for currency and local media features
 # Currency uses CoinMarketCap's current keyless public endpoint first and
@@ -2699,200 +2707,118 @@ async def _self_save_replied_message(event, uid):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _openai_multipart_body(file_path: str, filename: str, language: str = "fa"):
-    """Build a multipart/form-data body without requiring an extra HTTP package."""
-    boundary = "----HusteRIXSpeechBoundary" + secrets.token_hex(12)
-    with open(file_path, "rb") as f:
-        audio = f.read()
-
-    fields = [
-        ("model", OPENAI_TRANSCRIBE_MODEL),
-        ("language", language),
-        ("response_format", "json"),
-        ("prompt", "این فایل صوتی فارسی است. متن را دقیقاً به فارسی پیاده‌سازی کن؛ لهجه و گفتار محاوره‌ای را حفظ کن و به کردی یا زبان دیگری ترجمه نکن."),
-    ]
-    chunks = []
-    for key, value in fields:
-        chunks.extend([
-            f"--{boundary}\r\n".encode(),
-            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
-            str(value).encode("utf-8"),
-            b"\r\n",
-        ])
-
-    chunks.extend([
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
-        b"Content-Type: application/octet-stream\r\n\r\n",
-        audio,
-        b"\r\n",
-        f"--{boundary}--\r\n".encode(),
-    ])
-    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
-
-
-def _openai_transcribe_sync(path: str):
-    if not OPENAI_API_KEY:
-        return None
-
-    body, content_type = _openai_multipart_body(
-        path,
-        Path(path).name or "voice.ogg",
-        language=os.getenv("WHISPER_LANGUAGE", "fa"),
-    )
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/audio/transcriptions",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": content_type,
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        return str(payload.get("text") or "").strip()
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        with contextlib.suppress(Exception):
-            detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"openai_http_{exc.code}: {detail[:500]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"openai_transcription_failed: {exc}") from exc
+def _normalize_persian_transcript(text: str) -> str:
+    """Conservative Persian cleanup after Whisper; never uses a cloud API."""
+    if not text:
+        return ""
+    table = str.maketrans({
+        "ي": "ی", "ى": "ی", "ك": "ک", "ۀ": "هٔ", "ة": "ه",
+        "ؤ": "و", "إ": "ا", "أ": "ا", "ٱ": "ا",
+        "٠": "۰", "١": "۱", "٢": "۲", "٣": "۳", "٤": "۴",
+        "٥": "۵", "٦": "۶", "٧": "۷", "٨": "۸", "٩": "۹",
+    })
+    text = text.translate(table)
+    text = re.sub(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]", " ", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"([؟!،؛,:.])\1{1,}", r"\1", text)
+    text = re.sub(r" +([،؛؟!:.])", r"\1", text)
+    text = re.sub(r"([،؛؟!])(?=\S)", r"\1 ", text)
+    return text.strip()
 
 
 async def _self_transcribe_reply(event, uid):
-    """Voice/audio -> accurate Persian text without blocking Telethon.
-
-    Cloud transcription runs in a worker thread.  The local faster-whisper
-    model is ALSO loaded/transcribed in a worker thread; loading large-v3 in
-    the event loop was the main cause of the UI becoming stuck at "processing".
-    """
+    """Voice/audio -> high-accuracy Persian text using local faster-whisper only."""
     if not event.is_reply:
         return "❌ روی ویس یا فایل صوتی ریپلای کن و «متن» را بفرست."
-
     replied = await event.get_reply_message()
     if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
         return "❌ ویس یا فایل صوتی پیدا نشد."
 
-    state = stt_state.setdefault(uid, {
-        "status": "processing",
-        "started": time.monotonic(),
-        "last_ui": 0.0,
-        "percent": 0,
-    })
+    state = stt_state.setdefault(uid, {"status": "processing", "started": time.monotonic(), "last_ui": 0.0, "percent": 0})
 
     async def progress_loop():
-        # STT providers do not expose a reliable per-file percentage.
-        # Show a live heartbeat instead of pretending a frozen percentage is
-        # real progress.  This task is always cancelled in finally.
         phases = (
-            "🎙️ ویس دانلود شد…",
-            "🔊 در حال آماده‌سازی صدا…",
-            "🧠 در حال بارگذاری موتور تشخیص گفتار…",
-            "🧠 در حال تشخیص گفتار فارسی…",
-            "✍️ در حال ساخت متن نهایی…",
+            "🎙️ ویس دانلود شد…", "🔊 در حال آماده‌سازی صدا…",
+            f"🧠 در حال بارگذاری {WHISPER_MODEL}…",
+            "🧠 در حال تشخیص گفتار فارسی…", "✍️ در حال مرتب‌سازی متن فارسی…",
         )
         idx = 0
         while True:
-            text = phases[idx % len(phases)]
-            idx += 1
             with contextlib.suppress(Exception):
                 elapsed = int(time.monotonic() - state.get("started", time.monotonic()))
                 await event.edit(
-                    f"{text}\\n\\n"
-                    f"⏳ زمان پردازش: {elapsed} ثانیه\\n"
-                    "▰▱▱▱▱  در حال انجام",
+                    f"{phases[idx % len(phases)]}\n\n⏳ زمان پردازش: {elapsed} ثانیه\n▰▱▱▱▱  در حال انجام",
                     parse_mode="html",
                 )
+            idx += 1
             await asyncio.sleep(2.5)
 
     progress_task = asyncio.create_task(progress_loop())
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"husterix_stt_{uid}_"))
     try:
         try:
-            path = await asyncio.wait_for(
-                replied.download_media(file=str(tmp_dir)),
-                timeout=float(os.getenv("STT_DOWNLOAD_TIMEOUT_SECONDS", "300")),
-            )
+            path = await asyncio.wait_for(replied.download_media(file=str(tmp_dir)), timeout=float(os.getenv("STT_DOWNLOAD_TIMEOUT_SECONDS", "300")))
         except asyncio.TimeoutError:
             return "❌ دانلود ویس بیش از حد طول کشید؛ دوباره تلاش کن."
         except Exception as exc:
             print(f"[SELF {uid}] STT download failed: {exc}")
             return "❌ دانلود ویس ناموفق بود."
-
         if not path:
             return "❌ دانلود ویس ناموفق بود."
-
-        # Prefer OpenAI when configured.  It is executed off the event loop.
-        if OPENAI_API_KEY:
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(_openai_transcribe_sync, str(path)),
-                    timeout=float(os.getenv("STT_OPENAI_TIMEOUT_SECONDS", "240")),
-                )
-                if result:
-                    return f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
-            except asyncio.TimeoutError:
-                print(f"[SELF {uid}] OpenAI STT timed out; using local fallback.")
-            except Exception as exc:
-                print(f"[SELF {uid}] OpenAI transcription failed, using local fallback: {exc}")
 
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            if OPENAI_API_KEY:
-                return "❌ سرویس تبدیل صدا موقتاً در دسترس نیست و موتور محلی هم نصب نشده است."
-            return "❌ برای تبدیل محلی، `faster-whisper` را نصب کن یا `OPENAI_API_KEY` را تنظیم کن."
+            return "❌ موتور تبدیل ویس نصب نیست. این نسخه کاملاً بدون API کار می‌کند؛ `faster-whisper` را نصب کن."
 
-        # IMPORTANT: model construction must be in the worker thread too.
-        # WhisperModel("large-v3") can take a long time and otherwise freezes
-        # the asyncio event loop before the first transcription update.
         def load_and_transcribe():
             model = getattr(_self_transcribe_reply, "_model", None)
-            if model is None:
-                model_name = os.getenv("WHISPER_MODEL", "small")
-                device = os.getenv("WHISPER_DEVICE", "cpu")
-                compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+            model_key = getattr(_self_transcribe_reply, "_model_key", None)
+            current_key = (WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE)
+            if model is None or model_key != current_key:
                 model = WhisperModel(
-                    model_name,
-                    device=device,
-                    compute_type=compute_type,
+                    WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE,
+                    cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "0")) or None,
+                    num_workers=int(os.getenv("WHISPER_NUM_WORKERS", "1")),
                 )
                 _self_transcribe_reply._model = model
+                _self_transcribe_reply._model_key = current_key
 
-            segments, _ = model.transcribe(
-                str(path),
-                language=os.getenv("WHISPER_LANGUAGE", "fa"),
-                task="transcribe",
-                beam_size=int(os.getenv("WHISPER_BEAM_SIZE", "5")),
-                best_of=int(os.getenv("WHISPER_BEST_OF", "5")),
-                temperature=0,
-                vad_filter=True,
-                condition_on_previous_text=True,
+            segments, info = model.transcribe(
+                str(path), language=WHISPER_LANGUAGE, task="transcribe",
+                beam_size=WHISPER_BEAM_SIZE, best_of=WHISPER_BEST_OF, patience=WHISPER_PATIENCE,
+                temperature=0, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 250},
+                condition_on_previous_text=True, compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0, no_speech_threshold=0.5,
+                initial_prompt=(
+                    "این یک گفتار فارسی است. متن را دقیقاً به فارسی بنویس. "
+                    "کلمات فارسی، محاوره‌ای و نام‌های خاص را حفظ کن و ترجمه نکن."
+                ),
             )
-            return " ".join(
-                seg.text.strip() for seg in segments if seg.text and seg.text.strip()
-            ).strip()
+            pieces = []
+            for seg in segments:
+                part = _normalize_persian_transcript(seg.text or "")
+                if part:
+                    pieces.append(part)
+            return _normalize_persian_transcript(" ".join(pieces)), info
 
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(load_and_transcribe),
-                timeout=float(os.getenv("STT_LOCAL_TIMEOUT_SECONDS", "900")),
-            )
+            result, info = await asyncio.wait_for(asyncio.to_thread(load_and_transcribe), timeout=float(os.getenv("STT_LOCAL_TIMEOUT_SECONDS", "1800")))
         except asyncio.TimeoutError:
             return "❌ تبدیل ویس به متن بیش از حد طول کشید؛ دوباره تلاش کن."
         except Exception as exc:
             print(f"[SELF {uid}] local transcription failed: {exc}")
             return "❌ موتور تبدیل ویس خطا داد؛ لاگ سرور را بررسی کن."
 
-        return (
-            f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
-            if result
-            else "❌ صدایی برای تبدیل به متن پیدا نشد."
-        )
+        if not result:
+            return "❌ صدایی برای تبدیل به متن پیدا نشد."
+        detected = getattr(info, "language", None)
+        if detected and detected != "fa":
+            print(f"[SELF {uid}] Whisper detected language={detected}, forced={WHISPER_LANGUAGE}")
+        return f"📝 <b>متن ویس</b>\n\n{html.escape(result)}"
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -4834,7 +4760,7 @@ async def self_handle_outgoing(event, uid):
         return
 
     if event.is_reply and re.fullmatch(r"متن(?:\s*(?:\+\s*)?ریپ(?:ل|لی)|\s*\+\s*ریپ(?:ل|لی))?", low):
-        # Accept: متن / متن + ریپلی / متن + ریپلای and reply to the original media.
+        # Reply to the original voice/audio and transcribe it locally.
         replied = await event.get_reply_message()
         if not replied or _message_media_kind(replied) not in {"voice", "audio"}:
             with contextlib.suppress(Exception):
