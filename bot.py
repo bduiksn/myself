@@ -94,7 +94,7 @@ COINGECKO_PUBLIC_BASE_URL = "https://api.coingecko.com/api/v3"
 CRYPTO_PROVIDER_TIMEOUT = 12
 
 TRANSFER_TAX = 0.10
-GAME_TAX = 0.05
+GAME_TAX = 0.10
 GAME_TIMEOUT = 300
 REFERRAL_REWARD = 25
 MIN_GAME = 20
@@ -333,6 +333,25 @@ def all_active_sessions():
         except Exception as exc:
             print(f"[DB] failed to load {user_id}: {exc}")
     return result
+
+
+def total_diamonds_in_circulation() -> float:
+    """Return the sum of all user balances stored in database_users."""
+    total = 0.0
+    for file in DATA_DIR.glob("user_*.db"):
+        match = re.fullmatch(r"user_(\d+)\.db", file.name)
+        if not match:
+            continue
+        user_id = int(match.group(1))
+        try:
+            init_user_db(user_id)
+            with connect_db(user_id) as db:
+                row = db.execute("SELECT COALESCE(balance, 0) FROM users WHERE user_id=?", (user_id,)).fetchone()
+                if row:
+                    total += float(row[0] or 0)
+        except Exception as exc:
+            print(f"[DB] failed to sum balance for {user_id}: {exc}")
+    return total
 
 
 # ============================================================
@@ -6298,6 +6317,43 @@ async def admin_text_flow(event):
             await event.reply("❌ مقدار نامعتبر است.")
         return
 
+    if step == "remove_balance_user":
+        try:
+            target = int(text)
+            init_user_db(target)
+            state["target_id"] = target
+            state["step"] = "remove_balance_amount"
+            await event.reply("💎 مقدار الماس را وارد کنید:")
+        except ValueError:
+            await event.reply("❌ آیدی نامعتبر است.")
+        return
+
+    if step == "remove_balance_amount":
+        try:
+            amount = int(text)
+            if amount <= 0:
+                raise ValueError
+
+            target = int(state["target_id"])
+            init_user_db(target)
+            balance = get_balance(target)
+            if amount > balance:
+                await event.reply(
+                    f"❌ موجودی کاربر کافی نیست.\n"
+                    f"💎 موجودی فعلی: {_fmt_diamonds(balance)}"
+                )
+                return
+
+            change_balance(target, -amount)
+
+            await event.reply(
+                f"✅ {amount:,} الماس از `{target}` کسر شد."
+            )
+            pending.pop(user_id, None)
+        except ValueError:
+            await event.reply("❌ مقدار نامعتبر است.")
+        return
+
     if step == "ban_user":
         try:
             target = int(text)
@@ -6345,6 +6401,12 @@ async def group_commands(event):
     game = re.fullmatch(r"بازی\s+(\d+)", text)
     if game:
         amount = int(game.group(1))
+
+        if amount < MIN_GAME:
+            await event.reply(
+                f"❌ حداقل مبلغ بازی {MIN_GAME:,} الماس است."
+            )
+            return
 
         balance = get_balance(user_id)
         if balance < amount:
@@ -6748,6 +6810,14 @@ async def callbacks(event):
         joiner = user_id
         key = (event.chat_id, event.message_id)
 
+        if amount < MIN_GAME:
+            await safe_answer(
+                event,
+                f"❌ حداقل مبلغ بازی {MIN_GAME:,} الماس است.",
+                True
+            )
+            return
+
         if joiner == organizer:
             await safe_answer(event, "❌ برگزارکننده نمی‌تواند وارد بازی خودش شود.", True)
             return
@@ -6869,7 +6939,8 @@ async def callbacks(event):
             return
 
         buttons = [
-            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("💾 Backups", b"backups", "primary")],
+            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("➖ کاهش الماس", b"remove_balance", "danger")],
+            [btn("💾 Backups", b"backups", "primary")],
             [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
             [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
             [btn("🔙 برگشت", b"back", "danger")],
@@ -7007,9 +7078,10 @@ async def callbacks(event):
             return
         count = len(list(DATA_DIR.glob("user_*.db")))
         active = len(all_active_sessions())
+        total_diamonds = total_diamonds_in_circulation()
         await edit_or_send(
             event,
-            f"📊 **آمار مدیریت**\n\n👥 کاربران ثبت‌شده: `{count}`\n⚙️ سلف‌های فعال: `{active}`\n📢 جوین‌های اجباری: `{len(get_force_join_channels())}`",
+            f"📊 **آمار مدیریت**\n\n👥 کاربران ثبت‌شده: `{count}`\n⚙️ سلف‌های فعال: `{active}`\n📢 جوین‌های اجباری: `{len(get_force_join_channels())}`\n💎 کل الماس‌های در گردش: `{_fmt_diamonds(total_diamonds)}`",
             [[btn("🔙 مدیریت", b"admin_panel", "danger")]]
         )
         return
@@ -7021,6 +7093,17 @@ async def callbacks(event):
         await edit_or_send(
             event,
             "➕ آیدی عددی کاربر را ارسال کنید:",
+            [[btn("🔙 برگشت", b"back", "primary")]]
+        )
+        return
+
+    if data == "remove_balance":
+        if user_id not in ADMINS:
+            return
+        pending[user_id] = {"step": "remove_balance_user"}
+        await edit_or_send(
+            event,
+            "➖ آیدی عددی کاربر را ارسال کنید:",
             [[btn("🔙 برگشت", b"back", "primary")]]
         )
         return
@@ -7193,6 +7276,8 @@ async def show_buy_balance(event):
 
 @bot.on(events.NewMessage(pattern=r"^/panel$"))
 async def panel(event):
+    if not event.is_private:
+        return
     if event.sender_id not in ADMINS:
         await event.reply("❌ شما دسترسی ندارید.")
         return
