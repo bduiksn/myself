@@ -5909,7 +5909,7 @@ async def on_message(event):
     if event.is_private:
         await private_message(event)
     elif event.is_group or event.is_channel:
-        await group_message(event)
+        await group_commands(event)
 
 
 async def process_referral(user_id: int, referrer: int):
@@ -6325,7 +6325,6 @@ async def admin_text_flow(event):
 # GROUP COMMANDS
 # ============================================================
 
-@bot.on(events.NewMessage)
 async def group_commands(event):
     if not (event.is_group or event.is_channel):
         return
