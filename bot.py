@@ -549,6 +549,19 @@ def _safe_backup_member(name: str):
     return not p.is_absolute() and ".." not in p.parts
 
 
+def _backup_sqlite_database(source: Path, destination: Path):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_conn = sqlite3.connect(source, timeout=30)
+    dest_conn = sqlite3.connect(destination, timeout=30)
+    try:
+        source_conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        source_conn.backup(dest_conn)
+        dest_conn.commit()
+    finally:
+        dest_conn.close()
+        source_conn.close()
+
+
 def create_backup_sync():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -556,11 +569,21 @@ def create_backup_sync():
     archive = BASE_DIR / f"{BACKUP_PREFIX}{stamp}.zip"
     try:
         db_copy = temp_root / "database_users"
-        shutil.copytree(DATA_DIR, db_copy)
+        db_copy.mkdir(parents=True, exist_ok=True)
+        for source in DATA_DIR.glob("user_*.db"):
+            if source.is_file():
+                _backup_sqlite_database(source, db_copy / source.name)
+
+        media_source = BASE_DIR / "banner_media"
+        media_copy = temp_root / "banner_media"
+        if media_source.is_dir():
+            shutil.copytree(media_source, media_copy)
+
         manifest = {
-            "format": 1,
+            "format": 2,
             "created_at": datetime.now().isoformat(),
             "database_dir": "database_users",
+            "banner_media_dir": "banner_media",
             "force_join_channels": get_force_join_channels(),
         }
         (temp_root / "manifest.json").write_text(
@@ -586,12 +609,14 @@ def inspect_backup_sync(archive_path: Path):
         if not all(_safe_backup_member(n) for n in names):
             raise RuntimeError("backup_path_traversal")
         manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-        if int(manifest.get("format", 0)) != 1:
+        if int(manifest.get("format", 0)) not in {1, 2}:
             raise RuntimeError("backup_format")
-        if "database_users/" not in {n if n.endswith("/") else n + "/" for n in names} and not any(
-            n.startswith("database_users/") for n in names
-        ):
+        if not any(n.startswith("database_users/") for n in names):
             raise RuntimeError("backup_database_missing")
+        if int(manifest.get("format", 1)) >= 2 and not any(n.startswith("banner_media/") for n in names):
+            # banner_media is optional when there were no banner files; the DB remains authoritative.
+            if manifest.get("banner_media_dir") != "banner_media":
+                raise RuntimeError("backup_media_manifest")
         return manifest
 
 
@@ -599,22 +624,43 @@ def restore_backup_sync(archive_path: Path):
     manifest = inspect_backup_sync(archive_path)
     restore_root = Path(tempfile.mkdtemp(prefix="husterix_restore_"))
     old_root = BASE_DIR / f".database_users_old_{secrets.token_hex(6)}"
+    old_media = BASE_DIR / f".banner_media_old_{secrets.token_hex(6)}"
+    media_replaced = False
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(restore_root)
         extracted = restore_root / "database_users"
         if not extracted.is_dir():
             raise RuntimeError("backup_database_missing")
+
+        extracted_media = restore_root / "banner_media"
         os.replace(DATA_DIR, old_root)
         os.replace(extracted, DATA_DIR)
+
+        if extracted_media.is_dir():
+            current_media = BASE_DIR / "banner_media"
+            if current_media.exists():
+                os.replace(current_media, old_media)
+            os.replace(extracted_media, current_media)
+            media_replaced = True
+
         fj = manifest.get("force_join_channels")
         if isinstance(fj, list):
             save_force_join_channels(fj)
+
         shutil.rmtree(old_root, ignore_errors=True)
+        if media_replaced:
+            shutil.rmtree(old_media, ignore_errors=True)
         return manifest
     except Exception:
         if not DATA_DIR.exists() and old_root.exists():
             os.replace(old_root, DATA_DIR)
+        if media_replaced:
+            current_media = BASE_DIR / "banner_media"
+            if current_media.exists():
+                shutil.rmtree(current_media, ignore_errors=True)
+            if old_media.exists():
+                os.replace(old_media, current_media)
         raise
     finally:
         shutil.rmtree(restore_root, ignore_errors=True)
@@ -706,10 +752,13 @@ SELF_CLOCK_FONTS = {
     "sans":"𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫","sans_bold":"𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵",
     "mono":"𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿","full":"０１２３４５６７８９",
     "circled":"⓪①②③④⑤⑥⑦⑧⑨","negative":"⓿❶❷❸❹❺❻❼❽❾",
+    "superscript":"⁰¹²³⁴⁵⁶⁷⁸⁹","subscript":"₀₁₂₃₄₅₆₇₈₉",
+    "persian":"۰۱۲۳۴۵۶۷۸۹","arabic":"٠١٢٣٤٥٦٧٨٩","devanagari":"०१२३४५६७८९",
 }
 SELF_FONT_ALIASES = {
     "عادی":"normal","بولد":"bold","دوبل":"double","سانس":"sans","سانس بولد":"sans_bold",
-    "مونو":"mono","فول":"full","دایره":"circled","منفی":"negative"
+    "مونو":"mono","فول":"full","دایره":"circled","منفی":"negative",
+    "بالانویس":"superscript","زیرنویس":"subscript","فارسی":"persian","عربی":"arabic","هندی":"devanagari"
 }
 SELF_ENGLISH_FONTS = {
     "normal": str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
@@ -1043,7 +1092,7 @@ def _self_cb(uid: int, action: str) -> bytes:
 
 def _font_label(kind: str, key: str) -> str:
     labels = {
-        "clock":{"normal":"عادی","bold":"بولد","double":"دوبل","sans":"سانس","sans_bold":"سانس بولد","mono":"مونو","full":"فول","circled":"دایره","negative":"منفی"},
+        "clock":{"normal":"عادی","bold":"بولد","double":"دوبل","sans":"سانس","sans_bold":"سانس بولد","mono":"مونو","full":"فول","circled":"دایره","negative":"منفی","superscript":"بالانویس","subscript":"زیرنویس","persian":"فارسی","arabic":"عربی","devanagari":"هندی"},
         "english":{"normal":"عادی","bold":"بولد","italic":"ایتالیک","bold_italic":"بولد ایتالیک","monospace":"مونو","double":"دوبل"},
     }
     return labels.get(kind, {}).get(key, key)
@@ -1102,70 +1151,6 @@ def self_panel_text(uid):
     )
 
 
-def self_guide_text(page=1):
-    pages = [
-        ("📚 <b>راهنمای سلف • شروع سریع</b>\n<i>صفحه ۱ از ۱۵</i>\n\n"
-         "<blockquote>این راهنما همه قابلیت‌های سلف را از صفر تا صد توضیح می‌دهد. هرجا نوشته شده «ریپلای»، دستور را روی همان پیام بفرست.</blockquote>\n\n"
-         "🕐 <b>ساعت روی نام</b>\nساعت ایران را روی نام پروفایل می‌گذارد.\n\n"
-         "🔤 <b>فونت ساعت / فارسی / انگلیسی</b>\nظاهر ساعت و متن‌های ارسالی را شخصی‌سازی می‌کنند.\n\n"
-         "🌐 <b>ترجمه</b>\nترجمه متن‌های ارسالی به انگلیسی را فعال می‌کند."),
-        ("📚 <b>راهنمای سلف • حضور و پاسخ خودکار</b>\n<i>صفحه ۲ از ۱۵</i>\n\n"
-         "👁 <b>سین</b> → خوانده‌شدن پیام‌های ورودی.\n⌨️ <b>تایپینگ</b> → نمایش وضعیت تایپ.\n🎮 <b>بازی</b> → نمایش وضعیت بازی.\n\n"
-         "💬 <b>پاسخ خودکار قدیمی</b>\n<code>پاسخ خودکار روشن</code>\n<code>پاسخ خودکار جدید سلام</code>\nروی متن پاسخ ریپلای کن: <code>ذخیره پاسخ خودکار سلام</code>\n<code>حذف پاسخ خودکار سلام</code>\n<code>لیست پاسخ خودکار</code>"),
-        ("📚 <b>راهنمای سلف • ریاکشن و قفل</b>\n<i>صفحه ۳ از ۱۵</i>\n\n"
-         "❤️ <b>ریاکشن</b>\nروی پیام کاربر ریپلای کن: <code>ریاکشن 🔥</code>\nحذف: <code>حذف ریاکشن</code>\n\n"
-         "🔒 <b>قفل چت</b>\nدر پیوی روی پیام کاربر ریپلای کن: <code>قفل چت</code>\nخاموش: <code>بازکردن قفل چت</code>"),
-        ("📚 <b>راهنمای سلف • رسانه و OCR</b>\n<i>صفحه ۴ از ۱۵</i>\n\n"
-         "🎙️ <code>متن + ریپلی</code> روی ویس → تبدیل ویس به متن.\n🖼️ <code>OCR</code> روی تصویر → استخراج متن.\n\n"
-         "🎵 <code>ویس به mp3</code>\n<code>mp3 به ویس</code>\n<code>ویدیو به ویس</code>\n<code>ویدیو به mp3</code>"),
-        ("📚 <b>راهنمای سلف • فایل و ذخیره چنل</b>\n<i>صفحه ۵ از ۱۵</i>\n\n"
-         "📦 روی ZIP/RAR ریپلای: <code>استخراج + ریپلای</code>\n📥 روی پیام: <code>دانلود</code>\n\n"
-         "💾 از پنل «ذخیره چنل» را بزن؛ چنل، نوع مدیا و تعداد را انتخاب کن و تأیید کن."),
-        ("📚 <b>راهنمای سلف • تبچی</b>\n<i>صفحه ۶ از ۱۵</i>\n\n"
-         "📢 ساخت بنر با ریپلای:\n<code>تنظیم بنر فور</code> یا <code>تنظیم بنر کپی</code>\n\n"
-         "🎯 مقصد داخل گروه:\n<code>تنظیم گپ هدف بنر ۱</code>\n<code>حذف گپ هدف بنر ۱</code>\n<code>تنظیم هدف بنر ۱ تمام گپ ها</code>"),
-        ("📚 <b>راهنمای سلف • تبچی و زمان</b>\n<i>صفحه ۷ از ۱۵</i>\n\n"
-         "⏱ <code>تنظیم عدد بنر ۱ ۳۰ دقیقه</code>\n🟢 <code>تبچی روشن</code>\n🔴 <code>تبچی خاموش</code>\n📋 <code>لیست بنر هام</code>\n🗑 <code>حذف بنر ۱</code>\n🧹 <code>پاکسازی لیست بنر ها</code>\n\n"
-         "تبچی و ارسال بنر فقط با اکانت SELF انجام می‌شود."),
-        ("📚 <b>راهنمای سلف • اسپم</b>\n<i>صفحه ۸ از ۱۵</i>\n\n"
-         "🔁 <b>تکرار</b>\nروی پیام موردنظر ریپلای کن و بنویس:\n<code>تکرار 160</code>\n\n"
-         "پیام همان لحظه با اکانت SELF در همان چت تکرار می‌شود.\nحداقل: <b>۱</b> • حداکثر: <b>۱۰۰۰</b>\n\n"
-         "⚠️ استفاده زیاد ممکن است با محدودیت Flood تلگرام مواجه شود."),
-        ("📚 <b>راهنمای سلف • کامنت اول</b>\n<i>صفحه ۹ از ۱۵</i>\n\n"
-         "💬 <b>۱) انتخاب کانال</b>\nاز پنل «کامنت اول»، کانال را دقیقاً مثل «ذخیره چنل» انتخاب کن.\n\n"
-         "✏️ <b>۲) متن کامنت</b>\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.\n\n"
-         "🟢/🔴 فعال و خاموش‌کردن و 🗑 حذف تنظیمات از پنل همان کانال انجام می‌شود."),
-        ("📚 <b>راهنمای سلف • مدیریت کامنت</b>\n<i>صفحه ۱۰ از ۱۵</i>\n\n"
-         "📋 <code>لیست کامنت</code> → وضعیت کانال‌ها و متن هر کانال.\n🧹 <code>پاکسازی لیست کامنت</code> → حذف همه تنظیمات کامنت.\n\n"
-         "SELF پست کانال را تشخیص می‌دهد، Discussion متصل را پیدا می‌کند و متن همان کانال را دقیقاً به پیام پست ریپلای می‌کند."),
-        ("📚 <b>راهنمای سلف • منشی</b>\n<i>صفحه ۱۱ از ۱۵</i>\n\n"
-         "🤵 <b>تنظیم پاسخ</b>\nروی پیام متنی یا مدیا ریپلای کن:\n<code>تنظیم منشی</code>\n\n"
-         "🟢 <code>منشی روشن</code>\n🔴 <code>منشی خاموش</code>\n⏱ <code>تنظیم زمان منشی 15</code>\n\n"
-         "زمان مجاز بین <b>۵ تا ۶۰ دقیقه</b> است. منشی فقط در پیوی فعال است و برای هر کاربر در هر بازه فقط یک پاسخ می‌فرستد."),
-        ("📚 <b>راهنمای سلف • پین و بن گروه</b>\n<i>صفحه ۱۲ از ۱۵</i>\n\n"
-         "📌 روی پیام ریپلای: <code>پین</code>\n📌 حذف: <code>حذف پین</code>\n🚫 روی کاربر ریپلای: <code>بن</code> یا <code>سیک</code>\n🔓 رفع بن: <code>آن بن</code>\n\n"
-         "این دستورات فقط در گروه و در صورت ادمین‌بودن اکانت SELF اجرا می‌شوند."),
-        ("📚 <b>راهنمای سلف • بن سراسری</b>\n<i>صفحه ۱۳ از ۱۵</i>\n\n"
-         "🚫 افزودن با آیدی/یوزرنیم:\n<code>بن سراسری @username</code>\nیا روی پیام کاربر ریپلای کن و <code>بن سراسری</code> بفرست.\n\n"
-         "🗑 <code>حذف بن سراسری @username</code>\n📋 <code>لیست بن سراسری</code>\n\n"
-         "کاربر موجود در لیست، هنگام فعالیت در گروه‌های تحت مدیریت SELF محدود می‌شود."),
-        ("📚 <b>راهنمای سلف • تگ اعضا</b>\n<i>صفحه ۱۴ از ۱۵</i>\n\n"
-         "🏷 <code>تگ 20</code> → تگ ۲۰ عضو.\n🏷 <code>همه</code> → تگ تمام اعضای قابل دریافت گروه.\n\n"
-         "پیام دستور بعد از شروع حذف می‌شود و تگ‌ها در چند پیام گروهی ارسال می‌شوند. می‌توانی روی یک پیام هم ریپلای کنی تا تگ‌ها در همان رشته ارسال شوند."),
-        ("📚 <b>راهنمای سلف • جمع‌بندی</b>\n<i>صفحه ۱۵ از ۱۵</i>\n\n"
-         "✨ <b>ترتیب پیشنهادی برای قابلیت‌های جدید</b>\n"
-         "۱. منشی → تنظیم منشی → تنظیم زمان → روشن\n"
-         "۲. کامنت اول → تنظیم متن → ثبت کانال\n"
-         "۳. تبچی → ساخت بنر → مقصد → زمان → روشن\n"
-         "۴. مدیریت گروه → فقط در گروهی که ادمین هستی\n"
-         "۵. تگ → تعداد یا همه\n"
-         "۶. اسپم → ریپلای پیام + <code>تکرار عدد</code>\n\n"
-         "<blockquote>🔐 همه ارسال‌های این قابلیت‌ها توسط اکانت SELF انجام می‌شود، نه BOT.</blockquote>\n\n"
-         "✨ برای برگشت، دکمه «🔙 بازگشت» را بزن."),
-    ]
-    page = max(1, min(int(page), len(pages)))
-    return pages[page - 1]
-
 SELF_FEATURE_GUIDES = {
     "clock": ("🕐 <b>ساعت روی نام</b>\n\nساعت ایران را روی نام پروفایل نمایش می‌دهد.\n\nاز دکمه «ساعت» در پنل روشن/خاموش کن."),
     "fonts": ("🔤 <b>فونت‌ها</b>\n\nاز پنل می‌توانی فونت ساعت، فارسی و انگلیسی را تغییر بدهی.\n\n🔹 فونت ساعت: تغییر ظاهر ساعت روی نام\n🔹 فونت فارسی: تغییر ظاهر متن فارسی\n🔹 فونت انگلیسی: تغییر ظاهر متن انگلیسی"),
@@ -1209,18 +1194,6 @@ def self_feature_guide_buttons(uid):
         rows.append(row)
     rows.append([btn("💾 ذخیره چنل", _self_cb(uid, "feature_help:channel_save"), "primary")])
     rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")])
-    return rows
-
-def self_guide_buttons(uid, page=1):
-    total_pages = 15
-    page = max(1, min(int(page), total_pages))
-    nav = []
-    if page > 1:
-        nav.append(btn("◀️ قبلی", _self_cb(uid, f"guide_page:{page-1}"), "danger"))
-    if page < total_pages:
-        nav.append(btn("بعدی ▶️", _self_cb(uid, f"guide_page:{page+1}"), "success"))
-    rows = [nav] if nav else []
-    rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")])
     return rows
 
 def self_font_preview(uid, kind):
@@ -2234,7 +2207,7 @@ async def handle_self_panel_callback(event):
     if action == "guide":
         try:
             await event.edit(
-                "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن تا آموزش کامل و دستوراتش نمایش داده شود:",
+                "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:",
                 parse_mode="html",
                 buttons=self_feature_guide_buttons(uid),
             )
@@ -2377,22 +2350,6 @@ async def handle_self_panel_callback(event):
             parse_mode="html",
             buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]],
         )
-        return True
-    if action.startswith("guide_page:"):
-        try:
-            page = int(action.split(":", 1)[1])
-        except ValueError:
-            page = 1
-        page = max(1, min(page, 15))
-        try:
-            await event.edit(
-                self_guide_text(page),
-                parse_mode="html",
-                buttons=self_guide_buttons(uid, page),
-            )
-        except Exception as exc:
-            print(f"[SELF {uid}] guide page {page} callback failed: {exc}")
-            await safe_answer(event, "❌ صفحه راهنما باز نشد؛ دوباره تلاش کن.", True)
         return True
     if action == "panel":
         await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
@@ -5921,11 +5878,11 @@ async def inline_query_handler(event):
 
     if query == "راهنما":
         result = event.builder.article(
-            title="📚 راهنمای سلف",
-            description="راهنمای ۱۱ صفحه‌ای سلف با آموزش کامل قابلیت‌ها.",
-            text=self_guide_text(1),
+            title="📚 راهنمای قابلیت‌ها",
+            description="قابلیت موردنظر را از منوی راهنما انتخاب کنید.",
+            text="📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:",
             parse_mode="html",
-            buttons=self_guide_buttons(uid, 1),
+            buttons=self_feature_guide_buttons(uid),
         )
     else:
         result = event.builder.article(
@@ -6665,12 +6622,8 @@ async def callbacks(event):
         return
 
     if data == "back":
-        await edit_or_send(
-            event,
-            "به سلـف‌ساز HusteRIX Dimond Self خوش آمدید! 💎\n\n"
-            "برای ساخت سلـف‌ربات، خرید الماس یا دریافت پاداش زیرمجـموعه‌گـیری، لطـفاً یکی از گزینـه‌های منوی زیر را انتـخاب کنـید:",
-            main_buttons(user_id)
-        )
+        await event.delete()
+        await send_main(user_id, user_id)
         return
 
     if data == "referral_system":
