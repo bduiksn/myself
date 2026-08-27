@@ -51,6 +51,7 @@ from telethon.errors import (
     PhoneCodeExpiredError,
     PhoneNumberInvalidError,
     FloodWaitError,
+    MessageNotModifiedError,
 )
 
 # ============================================================
@@ -1951,6 +1952,14 @@ async def _cs_open(event, uid):
         )
     return True
 
+async def safe_callback_edit(event, *args, **kwargs):
+    """Edit a callback message and ignore Telegram's harmless no-op error."""
+    try:
+        return await event.edit(*args, **kwargs)
+    except MessageNotModifiedError:
+        return None
+
+
 async def handle_self_panel_callback(event):
     data = event.data.decode("utf-8", errors="ignore")
     parts = data.split(":", 2)
@@ -1993,7 +2002,7 @@ async def handle_self_panel_callback(event):
                 "access_hash": item.get("access_hash"),
                 "channel_title": item["title"],
             })
-            await event.edit(
+            await safe_callback_edit(event, 
                 f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n\nنوع مدیا را انتخاب کن:",
                 parse_mode="html", buttons=_cs_media_buttons(uid)
             )
@@ -2004,12 +2013,12 @@ async def handle_self_panel_callback(event):
             if kind not in {"photos", "videos", "music", "voice", "text", "all"} or session.get("step") != "media":
                 return True
             session.update({"step": "count", "media": kind, "count": 0})
-            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
+            await safe_callback_edit(event, _cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
             return True
 
         if action == "cs_media_back":
             session["step"] = "media"
-            await event.edit(
+            await safe_callback_edit(event, 
                 f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(session.get('channel_title','چنل'))}</b>\n\nنوع مدیا را انتخاب کن:",
                 parse_mode="html", buttons=_cs_media_buttons(uid)
             )
@@ -2026,18 +2035,18 @@ async def handle_self_panel_callback(event):
                 else:
                     await safe_answer(event, f"⚠️ حداکثر {CHANNEL_SAVE_MAX_COUNT} مورد است.", True)
                     return True
-            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
+            await safe_callback_edit(event, _cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
             return True
 
         if action == "cs_back" and session.get("step") == "count":
             value = str(session.get("count", 0))
             session["count"] = int(value[:-1] or "0")
-            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
+            await safe_callback_edit(event, _cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, session["count"]))
             return True
 
         if action == "cs_clear" and session.get("step") == "count":
             session["count"] = 0
-            await event.edit(_cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
+            await safe_callback_edit(event, _cs_count_text(session), parse_mode="html", buttons=_cs_count_buttons(uid, 0))
             return True
 
         if action == "cs_confirm" and session.get("step") == "count":
@@ -2050,7 +2059,7 @@ async def handle_self_panel_callback(event):
                 return True
             client = self_clients.get(uid)
             if not client:
-                await event.edit("❌ سلف فعال نیست.", parse_mode="html", buttons=self_panel_buttons(uid))
+                await safe_callback_edit(event, "❌ سلف فعال نیست.", parse_mode="html", buttons=self_panel_buttons(uid))
                 _cs_clear(uid)
                 return True
 
@@ -2065,7 +2074,7 @@ async def handle_self_panel_callback(event):
             # Give the user immediate feedback when possible, but never make this
             # cosmetic edit a prerequisite for the actual save worker.
             with contextlib.suppress(Exception):
-                await event.edit(
+                await safe_callback_edit(event, 
                     f"💾 <b>ذخیره چنل</b>\n\n📢 <b>{html.escape(session['channel_title'])}</b>\n\n"
                     "⏳ در حال آماده‌سازی...\n"
                     "<code>░░░░░░░░░░░░░░░░</code> <b>0%</b>",
@@ -2089,7 +2098,7 @@ async def handle_self_panel_callback(event):
         # confirmation instead of a dead/unchanged inline panel.
         await safe_answer(event, "پنل با موفقیت بسته شد.")
         with contextlib.suppress(Exception):
-            await event.edit("✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
+            await safe_callback_edit(event, "✅ پنل با موفقیت بسته شد.", parse_mode="html", buttons=None)
         return True
     if action == "comment_setup":
         try:
@@ -2118,10 +2127,10 @@ async def handle_self_panel_callback(event):
                 rows.append([btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")])
                 text="💬 <b>کامنت اول</b>\n\nکانال را انتخاب کن:"
 
-            await event.edit(text,parse_mode="html",buttons=rows)
+            await safe_callback_edit(event, text,parse_mode="html",buttons=rows)
         except Exception as exc:
             logging.exception("first comment channel list failed")
-            await event.edit(
+            await safe_callback_edit(event, 
                 f"❌ <b>دریافت کانال‌ها ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",
                 parse_mode="html",
                 buttons=[[btn("🔙 بازگشت",_self_cb(uid,"panel"),"primary")]]
@@ -2143,43 +2152,43 @@ async def handle_self_panel_callback(event):
             full=await client(functions.channels.GetFullChannelRequest(channel=entity))
             did=getattr(getattr(full,"full_chat",None),"linked_chat_id",None)
             if not did:
-                await event.edit(f"❌ <b>{html.escape(getattr(entity,'title','کانال'))}</b>\n\nاین کانال Discussion متصل ندارد.",parse_mode="html",buttons=[[btn("🔄 انتخاب کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+                await safe_callback_edit(event, f"❌ <b>{html.escape(getattr(entity,'title','کانال'))}</b>\n\nاین کانال Discussion متصل ندارد.",parse_mode="html",buttons=[[btn("🔄 انتخاب کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
                 return True
             discussion=await client.get_entity(int(did)); old=_first_comment_config(uid,cid) or {}
             item={"id":int(entity.id),"access_hash":getattr(entity,"access_hash",None),"title":getattr(entity,"title","کانال"),"username":getattr(entity,"username",None),"discussion_id":int(did),"discussion_access_hash":getattr(discussion,"access_hash",None),"text":str(old.get("text") or "")[:4096],"enabled":bool(old.get("enabled",True))}
             _upsert_first_comment_config(uid,item); _set_comment_target(uid,cid)
             status="🟢 فعال" if item["enabled"] and item["text"] else ("🟡 بدون متن" if item["enabled"] else "🔴 خاموش")
             preview=html.escape(item["text"][:500]) if item["text"] else "❌ تنظیم نشده"
-            await event.edit(f"💬 <b>کامنت اول</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n💬 Discussion: <b>{html.escape(getattr(discussion,'title','گروه گفتگو'))}</b>\n\nوضعیت: <b>{status}</b>\n📝 متن فعلی: <blockquote>{preview}</blockquote>\n\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.",parse_mode="html",buttons=[[btn("✏️ راهنمای تنظیم متن",_self_cb(uid,"comment_text_help"),"success"),btn("🗑 حذف تنظیم کانال",_self_cb(uid,"comment_remove"),"danger")],[btn("🔴 خاموش" if item["enabled"] else "🟢 فعال",_self_cb(uid,"comment_toggle"),"danger" if item["enabled"] else "success"),btn("🔄 کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+            await safe_callback_edit(event, f"💬 <b>کامنت اول</b>\n\n📢 <b>{html.escape(item['title'])}</b>\n💬 Discussion: <b>{html.escape(getattr(discussion,'title','گروه گفتگو'))}</b>\n\nوضعیت: <b>{status}</b>\n📝 متن فعلی: <blockquote>{preview}</blockquote>\n\nروی یک پیام متنی ریپلای کن و <code>تنظیم کامنت</code> بفرست.",parse_mode="html",buttons=[[btn("✏️ راهنمای تنظیم متن",_self_cb(uid,"comment_text_help"),"success"),btn("🗑 حذف تنظیم کانال",_self_cb(uid,"comment_remove"),"danger")],[btn("🔴 خاموش" if item["enabled"] else "🟢 فعال",_self_cb(uid,"comment_toggle"),"danger" if item["enabled"] else "success"),btn("🔄 کانال دیگر",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         except Exception as exc:
-            await event.edit(f"❌ <b>تنظیم کانال ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔄 تلاش دوباره",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+            await safe_callback_edit(event, f"❌ <b>تنظیم کانال ناموفق بود.</b>\n\n<code>{html.escape(str(exc))}</code>",parse_mode="html",buttons=[[btn("🔄 تلاش دوباره",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         return True
 
     if action == "comment_toggle":
         cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
         if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
         cfg["enabled"]=not bool(cfg.get("enabled",True)); _upsert_first_comment_config(uid,cfg)
-        await event.edit(f"{'🟢 کامنت اول فعال شد.' if cfg['enabled'] else '🔴 کامنت اول خاموش شد.'}",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
+        await safe_callback_edit(event, f"{'🟢 کامنت اول فعال شد.' if cfg['enabled'] else '🔴 کامنت اول خاموش شد.'}",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
 
     if action == "comment_remove":
         cid=_comment_target(uid)
         if not cid or not _remove_first_comment_config(uid,cid): await safe_answer(event,"❌ تنظیمی برای حذف پیدا نشد.",True); return True
-        await event.edit("✅ <b>تنظیمات این کانال کامل حذف شد.</b>",parse_mode="html",buttons=[[btn("📢 لیست کانال‌ها",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
+        await safe_callback_edit(event, "✅ <b>تنظیمات این کانال کامل حذف شد.</b>",parse_mode="html",buttons=[[btn("📢 لیست کانال‌ها",_self_cb(uid,"comment_setup"),"primary")],[btn("🏠 پنل اصلی",_self_cb(uid,"panel"),"danger")]])
         return True
 
     if action == "comment_text_help":
         cid=_comment_target(uid); cfg=_first_comment_config(uid,cid) if cid else None
         if not cfg: await safe_answer(event,"❌ ابتدا کانال را انتخاب کن.",True); return True
-        await event.edit(f"✏️ <b>تنظیم متن کامنت</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n\nروی یک پیام متنی ریپلای کن و بنویس:\n<code>تنظیم کامنت</code>\n\nمتن برای همین کانال ذخیره و کامنت اول فعال می‌شود.",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
+        await safe_callback_edit(event, f"✏️ <b>تنظیم متن کامنت</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n\nروی یک پیام متنی ریپلای کن و بنویس:\n<code>تنظیم کامنت</code>\n\nمتن برای همین کانال ذخیره و کامنت اول فعال می‌شود.",parse_mode="html",buttons=[[btn("🔙 برگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
 
     if action == "comment_help":
-        await event.edit("💬 <b>کامنت اول</b>\n\n📢 کانال را از لیست انتخاب کن.\n✏️ روی پیام متنی ریپلای + <code>تنظیم کامنت</code>\n🟢/🔴 فعال و خاموش از پنل همان کانال\n🗑 حذف تنظیمات از پنل همان کانال",parse_mode="html",buttons=[[btn("🔙 بازگشت",_self_cb(uid,"comment_setup"),"primary")]])
+        await safe_callback_edit(event, "💬 <b>کامنت اول</b>\n\n📢 کانال را از لیست انتخاب کن.\n✏️ روی پیام متنی ریپلای + <code>تنظیم کامنت</code>\n🟢/🔴 فعال و خاموش از پنل همان کانال\n🗑 حذف تنظیمات از پنل همان کانال",parse_mode="html",buttons=[[btn("🔙 بازگشت",_self_cb(uid,"comment_setup"),"primary")]])
         return True
 
     if action == "secretary_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🤵 <b>منشی</b>\n\n"
             "<code>تنظیم منشی</code> + ریپلای روی متن/مدیا\n"
             "<code>منشی روشن</code> / <code>منشی خاموش</code>\n"
@@ -2189,7 +2198,7 @@ async def handle_self_panel_callback(event):
         )
         return True
     if action == "group_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🛡 <b>مدیریت گروه</b>\n\n"
             "<code>پین</code> / <code>حذف پین</code> با ریپلای\n"
             "<code>بن</code> یا <code>سیک</code> با ریپلای\n"
@@ -2199,14 +2208,14 @@ async def handle_self_panel_callback(event):
         )
         return True
     if action == "tag_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🏷 <b>تگ اعضا</b>\n\n<code>تگ 20</code>\n<code>همه</code>\n\nپیام دستور حذف و تگ‌ها گروهی ارسال می‌شوند.",
             parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]]
         )
         return True
     if action == "guide":
         try:
-            await event.edit(
+            await safe_callback_edit(event, 
                 "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:",
                 parse_mode="html",
                 buttons=self_feature_guide_buttons(uid),
@@ -2218,9 +2227,9 @@ async def handle_self_panel_callback(event):
     if action == "ping":
         started = time.perf_counter()
         with contextlib.suppress(Exception):
-            await event.edit("🏓 <b>در حال محاسبه پینگ...</b>", parse_mode="html")
+            await safe_callback_edit(event, "🏓 <b>در حال محاسبه پینگ...</b>", parse_mode="html")
         latency = round((time.perf_counter() - started) * 1000, 2)
-        await event.edit(
+        await safe_callback_edit(event, 
             f"🏓 <b>پینگ سلف</b>\\n\\n⚡ <code>{latency} ms</code>",
             parse_mode="html",
             buttons=[[btn("🔙 بازگشت", _self_cb(uid, "panel"), "primary")]],
@@ -2241,7 +2250,7 @@ async def handle_self_panel_callback(event):
             )
         if not banners:
             body.append("\nهنوز بنری ثبت نشده است.")
-        await event.edit(
+        await safe_callback_edit(event, 
             "".join(body), parse_mode="html",
             buttons=[
                 [btn("🟢 روشن کردن تبچی" if value != "on" else "🔴 خاموش کردن تبچی", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
@@ -2258,7 +2267,7 @@ async def handle_self_panel_callback(event):
         if value == "on":
             client = _get_tabchi_client(uid)
             if not client:
-                await event.edit(
+                await safe_callback_edit(event, 
                     "❌ <b>سلف فعال نیست.</b>\n\nتبچی فقط با اکانت SELF اجرا می‌شود و با BOT ارسال نخواهد کرد.",
                     parse_mode="html",
                 )
@@ -2283,7 +2292,7 @@ async def handle_self_panel_callback(event):
             )
         if not banners:
             body.append("\nهنوز بنری ثبت نشده است.")
-        await event.edit(
+        await safe_callback_edit(event, 
             "".join(body), parse_mode="html",
             buttons=[
                 [btn("🟢 روشن کردن تبچی" if value != "on" else "🔴 خاموش کردن تبچی", _self_cb(uid, "banner_toggle"), "success" if value != "on" else "danger")],
@@ -2294,7 +2303,7 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "banner_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🤖 <b>راهنمای تبچی</b>\n<i>مدیریت بنر، مقصدها و ارسال خودکار</i>\n\n"
             "<blockquote>📌 <b>نکته:</b> عدد یعنی شماره بنر؛ مثلاً <code>۱</code>.</blockquote>\n\n"
             "<b>① روشن / خاموش</b>\n<code>تبچی روشن</code>\n<code>تبچی خاموش</code>\n"
@@ -2318,7 +2327,7 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "currency":
-        await event.edit(
+        await safe_callback_edit(event, 
             "💱 <b>نرخ لحظه‌ای ارز</b>\n\n"
             "قیمت را با این دستور بگیر:\n\n"
             "<code>قیمت BTC</code>\n<code>قیمت ETH</code>\n<code>قیمت SOL</code>\n<code>قیمت USDT</code>\n\n"
@@ -2328,7 +2337,7 @@ async def handle_self_panel_callback(event):
         )
         return True
     if action == "logo":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🎨 <b>لوگوساز</b>\n\n"
             "ساخت لوگو با ۱۲ قالب داخلی و رایگان:\n<code>لوگو 12 HusteRIX</code>",
             parse_mode="html",
@@ -2338,25 +2347,25 @@ async def handle_self_panel_callback(event):
 
 
     if action == "feature_help_menu":
-        await event.edit("📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=self_feature_guide_buttons(uid))
+        await safe_callback_edit(event, "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=self_feature_guide_buttons(uid))
         return True
     if action.startswith("feature_help:"):
         key=action.split(":",1)[1]
         body=SELF_FEATURE_GUIDES.get(key)
         if not body:
             return True
-        await event.edit(
+        await safe_callback_edit(event, 
             body,
             parse_mode="html",
             buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]],
         )
         return True
     if action == "panel":
-        await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+        await safe_callback_edit(event, self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
         return True
 
     if action == "cleanup":
-        await event.edit(
+        await safe_callback_edit(event, 
             "🧹 <b>پاکسازی اکانت</b>\n\n"
             "هر بخش مستقل است و فقط همان بخش را پاک می‌کند.\n"
             "💾 Saved Messages دست‌نخورده می‌ماند.",
@@ -2385,7 +2394,7 @@ async def handle_self_panel_callback(event):
         }
         if target not in labels:
             return True
-        await event.edit(
+        await safe_callback_edit(event, 
             f"⚠️ <b>{labels[target]}</b>\n\n"
             "این عملیات قابل برگشت نیست.\n"
             "Saved Messages دست‌نخورده می‌ماند.\n\n"
@@ -2403,11 +2412,11 @@ async def handle_self_panel_callback(event):
         if target not in {"chats", "groups", "channels", "contacts", "bots", "all"}:
             return True
         if self_get(uid, "cleanup_running", "off") == "on":
-            await event.edit("⏳ یک پاکسازی همین الان در حال اجراست.", parse_mode="html", buttons=self_panel_buttons(uid))
+            await safe_callback_edit(event, "⏳ یک پاکسازی همین الان در حال اجراست.", parse_mode="html", buttons=self_panel_buttons(uid))
             return True
         client = self_clients.get(uid)
         if not client:
-            await event.edit("❌ سلف فعال نیست.", buttons=self_panel_buttons(uid))
+            await safe_callback_edit(event, "❌ سلف فعال نیست.", buttons=self_panel_buttons(uid))
             return True
         _cleanup_panel_messages[uid] = (
             getattr(event, "chat_id", None),
@@ -2424,18 +2433,18 @@ async def handle_self_panel_callback(event):
             )
         )
         _cleanup_tasks[uid] = task
-        await event.edit("⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
+        await safe_callback_edit(event, "⏳ پاکسازی شروع شد…\nپیشرفت لحظه‌ای در همین پنل نمایش داده می‌شود.", parse_mode="html", buttons=self_panel_buttons(uid))
         return True
 
     if action == "lock_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             self_panel_text(uid) + "\n\n🔒 روی پیام کاربر در پیوی ریپلای کن و بنویس: <b>قفل چت</b>\nبرای خاموش‌کردن: <b>بازکردن قفل چت</b>",
             parse_mode="html", buttons=self_panel_buttons(uid)
         )
         return True
 
     if action == "block_help":
-        await event.edit(
+        await safe_callback_edit(event, 
             self_panel_text(uid) + "\n\n🚫 داخل گروه روی پیام کاربر ریپلای کن و بنویس: <b>بلاک + ریپلای</b>",
             parse_mode="html", buttons=self_panel_buttons(uid)
         )
@@ -2450,7 +2459,7 @@ async def handle_self_panel_callback(event):
         key = toggles[action]
         current = self_get(uid, key, "off")
         self_set(uid, key, "off" if current == "on" else "on")
-        await event.edit(self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
+        await safe_callback_edit(event, self_panel_text(uid), parse_mode="html", buttons=self_panel_buttons(uid))
         return True
 
     if action == "clockfont":
@@ -2466,7 +2475,7 @@ async def handle_self_panel_callback(event):
             with contextlib.suppress(Exception):
                 await update_time_name(uid, client)
 
-        await event.edit(
+        await safe_callback_edit(event, 
             self_panel_text(uid) + "\n\n" + self_font_preview(uid, "clock"),
             parse_mode="html",
             buttons=self_panel_buttons(uid),
@@ -2478,7 +2487,7 @@ async def handle_self_panel_callback(event):
         cur = self_get(uid, "english_font", "normal")
         nxt = names[(names.index(cur) + 1) % len(names)] if cur in names else names[0]
         self_set(uid, "english_font", nxt)
-        await event.edit(
+        await safe_callback_edit(event, 
             self_panel_text(uid) + "\n\n" + self_font_preview(uid, "english"),
             parse_mode="html",
             buttons=self_panel_buttons(uid),
@@ -2490,7 +2499,7 @@ async def handle_self_panel_callback(event):
         self_set(uid, "auto_reply", "off" if current == "on" else "on")
         mapping = self_auto_reply_map(uid)
         status = "روشن ✅" if self_get(uid, "auto_reply") == "on" else "خاموش ❌"
-        await event.edit(
+        await safe_callback_edit(event, 
             f"💬 <b>پاسخ خودکار</b>\\n\\nوضعیت: {status}\\nکلمات ثبت‌شده: {len(mapping)}\\n\\n"
             "دستورات:\\n"
             "<code>پاسخ خودکار جدید [کلمه]</code>\\n"
@@ -2503,7 +2512,7 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "reaction":
-        await event.edit(
+        await safe_callback_edit(event, 
             self_panel_text(uid) + "\n\n❤️ برای فعال‌سازی: روی پیام کاربر ریپلای کن و «ریاکشن ❤️» بفرست.\nبرای حذف: «حذف ریاکشن»." ,
             parse_mode="html",
             buttons=self_panel_buttons(uid),
