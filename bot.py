@@ -34,7 +34,7 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telethon import TelegramClient, events, Button, functions, types
+from telethon import TelegramClient, events, Button, functions, types, utils
 from telethon.tl.functions.messages import (
     SetTypingRequest,
     SendReactionRequest,
@@ -97,6 +97,13 @@ CRYPTO_PROVIDER_TIMEOUT = 12
 TRANSFER_TAX = 0.10
 GAME_TAX = 0.10
 GAME_TIMEOUT = 300
+
+# The BOT-side game/balance features are available only in the official group.
+# This restriction does NOT affect the logged-in SELF workers.
+OFFICIAL_GROUP_USERNAME = "DimondSelfGap"
+OFFICIAL_GROUP_ID = None
+BOT_ENABLED_KEY = "bot_enabled"
+BOT_UPDATE_TEXT = "ربات درحال آپدیت هست ، لطفاً منتظر بمونید!"
 REFERRAL_REWARD = 25
 MIN_GAME = 20
 MIN_TRANSFER = 10
@@ -449,6 +456,63 @@ def _admin_state(key: str, default=None):
 def _set_admin_state(key: str, value):
     if ADMINS:
         set_setting(int(ADMINS[0]), key, value)
+
+
+def is_bot_enabled() -> bool:
+    """Return whether the BOT-side features are enabled. SELF workers are independent."""
+    return str(_admin_state(BOT_ENABLED_KEY, "on")).lower() == "on"
+
+
+def set_bot_enabled(enabled: bool):
+    _set_admin_state(BOT_ENABLED_KEY, "on" if enabled else "off")
+
+
+async def resolve_official_group_id():
+    """Resolve the official group once after the BOT client is connected."""
+    global OFFICIAL_GROUP_ID
+    try:
+        entity = await bot.get_entity("@" + OFFICIAL_GROUP_USERNAME)
+        OFFICIAL_GROUP_ID = int(utils.get_peer_id(entity, add_mark=True))
+        print(f"[BOT GROUP] Official group @{OFFICIAL_GROUP_USERNAME} -> {OFFICIAL_GROUP_ID}")
+    except Exception as exc:
+        OFFICIAL_GROUP_ID = None
+        print(f"[BOT GROUP] Failed to resolve @{OFFICIAL_GROUP_USERNAME}: {exc}")
+    return OFFICIAL_GROUP_ID
+
+
+async def is_official_group_event(event) -> bool:
+    """True only for messages/callbacks originating from the official group."""
+    global OFFICIAL_GROUP_ID
+    if not (getattr(event, "is_group", False) or getattr(event, "is_channel", False)):
+        return False
+    chat_id = getattr(event, "chat_id", None)
+    if chat_id is None:
+        return False
+    if OFFICIAL_GROUP_ID is None:
+        await resolve_official_group_id()
+    return OFFICIAL_GROUP_ID is not None and int(chat_id) == int(OFFICIAL_GROUP_ID)
+
+
+async def cancel_all_active_games_for_update():
+    """Cancel pending BOT games safely when the BOT is put into update mode."""
+    games = list(active_games.items())
+    active_games.clear()
+    for (chat_id, message_id), game in games:
+        organizer = int(game.get("organizer", 0))
+        amount = int(game.get("amount", 0))
+        task = game.get("task")
+        if task:
+            task.cancel()
+        if organizer and amount > 0:
+            change_balance(organizer, amount)
+        with contextlib.suppress(Exception):
+            await bot.delete_messages(chat_id, message_id)
+        if organizer:
+            with contextlib.suppress(Exception):
+                await bot.send_message(
+                    organizer,
+                    f"❌ بازی به دلیل فعال شدن حالت آپدیت لغو شد.\n💎 {amount:,} الماس به حساب شما برگشت."
+                )
 
 
 def get_force_join_channels():
@@ -5950,6 +6014,10 @@ async def private_message(event):
 
     init_user_db(user_id)
 
+    if not is_bot_enabled() and user_id not in ADMINS:
+        await event.reply(BOT_UPDATE_TEXT)
+        return
+
     # --------------------------------------------------------
     # START + REFERRAL
     # --------------------------------------------------------
@@ -6338,10 +6406,21 @@ async def group_commands(event):
     if not (event.is_group or event.is_channel):
         return
 
+    # BOT game/balance features are strictly limited to the official group.
+    if not await is_official_group_event(event):
+        return
+
     text = (event.raw_text or "").strip()
     user_id = event.sender_id
 
     if not user_id:
+        return
+
+    if not is_bot_enabled():
+        # During updates the official group remains responsive only with the
+        # maintenance message; SELF functionality is unaffected.
+        if text == "بازی" or text.startswith("بازی ") or text == "موجودی" or text.startswith("انتقال "):
+            await event.reply(BOT_UPDATE_TEXT)
         return
 
     if text == "موجودی":
@@ -6512,6 +6591,37 @@ async def game_timeout(chat_id, message_id, organizer_id, amount):
 async def callbacks(event):
     data = event.data.decode("utf-8", errors="ignore")
     user_id = event.sender_id
+
+    # Admin can always enter the management panel and switch update mode.
+    if data == "bot_toggle":
+        if user_id not in ADMINS:
+            await safe_answer(event, "❌ دسترسی ندارید.", True)
+            return
+        new_state = not is_bot_enabled()
+        set_bot_enabled(new_state)
+        if not new_state:
+            await cancel_all_active_games_for_update()
+        status = "روشن ✅" if new_state else "خاموش ❌"
+        await safe_answer(event, f"ربات {status}")
+        buttons = [
+            [btn("➕ اضافه کردن الماس", b"add_balance", "success"), btn("➖ کاهش الماس", b"remove_balance", "danger")],
+            [btn("💾 Backups", b"backups", "primary")],
+            [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
+            [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
+            [btn("🟢 روشن کردن بات" if not new_state else "🔴 خاموش کردن بات", b"bot_toggle", "success" if not new_state else "danger")],
+            [btn("🔙 برگشت", b"back", "danger")],
+        ]
+        await edit_or_send(event, "🛠 **مدیریت**\n\n" + f"🤖 وضعیت بات: **{status}**\n\nیک گزینه را انتخاب کنید:", buttons)
+        return
+
+    # Game/balance callback buttons are valid only inside the official group.
+    if data.startswith(("game_join_", "game_cancel_", "game_noop_", "balance_")):
+        if not await is_official_group_event(event):
+            await safe_answer(event, "❌ این قابلیت فقط در گپ رسمی ربات فعال است.", True)
+            return
+        if not is_bot_enabled():
+            await safe_answer(event, BOT_UPDATE_TEXT, True)
+            return
 
     if data == "fj_check":
         # Verify FIRST.  Never delete/skip the force-join gate while any
@@ -6815,6 +6925,13 @@ async def callbacks(event):
 
         await asyncio.sleep(3)
 
+        if not is_bot_enabled():
+            # Update mode may have been enabled during the 3-second reveal.
+            # The organizer is refunded by cancel_all_active_games_for_update();
+            # refund the joiner here because this callback already deducted it.
+            change_balance(joiner, amount)
+            return
+
         change_balance(winner, prize)
 
         winner_balance = get_balance(winner)
@@ -6904,6 +7021,7 @@ async def callbacks(event):
             [btn("💾 Backups", b"backups", "primary")],
             [btn("🔓 رفع مسدودی", b"unban_user", "success"), btn("📢 جوین اجباری", b"force_join", "primary")],
             [btn("🚫 مسدود کردن کاربر", b"ban_user", "danger"), btn("📊 آمار کاربران", b"admin_stats", "primary")],
+            [btn("🟢 روشن کردن بات" if not is_bot_enabled() else "🔴 خاموش کردن بات", b"bot_toggle", "success" if not is_bot_enabled() else "danger")],
             [btn("🔙 برگشت", b"back", "danger")],
         ]
         await edit_or_send(event, "🛠 **مدیریت**\n\nیک گزینه را انتخاب کنید:", buttons)
@@ -7312,6 +7430,7 @@ async def main():
 
     me = await bot.get_me()
     print(f"✅ Bot: @{me.username if me else 'unknown'}")
+    await resolve_official_group_id()
 
     await restore_workers()
 
