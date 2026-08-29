@@ -30,6 +30,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -4682,6 +4683,40 @@ def _json_setting(uid, key, default):
     except Exception:
         return default
 
+def _save_secretary_reply(uid, data):
+    """Persist the secretary reply without changing the command/UI text."""
+    if not isinstance(data, dict):
+        data = {}
+    clean = {
+        "kind": "media" if data.get("kind") == "media" else "text",
+        "text": str(data.get("text") or ""),
+        "path": str(data.get("path") or "") if data.get("path") else None,
+        "caption": str(data.get("caption") or ""),
+    }
+    self_set(uid, SECRETARY_REPLY_KEY, json.dumps(clean, ensure_ascii=False))
+
+
+def _secretary_reply(uid):
+    """Load and normalize the persisted secretary reply."""
+    raw = self_get(uid, SECRETARY_REPLY_KEY, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    kind = "media" if data.get("kind") == "media" else "text"
+    text = str(data.get("text") or "")
+    caption = str(data.get("caption") or text)
+    path = str(data.get("path") or "") if data.get("path") else None
+    if kind == "media" and (not path or not Path(path).exists()):
+        return None
+    if kind == "text" and not (text or caption):
+        return None
+    return {"kind": kind, "text": text, "caption": caption, "path": path}
+
 def _global_ban_list(uid):
     return {int(x) for x in _json_setting(uid, GLOBAL_BAN_KEY, []) if str(x).lstrip("-").isdigit()}
 
@@ -5074,6 +5109,8 @@ async def _handle_first_comment_command(event, uid, text):
 
 async def _handle_secretary_command(event, uid, text):
     low = text.casefold().strip()
+    if low in {"منشی روشن", "منشی خاموش"}:
+        print(f"[SECRETARY {uid}] command received: {low}")
     if low == "منشی روشن":
         if not _secretary_reply(uid):
             await event.edit("❌ ابتدا با «تنظیم منشی» پاسخ منشی را تنظیم کن.")
@@ -5605,6 +5642,7 @@ async def self_handle_outgoing(event, uid):
     reaction_match = re.fullmatch(r"ریاکشن(?:\s+(.+?))?", text)
     if reaction_match:
         emoji = (reaction_match.group(1) or "❤️").strip()
+        print(f"[REACTION {uid}] command received: {text!r}")
         # Telegram's supported reaction set changes over time.  Never keep a
         # small hard-coded whitelist here.  Accept the complete user-supplied
         # emoji sequence and let Telegram validate whether it is a reaction.
@@ -5654,6 +5692,7 @@ async def self_handle_outgoing(event, uid):
                 max_retries=3,
             )
         except Exception as exc:
+            print(f"[REACTION {uid}] reaction test failed for {target}: {exc}")
             # Keep the configuration only if Telegram accepts the reaction.
             # Otherwise roll it back so a bad emoji cannot poison future jobs.
             self_remove_reaction(uid, target)
