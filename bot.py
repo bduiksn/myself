@@ -4792,6 +4792,50 @@ SECRETARY_REPLY_KEY = "secretary_reply"
 SECRETARY_ENABLED_KEY = "secretary_enabled"
 SECRETARY_INTERVAL_KEY = "secretary_interval"
 
+
+def _secretary_reply(uid):
+    """Load the configured secretary response safely from per-user settings."""
+    try:
+        raw = self_get(uid, SECRETARY_REPLY_KEY, "")
+        if not raw:
+            return None
+        if isinstance(raw, dict):
+            data = raw
+        else:
+            data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        kind = str(data.get("kind") or "text")
+        if kind == "media":
+            path = str(data.get("path") or "")
+            if not path or not Path(path).exists():
+                print(f"[SECRETARY {uid}] configured media is missing: {path!r}")
+                return None
+            return {
+                "kind": "media",
+                "path": path,
+                "caption": str(data.get("caption") or "")[:4096],
+            }
+        text = str(data.get("text") or data.get("caption") or "").strip()
+        return {"kind": "text", "text": text, "caption": text} if text else None
+    except Exception as exc:
+        print(f"[SECRETARY {uid}] load failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _save_secretary_reply(uid, data):
+    """Persist the secretary response as JSON without losing media metadata."""
+    if not isinstance(data, dict):
+        raise ValueError("secretary reply must be a dict")
+    clean = {
+        "kind": "media" if data.get("kind") == "media" else "text",
+        "text": str(data.get("text") or ""),
+        "path": str(data.get("path") or "") if data.get("path") else None,
+        "caption": str(data.get("caption") or ""),
+    }
+    self_set(uid, SECRETARY_REPLY_KEY, json.dumps(clean, ensure_ascii=False))
+    print(f"[SECRETARY {uid}] reply saved: kind={clean['kind']}, has_text={bool(clean['text'])}, has_media={bool(clean['path'])}")
+
 def _json_setting(uid, key, default):
     try:
         value = json.loads(self_get(uid, key, json.dumps(default, ensure_ascii=False)))
@@ -5187,6 +5231,38 @@ async def _handle_first_comment_command(event, uid, text):
         except Exception as exc: await event.edit(f"❌ ثبت کانال ناموفق بود: {html.escape(str(exc))}")
         return True
     return False
+
+
+async def _send_self_reaction(client, chat_id, msg_id, emoji, *, label="reaction"):
+    """Send a reaction using a resolved InputPeer and a couple of safe emoji forms."""
+    if not client or chat_id is None or not msg_id:
+        raise ValueError("missing reaction peer/message")
+    peer = await client.get_input_entity(chat_id)
+    candidates = [str(emoji or "❤")]
+    # Try both heart representations; Telegram's accepted reaction string can
+    # differ by variation selector depending on the client/API representation.
+    if candidates[0] == "❤️":
+        candidates.append("❤")
+    elif candidates[0] == "❤":
+        candidates.append("❤️")
+    last_exc = None
+    for candidate in dict.fromkeys(candidates):
+        try:
+            result = await _tg_call_with_flood_retry(
+                lambda c=candidate: client(SendReactionRequest(
+                    peer=peer,
+                    msg_id=int(msg_id),
+                    reaction=[ReactionEmoji(emoticon=c)],
+                )),
+                label=f"{label} {candidate!r}",
+                max_retries=3,
+            )
+            print(f"[REACTION] success chat={chat_id} msg={msg_id} emoji={candidate!r}")
+            return result
+        except Exception as exc:
+            last_exc = exc
+            print(f"[REACTION] attempt failed chat={chat_id} msg={msg_id} emoji={candidate!r}: {type(exc).__name__}: {exc}")
+    raise last_exc
 
 
 async def _handle_secretary_command(event, uid, text):
@@ -5733,22 +5809,13 @@ async def self_handle_outgoing(event, uid):
         targets = self_reaction_targets(uid)
         targets.add(target)
         self_save_reaction_targets(uid, targets)
-        normalized_emoji = "❤️" if emoji == "❤" else emoji
-        self_set_reaction(uid, target, normalized_emoji)
-
-        # Validate immediately instead of waiting for the next incoming message.
+        # Telegram's canonical heart reaction is often U+2764 (❤), while
+        # users commonly paste U+2764 U+FE0F (❤️). Keep the exact accepted
+        # representation instead of converting ❤ into the variation-selector form.
+        normalized_emoji = emoji
         try:
-            await _tg_call_with_flood_retry(
-                lambda: event.client(
-                    SendReactionRequest(
-                        peer=event.chat_id,
-                        msg_id=int(replied.id),
-                        reaction=[ReactionEmoji(emoticon=normalized_emoji)],
-                    )
-                ),
-                label="reaction test",
-                max_retries=3,
-            )
+            await _send_self_reaction(event.client, event.chat_id, int(replied.id), normalized_emoji, label="reaction test")
+            self_set_reaction(uid, target, normalized_emoji)
         except Exception as exc:
             # Keep the configuration only if Telegram accepts the reaction.
             # Otherwise roll it back so a bad emoji cannot poison future jobs.
@@ -5959,6 +6026,7 @@ async def self_handle_incoming(event, uid):
     client = event.client
 
     sender_id = int(event.sender_id) if event.sender_id else 0
+    print(f"[SELF {uid}] incoming: chat={event.chat_id} sender={sender_id} private={event.is_private} msg={event.id} text={(event.raw_text or '')[:80]!r}")
     if event.is_private and sender_id and sender_id != int(uid):
         _cache_private_message(uid, event.message)
     if (event.is_group or event.is_channel) and sender_id and sender_id in _global_ban_list(uid) and sender_id != int(uid):
@@ -5984,15 +6052,7 @@ async def self_handle_incoming(event, uid):
         target_sender = int(event.sender_id)
         emoji = self_reaction_map(uid).get(target_sender, "❤️")
         try:
-            await _tg_call_with_flood_retry(
-                lambda: client(SendReactionRequest(
-                    peer=event.peer_id,
-                    msg_id=event.id,
-                    reaction=[ReactionEmoji(emoticon=emoji)],
-                )),
-                label="automatic reaction",
-                max_retries=3,
-            )
+            await _send_self_reaction(client, event.chat_id, int(event.id), emoji, label="automatic reaction")
         except Exception as exc:
             # A reaction can become unavailable after it was configured.
             # Disable only that broken mapping instead of breaking all
@@ -6014,6 +6074,7 @@ async def self_handle_incoming(event, uid):
         last = float(_secretary_reply_cache.get(key, 0) or 0)
         if now - last >= interval:
             reply = _secretary_reply(uid)
+            print(f"[SECRETARY {uid}] trigger sender={sender} enabled=on interval={interval // 60}m has_reply={bool(reply)}")
             if reply:
                 try:
                     if reply.get("kind") == "media" and reply.get("path") and Path(reply["path"]).exists():
