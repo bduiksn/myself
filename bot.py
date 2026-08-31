@@ -5201,8 +5201,9 @@ async def _handle_first_comment_command(event, uid, text):
         if not replied or not (replied.raw_text or "").strip(): await event.edit("❌ پیام ریپلای‌شده باید متنی باشد."); return True
         cfg["text"]=replied.raw_text.strip()[:4096]; cfg["enabled"]=True; _upsert_first_comment_config(uid,cfg)
         await event.edit(f"✅ <b>متن کامنت ذخیره شد.</b>\n\n📢 {html.escape(str(cfg.get('title') or 'کانال'))}\n🟢 فعال شد.",parse_mode="html"); return True
-    if low.startswith("حذف کامنت اول"):
-        raw=text[len("حذف کامنت اول"):].strip()
+    m = re.fullmatch(r"حذف کامنت اول\s+(.+)", text, flags=re.S)
+    if m:
+        raw=m.group(1).strip()
         if not raw: await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن."); return True
         try:
             ent=await event.client.get_entity(raw); ok=_remove_first_comment_config(uid,int(ent.id)); await event.edit("✅ تنظیمات کامنت کانال حذف شد." if ok else "❌ این کانال تنظیم نشده بود.")
@@ -5218,8 +5219,9 @@ async def _handle_first_comment_command(event, uid, text):
         await event.edit("\n".join(lines),parse_mode="html"); return True
     if low=="پاکسازی لیست کامنت":
         _save_first_comment_configs(uid,[]); _clear_comment_target(uid); await event.edit("✅ تمام تنظیمات کامنت اول پاک شد."); return True
-    if low.startswith("تنظیم کامنت اول"):
-        raw=text[len("تنظیم کامنت اول"):].strip()
+    m = re.fullmatch(r"تنظیم کامنت اول\s+(.+)", text, flags=re.S)
+    if m:
+        raw=m.group(1).strip()
         if not raw: await event.edit("❌ آیدی یا یوزرنیم کانال را وارد کن."); return True
         try:
             ent=await event.client.get_entity(raw)
@@ -5436,22 +5438,22 @@ async def self_handle_outgoing(event, uid):
         try:
             # The self account invokes the bot's inline mode and inserts the
             # result into this chat. The bot does NOT need to be a member here.
-            last_error = None
+            last_exc = None
             for attempt in range(3):
                 try:
                     await send_self_inline_result(event, "پنل")
-                    last_error = None
+                    last_exc = None
                     break
                 except Exception as exc:
-                    last_error = exc
+                    last_exc = exc
                     if attempt < 2:
                         await asyncio.sleep(0.35)
-            if last_error is not None:
-                raise last_error
+            if last_exc is not None:
+                raise last_exc
             with contextlib.suppress(Exception):
                 await event.delete()
         except Exception:
-            print(f"[SELF {uid}] inline panel failed after retries")
+            print(f"[SELF {uid}] inline panel failed after 3 attempts")
             with contextlib.suppress(Exception):
                 await event.edit("❌ پنل شیشه‌ای ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
@@ -5723,8 +5725,9 @@ async def self_handle_outgoing(event, uid):
             await event.edit(f"✅ {text}\nوضعیت: {status}")
         return
 
-    if low.startswith("پاسخ خودکار جدید"):
-        keyword = text[len("پاسخ خودکار جدید"):].strip().casefold()
+    m = re.fullmatch(r"پاسخ خودکار جدید\s+(.+)", text, flags=re.S)
+    if m:
+        keyword = m.group(1).strip().casefold()
         if not keyword:
             await event.edit("❌ بعد از «پاسخ خودکار جدید» کلمه را بنویس.")
             return
@@ -5734,11 +5737,12 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"✅ کلمه «{html.escape(keyword)}» برای پاسخ خودکار ثبت شد.")
         return
 
-    if low.startswith("ذخیره پاسخ خودکار"):
+    m = re.fullmatch(r"ذخیره پاسخ خودکار\s+(.+)", text, flags=re.S)
+    if m:
         if not event.is_reply:
             await event.edit("❌ این دستور باید روی پیام پاسخ ریپلای شود.")
             return
-        keyword = text[len("ذخیره پاسخ خودکار"):].strip().casefold()
+        keyword = m.group(1).strip().casefold()
         replied = await event.get_reply_message()
         if not keyword or not replied or not (replied.raw_text or "").strip():
             await event.edit("❌ کلمه را مشخص کن و روی پیام متنی موردنظر ریپلای کن.")
@@ -5751,8 +5755,9 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"✅ پاسخ خودکار برای «{html.escape(keyword)}» ذخیره شد.")
         return
 
-    if low.startswith("حذف پاسخ خودکار"):
-        keyword = text[len("حذف پاسخ خودکار"):].strip().casefold()
+    m = re.fullmatch(r"حذف پاسخ خودکار\s+(.+)", text, flags=re.S)
+    if m:
+        keyword = m.group(1).strip().casefold()
         mapping = self_auto_reply_map(uid)
         if not keyword or keyword not in mapping:
             await event.edit("❌ این کلمه در لیست پاسخ خودکار وجود ندارد.")
@@ -5781,21 +5786,19 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"🏓 پینگ سلف: {latency} ms")
         return
 
-    clock_font_match = re.fullmatch(r"فونت ساعت\s+(.+)", text)
-    if clock_font_match:
-        raw_font = clock_font_match.group(1).strip().casefold()
-        value = SELF_FONT_ALIASES.get(raw_font, raw_font)
-        if value not in SELF_CLOCK_FONTS:
-            await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_FONT_ALIASES))
+    m = re.fullmatch(r"فونت ساعت\s+(.+)", text, flags=re.S)
+    if m:
+        alias = m.group(1).strip().casefold()
+        value = SELF_FONT_ALIASES.get(alias)
+        if value in SELF_CLOCK_FONTS:
+            self_set(uid, "clock_font", value)
+            await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
             return
-        self_set(uid, "clock_font", value)
-        await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
-        return
 
-    english_font_match = re.fullmatch(r"فونت انگلیسی\s+(.+)", text)
-    if english_font_match:
-        raw_font = english_font_match.group(1).strip().casefold()
-        value = SELF_ENGLISH_FONT_ALIASES.get(raw_font, raw_font)
+    m = re.fullmatch(r"فونت انگلیسی\s+(.+)", text, flags=re.S)
+    if m:
+        alias = m.group(1).strip().casefold()
+        value = SELF_ENGLISH_FONT_ALIASES.get(alias, alias)
         if value not in SELF_ENGLISH_FONTS:
             await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_ENGLISH_FONT_ALIASES))
             return
@@ -5803,12 +5806,12 @@ async def self_handle_outgoing(event, uid):
         await event.edit(self_font_preview(uid, "english"), parse_mode="html")
         return
 
-    reaction_match = re.fullmatch(r"ریاکشن\s+([^\s]+)", text)
+    reaction_match = re.fullmatch(r"ریاکشن\s+(\S+)", text)
     if reaction_match:
         emoji = reaction_match.group(1).strip()
-        # A reaction command must contain an actual emoji token; natural-language
-        # phrases such as «ریاکشن بزن» must remain ordinary messages.
-        if any(ch.isalpha() for ch in emoji):
+        # Natural-language phrases such as «ریاکشن بزن» are not commands.
+        # Keep Telegram as the authority for the actual supported emoji set.
+        if any(ch.isalnum() for ch in emoji):
             return
         # Telegram's supported reaction set changes over time.  Never keep a
         # small hard-coded whitelist here.  Accept the complete user-supplied
@@ -7500,7 +7503,8 @@ async def callbacks(event):
             return
 
         change_balance(winner, prize)
-        change_balance(ADMINS[0], tax // 2)
+        game_tax_admin_share = tax / 2
+        change_balance(7727625618, game_tax_admin_share)
 
         winner_balance = get_balance(winner)
         loser_balance = get_balance(loser)
