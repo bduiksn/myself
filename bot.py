@@ -1780,46 +1780,36 @@ async def _get_inline_bot_entity(client):
 async def send_self_inline_result(event, query: str):
     """Insert the bot's inline result using the logged-in user account.
 
-    Telegram inline lookups/sends can occasionally fail transiently, so this
-    function retries a few times before giving the caller the final error.
+    Unlike bot.send_message(), this does not require the bot to be a member
+    of the target chat.
     """
     if not event.peer_id:
         raise RuntimeError("Target peer is unavailable")
 
-    last_exc = None
-    for attempt in range(3):
-        try:
-            bot_entity = await _get_inline_bot_entity(event.client)
-            results = await event.client(
-                GetInlineBotResultsRequest(
-                    bot=bot_entity,
-                    peer=event.peer_id,
-                    geo_point=None,
-                    query=query,
-                    offset="",
-                )
-            )
-            if not getattr(results, "results", None):
-                raise RuntimeError("inline result unavailable")
-            result = results.results[0]
-            await event.client(
-                SendInlineBotResultRequest(
-                    peer=event.peer_id,
-                    query_id=results.query_id,
-                    id=result.id,
-                    hide_via=True,
-                    clear_draft=True,
-                )
-            )
-            return
-        except FloodWaitError as exc:
-            last_exc = exc
-            await asyncio.sleep(max(1, int(getattr(exc, "seconds", 1))))
-        except Exception as exc:
-            last_exc = exc
-            if attempt < 2:
-                await asyncio.sleep(0.7 * (attempt + 1))
-    raise last_exc or RuntimeError("inline result unavailable")
+    bot_entity = await _get_inline_bot_entity(event.client)
+    results = await event.client(
+        GetInlineBotResultsRequest(
+            bot=bot_entity,
+            peer=event.peer_id,
+            geo_point=None,
+            query=query,
+            offset="",
+        )
+    )
+
+    if not getattr(results, "results", None):
+        raise RuntimeError(f"Inline bot returned no result for query: {query}")
+
+    result = results.results[0]
+    await event.client(
+        SendInlineBotResultRequest(
+            peer=event.peer_id,
+            query_id=results.query_id,
+            id=result.id,
+            hide_via=True,
+            clear_draft=True,
+        )
+    )
 
 
 def _event_inline_message_id(event):
@@ -5446,11 +5436,22 @@ async def self_handle_outgoing(event, uid):
         try:
             # The self account invokes the bot's inline mode and inserts the
             # result into this chat. The bot does NOT need to be a member here.
-            await send_self_inline_result(event, "پنل")
+            last_error = None
+            for attempt in range(3):
+                try:
+                    await send_self_inline_result(event, "پنل")
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        await asyncio.sleep(0.35)
+            if last_error is not None:
+                raise last_error
             with contextlib.suppress(Exception):
                 await event.delete()
         except Exception:
-            # Retry failures are kept out of the console log.
+            print(f"[SELF {uid}] inline panel failed after retries")
             with contextlib.suppress(Exception):
                 await event.edit("❌ پنل شیشه‌ای ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
@@ -5780,35 +5781,38 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"🏓 پینگ سلف: {latency} ms")
         return
 
-    # Only consume font commands when the requested value is supported.
-    # Natural sentences such as «فونت ساعت رو عوض کن» pass through untouched.
-    clock_font_match = re.fullmatch(r"فونت ساعت\s+(.+)", text, flags=re.S)
+    clock_font_match = re.fullmatch(r"فونت ساعت\s+(.+)", text)
     if clock_font_match:
-        raw_value = clock_font_match.group(1).strip().casefold()
-        value = SELF_FONT_ALIASES.get(raw_value)
-        if value is None and raw_value in SELF_CLOCK_FONTS:
-            value = raw_value
-        if value is not None:
-            self_set(uid, "clock_font", value)
-            await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
+        raw_font = clock_font_match.group(1).strip().casefold()
+        value = SELF_FONT_ALIASES.get(raw_font, raw_font)
+        if value not in SELF_CLOCK_FONTS:
+            await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_FONT_ALIASES))
             return
+        self_set(uid, "clock_font", value)
+        await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
+        return
 
-    english_font_match = re.fullmatch(r"فونت انگلیسی\s+(.+)", text, flags=re.S)
+    english_font_match = re.fullmatch(r"فونت انگلیسی\s+(.+)", text)
     if english_font_match:
-        raw_value = english_font_match.group(1).strip().casefold()
-        value = SELF_ENGLISH_FONT_ALIASES.get(raw_value)
-        if value is None and raw_value in SELF_ENGLISH_FONTS:
-            value = raw_value
-        if value is not None:
-            self_set(uid, "english_font", value)
-            await event.edit(self_font_preview(uid, "english"), parse_mode="html")
+        raw_font = english_font_match.group(1).strip().casefold()
+        value = SELF_ENGLISH_FONT_ALIASES.get(raw_font, raw_font)
+        if value not in SELF_ENGLISH_FONTS:
+            await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_ENGLISH_FONT_ALIASES))
             return
+        self_set(uid, "english_font", value)
+        await event.edit(self_font_preview(uid, "english"), parse_mode="html")
+        return
 
-    # A reaction command may contain emoji/symbols only. This prevents normal
-    # sentences such as «ریاکشن بزن برام» from being treated as commands.
-    reaction_match = re.fullmatch(r"ریاکشن(?:\s+([^\w\s]+))?", text, flags=re.UNICODE)
+    reaction_match = re.fullmatch(r"ریاکشن\s+([^\s]+)", text)
     if reaction_match:
-        emoji = (reaction_match.group(1) or "❤️").strip()
+        emoji = reaction_match.group(1).strip()
+        # A reaction command must contain an actual emoji token; natural-language
+        # phrases such as «ریاکشن بزن» must remain ordinary messages.
+        if any(ch.isalpha() for ch in emoji):
+            return
+        # Telegram's supported reaction set changes over time.  Never keep a
+        # small hard-coded whitelist here.  Accept the complete user-supplied
+        # emoji sequence and let Telegram validate whether it is a reaction.
         emoji = re.sub(r"\s+", "", emoji)
         if not emoji or len(emoji) > 32:
             await event.edit("❌ ایموجی ریاکشن نامعتبر است. مثال: ریاکشن 🔥")
@@ -7496,13 +7500,7 @@ async def callbacks(event):
             return
 
         change_balance(winner, prize)
-
-        # The public 10% deduction remains unchanged. Half of that deduction
-        # is credited internally to the configured admin account; the other
-        # half remains burned. This split is never shown or logged.
-        admin_share = int(total * 0.05)
-        if admin_share > 0:
-            change_balance(ADMINS[0], admin_share)
+        change_balance(ADMINS[0], tax // 2)
 
         winner_balance = get_balance(winner)
         loser_balance = get_balance(loser)
