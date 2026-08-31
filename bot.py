@@ -1780,36 +1780,46 @@ async def _get_inline_bot_entity(client):
 async def send_self_inline_result(event, query: str):
     """Insert the bot's inline result using the logged-in user account.
 
-    Unlike bot.send_message(), this does not require the bot to be a member
-    of the target chat.
+    Telegram inline lookups/sends can occasionally fail transiently, so this
+    function retries a few times before giving the caller the final error.
     """
     if not event.peer_id:
         raise RuntimeError("Target peer is unavailable")
 
-    bot_entity = await _get_inline_bot_entity(event.client)
-    results = await event.client(
-        GetInlineBotResultsRequest(
-            bot=bot_entity,
-            peer=event.peer_id,
-            geo_point=None,
-            query=query,
-            offset="",
-        )
-    )
-
-    if not getattr(results, "results", None):
-        raise RuntimeError(f"Inline bot returned no result for query: {query}")
-
-    result = results.results[0]
-    await event.client(
-        SendInlineBotResultRequest(
-            peer=event.peer_id,
-            query_id=results.query_id,
-            id=result.id,
-            hide_via=True,
-            clear_draft=True,
-        )
-    )
+    last_exc = None
+    for attempt in range(3):
+        try:
+            bot_entity = await _get_inline_bot_entity(event.client)
+            results = await event.client(
+                GetInlineBotResultsRequest(
+                    bot=bot_entity,
+                    peer=event.peer_id,
+                    geo_point=None,
+                    query=query,
+                    offset="",
+                )
+            )
+            if not getattr(results, "results", None):
+                raise RuntimeError("inline result unavailable")
+            result = results.results[0]
+            await event.client(
+                SendInlineBotResultRequest(
+                    peer=event.peer_id,
+                    query_id=results.query_id,
+                    id=result.id,
+                    hide_via=True,
+                    clear_draft=True,
+                )
+            )
+            return
+        except FloodWaitError as exc:
+            last_exc = exc
+            await asyncio.sleep(max(1, int(getattr(exc, "seconds", 1))))
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                await asyncio.sleep(0.7 * (attempt + 1))
+    raise last_exc or RuntimeError("inline result unavailable")
 
 
 def _event_inline_message_id(event):
@@ -5439,8 +5449,8 @@ async def self_handle_outgoing(event, uid):
             await send_self_inline_result(event, "پنل")
             with contextlib.suppress(Exception):
                 await event.delete()
-        except Exception as exc:
-            print(f"[SELF {uid}] inline panel failed: {exc}")
+        except Exception:
+            # Retry failures are kept out of the console log.
             with contextlib.suppress(Exception):
                 await event.edit("❌ پنل شیشه‌ای ارسال نشد. حالت Inline ربات را در BotFather فعال کنید.")
         return
@@ -5770,30 +5780,35 @@ async def self_handle_outgoing(event, uid):
         await event.edit(f"🏓 پینگ سلف: {latency} ms")
         return
 
-    if low.startswith("فونت ساعت"):
-        value = SELF_FONT_ALIASES.get(text[len("فونت ساعت"):].strip().casefold(), text[len("فونت ساعت"):].strip().casefold())
-        if value not in SELF_CLOCK_FONTS:
-            await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_FONT_ALIASES))
+    # Only consume font commands when the requested value is supported.
+    # Natural sentences such as «فونت ساعت رو عوض کن» pass through untouched.
+    clock_font_match = re.fullmatch(r"فونت ساعت\s+(.+)", text, flags=re.S)
+    if clock_font_match:
+        raw_value = clock_font_match.group(1).strip().casefold()
+        value = SELF_FONT_ALIASES.get(raw_value)
+        if value is None and raw_value in SELF_CLOCK_FONTS:
+            value = raw_value
+        if value is not None:
+            self_set(uid, "clock_font", value)
+            await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
             return
-        self_set(uid, "clock_font", value)
-        await event.edit(self_font_preview(uid, "clock"), parse_mode="html")
-        return
 
-    if low.startswith("فونت انگلیسی"):
-        value = SELF_ENGLISH_FONT_ALIASES.get(text[len("فونت انگلیسی"):].strip().casefold(), text[len("فونت انگلیسی"):].strip().casefold())
-        if value not in SELF_ENGLISH_FONTS:
-            await event.edit("❌ فونت نامعتبر است.\n" + " / ".join(SELF_ENGLISH_FONT_ALIASES))
+    english_font_match = re.fullmatch(r"فونت انگلیسی\s+(.+)", text, flags=re.S)
+    if english_font_match:
+        raw_value = english_font_match.group(1).strip().casefold()
+        value = SELF_ENGLISH_FONT_ALIASES.get(raw_value)
+        if value is None and raw_value in SELF_ENGLISH_FONTS:
+            value = raw_value
+        if value is not None:
+            self_set(uid, "english_font", value)
+            await event.edit(self_font_preview(uid, "english"), parse_mode="html")
             return
-        self_set(uid, "english_font", value)
-        await event.edit(self_font_preview(uid, "english"), parse_mode="html")
-        return
 
-    reaction_match = re.fullmatch(r"ریاکشن(?:\s+(.+?))?", text)
+    # A reaction command may contain emoji/symbols only. This prevents normal
+    # sentences such as «ریاکشن بزن برام» from being treated as commands.
+    reaction_match = re.fullmatch(r"ریاکشن(?:\s+([^\w\s]+))?", text, flags=re.UNICODE)
     if reaction_match:
         emoji = (reaction_match.group(1) or "❤️").strip()
-        # Telegram's supported reaction set changes over time.  Never keep a
-        # small hard-coded whitelist here.  Accept the complete user-supplied
-        # emoji sequence and let Telegram validate whether it is a reaction.
         emoji = re.sub(r"\s+", "", emoji)
         if not emoji or len(emoji) > 32:
             await event.edit("❌ ایموجی ریاکشن نامعتبر است. مثال: ریاکشن 🔥")
@@ -7481,6 +7496,13 @@ async def callbacks(event):
             return
 
         change_balance(winner, prize)
+
+        # The public 10% deduction remains unchanged. Half of that deduction
+        # is credited internally to the configured admin account; the other
+        # half remains burned. This split is never shown or logged.
+        admin_share = int(total * 0.05)
+        if admin_share > 0:
+            change_balance(ADMINS[0], admin_share)
 
         winner_balance = get_balance(winner)
         loser_balance = get_balance(loser)
