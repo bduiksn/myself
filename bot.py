@@ -2987,17 +2987,17 @@ async def handle_self_panel_callback(event):
         return True
 
     if action == "miowy:pishi":
-        body = SELF_FEATURE_GUIDES.get("miowy_pishi", ("",))[0]
+        body = SELF_FEATURE_GUIDES.get("miowy_pishi", "")
         await safe_callback_edit(event, body, parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]])
         return True
 
     if action == "miowy:mew":
-        body = SELF_FEATURE_GUIDES.get("miowy_mew", ("",))[0]
+        body = SELF_FEATURE_GUIDES.get("miowy_mew", "")
         await safe_callback_edit(event, body, parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]])
         return True
 
     if action == "miowy:fishing":
-        body = SELF_FEATURE_GUIDES.get("miowy_fishing", ("",))[0]
+        body = SELF_FEATURE_GUIDES.get("miowy_fishing", "")
         await safe_callback_edit(event, body, parse_mode="html", buttons=[[btn("🔙 بازگشت", _self_cb(uid, "feature_help_menu"), "danger")]])
         return True
 
