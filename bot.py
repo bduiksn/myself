@@ -1681,9 +1681,18 @@ SELF می‌تواند از طریق دستور، یک گروه یا کانال 
 
     "miowy_pishi": ("""🐱 <b>پیشی خودکار</b>
 
-این قابلیت دستور «پیشی» را به‌صورت خودکار در گروه فعال اجرا می‌کند و در صورت وجود دکمه مناسب Miowy، آن را انتخاب می‌کند.
+این قابلیت دستور «پیشی» را به‌صورت خودکار در گروه اجرا می‌کند و در صورت دریافت پاسخ دارای دکمه مربوط به پیشی، همان دکمه را با تطبیق امن انتخاب می‌کند.
 
-<b>⚙️ تنظیم زمان:</b>
+<b>تنظیم زمان:</b>
+<code>تنظیم زمان پیشی 10</code>
+
+<b>روشن:</b>
+<code>پیشی خودکار روشن</code>
+
+<b>خاموش:</b>
+<code>پیشی خودکار خاموش</code>
+
+<b>⚙️ زمان:</b>
 <code>تنظیم زمان پیشی 10</code>
 
 <b>فعال‌سازی در گروه:</b>
@@ -1695,9 +1704,18 @@ SELF می‌تواند از طریق دستور، یک گروه یا کانال 
 ⚠️ قبل از فعال‌سازی باید زمان تنظیم شده باشد."""),
     "miowy_mew": ("""😼 <b>میو خودکار</b>
 
-این قابلیت دستور «میو» را به‌صورت خودکار در گروه فعال اجرا می‌کند.
+این قابلیت دستور «میو» را به‌صورت خودکار در گروه اجرا می‌کند.
 
-<b>⚙️ تنظیم زمان:</b>
+<b>تنظیم زمان:</b>
+<code>تنظیم زمان میو 10</code>
+
+<b>روشن:</b>
+<code>میو خودکار روشن</code>
+
+<b>خاموش:</b>
+<code>میو خودکار خاموش</code>
+
+<b>⚙️ زمان:</b>
 <code>تنظیم زمان میو 10</code>
 
 <b>فعال‌سازی در گروه:</b>
@@ -1785,6 +1803,7 @@ def self_feature_guide_buttons(uid):
         ("💱 نرخ ارز", "currency"), ("🎨 لوگوساز", "logo"),
         ("👤 کپی پروفایل", "profile"), ("🏗 ساخت گروه / چنل", "creation"),
         ("🎲 تاس / سرگرمی", "dice"), ("🖼 استیکر / عکس", "stickers"),
+        ("📋 دستورات عمومی", "misc"), ("💾 ذخیره چنل", "channel_save"),
     ]
     rows = []
     for i in range(0, len(labels), 2):
@@ -1792,18 +1811,14 @@ def self_feature_guide_buttons(uid):
             btn(labels[i][0], _self_cb(uid, "feature_help:" + labels[i][1]), "primary"),
             btn(labels[i + 1][0], _self_cb(uid, "feature_help:" + labels[i + 1][1]), "primary"),
         ])
-    rows.append([btn("میویی 😼", _self_cb(uid, "miowy:noop"), "primary")])
+    rows.append([btn("😼 میویی", _self_cb(uid, "miowy:noop"), "primary")])
     rows.append([
-        btn("🐱 پیشی خودکار", _self_cb(uid, "miowy:pishi"), "success"),
-        btn("😼 میو خودکار", _self_cb(uid, "miowy:mew"), "success"),
+        btn("🐱 پیشی خودکار", _self_cb(uid, "miowy:pishi"), "primary"),
+        btn("😼 میو خودکار", _self_cb(uid, "miowy:mew"), "primary"),
     ])
     rows.append([
-        btn("🎣 ماهیگیری خودکار", _self_cb(uid, "miowy:fishing"), "success"),
+        btn("🎣 ماهیگیری خودکار", _self_cb(uid, "miowy:fishing"), "primary"),
         btn("📊 وضعیت میویی", _self_cb(uid, "miowy:status"), "primary"),
-    ])
-    rows.append([
-        btn("📋 دستورات عمومی", _self_cb(uid, "feature_help:misc"), "primary"),
-        btn("💾 ذخیره چنل", _self_cb(uid, "feature_help:channel_save"), "primary"),
     ])
     rows.append([btn("🔙 بازگشت", _self_cb(uid, "panel"), "danger")])
     return rows
@@ -6059,19 +6074,19 @@ async def _archive_messages_to_saved(client, uid, messages):
         seen.add(msg_id)
 
         sender_id = getattr(msg, "sender_id", None)
-        # Only the other participant's messages may be archived.
+        # Only the other human participant's private messages may be archived.
+        # Bot messages are intentionally excluded from the deletion snapshot.
         if not sender_id or int(sender_id) == int(uid):
             continue
-        if sender_id:
-            try:
-                sender = await client.get_entity(int(sender_id))
-                username = getattr(sender, "username", None)
-                first_name = getattr(sender, "first_name", None) or "کاربر"
-                sender_label = f"@{username}" if username else f"{first_name} | ID: {int(sender_id)}"
-            except Exception:
-                sender_label = f"ID: {int(sender_id)}"
-        else:
-            sender_label = "نامشخص"
+        try:
+            sender = await client.get_entity(int(sender_id))
+            if getattr(sender, "bot", False):
+                continue
+            username = getattr(sender, "username", None)
+            first_name = getattr(sender, "first_name", None) or "کاربر"
+            sender_label = f"@{username}" if username else f"{first_name} | ID: {int(sender_id)}"
+        except Exception:
+            sender_label = f"ID: {int(sender_id)}"
         author_footer = f"👤 نویسنده: {sender_label}"
 
         # Deliberately copy instead of forwarding.  This keeps Saved Messages
@@ -6829,6 +6844,69 @@ async def code_timeout(user_id: int):
             )
 
 
+def _login_code_keyboard(uid: int, code: str = ""):
+    display = code if code else "•••••"
+    return [
+        [btn(f"🔢 کد فعلی: {display}", _self_cb(uid, "login_code:display"), "primary")],
+        [btn("1", _self_cb(uid, "login_code:1"), "primary"), btn("2", _self_cb(uid, "login_code:2"), "primary"), btn("3", _self_cb(uid, "login_code:3"), "primary")],
+        [btn("4", _self_cb(uid, "login_code:4"), "primary"), btn("5", _self_cb(uid, "login_code:5"), "primary"), btn("6", _self_cb(uid, "login_code:6"), "primary")],
+        [btn("7", _self_cb(uid, "login_code:7"), "primary"), btn("8", _self_cb(uid, "login_code:8"), "primary"), btn("9", _self_cb(uid, "login_code:9"), "primary")],
+        [btn("🗑 حذف", _self_cb(uid, "login_code:clear"), "danger"), btn("0", _self_cb(uid, "login_code:0"), "primary"), btn("⌫", _self_cb(uid, "login_code:back"), "danger")],
+        [btn("✅ تأیید کد", _self_cb(uid, "login_code:submit"), "success")],
+    ]
+
+
+def _login_code_text(code: str = "", error: str | None = None):
+    shown = code if code else "•••••"
+    text = (
+        "🔐 <b>تأیید کد ورود تلگرام</b>\n\n"
+        "کد ۵ رقمی ارسال‌شده از تلگرام را با دکمه‌های زیر وارد کن.\n"
+        "برای مثال اگر کد <code>13523</code> است، دکمه‌ها را به ترتیب <b>1 → 3 → 5 → 2 → 3</b> بزن.\n\n"
+        f"🔢 کد واردشده: <b>{shown}</b>"
+    )
+    if error:
+        text += f"\n\n❌ <b>{error}</b>\nکد را بررسی کن و دوباره تأیید بزن؛ دکمه‌ها همچنان فعال هستند."
+    else:
+        text += "\n\n💡 بعد از کامل شدن ۵ رقم، روی «✅ تأیید کد» بزن."
+    return text
+
+
+async def _submit_login_code(event, uid: int):
+    state = pending.get(uid)
+    if not state or state.get("step") != "code":
+        await safe_answer(event, "❌ نشست ورود منقضی شده است.", True)
+        return True
+    code = str(state.get("entered_code", ""))
+    if not re.fullmatch(r"\d{5}", code):
+        await safe_callback_edit(event, _login_code_text(code, "کد باید دقیقاً ۵ رقمی باشد."), parse_mode="html", buttons=_login_code_keyboard(uid, code))
+        return True
+    client = state.get("client")
+    if not client:
+        pending.pop(uid, None)
+        await safe_callback_edit(event, "❌ نشست ورود پیدا نشد. دوباره فعال‌سازی را شروع کنید.", parse_mode="html")
+        return True
+    try:
+        await client.sign_in(phone=state["phone"], code=code, phone_code_hash=state.get("phone_code_hash"))
+        # Successful authorization: remove the keyboard from this exact message.
+        await safe_callback_edit(event, "✅ <b>کد صحیح بود.</b>\n\n⏳ ورود تأیید شد؛ در حال فعال‌سازی سلف...", parse_mode="html", buttons=None)
+        timer = state.get("timer")
+        if timer:
+            timer.cancel()
+        await finish_login(uid)
+    except SessionPasswordNeededError:
+        state["step"] = "password"
+        state["timer"] = asyncio.create_task(code_timeout(uid))
+        await safe_callback_edit(event, "🔑 <b>تأیید کد انجام شد.</b>\n\nرمز دو مرحله‌ای تلگرام را ارسال کنید.", parse_mode="html", buttons=None)
+    except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+        # IMPORTANT: do not remove the keyboard or destroy the pending state.
+        await safe_callback_edit(event, _login_code_text(code, "کد اشتباه یا منقضی است."), parse_mode="html", buttons=_login_code_keyboard(uid, code))
+        return True
+    except Exception as exc:
+        print(f"[SELF LOGIN {uid}] code verification failed: {type(exc).__name__}: {exc}")
+        await safe_callback_edit(event, _login_code_text(code, "تأیید کد انجام نشد؛ دوباره تلاش کن."), parse_mode="html", buttons=_login_code_keyboard(uid, code))
+    return True
+
+
 async def begin_self_login(user_id: int, event=None):
     # Never start a new login/activation flow when this user already has
     # an active self. The management panel remains available separately.
@@ -6876,13 +6954,13 @@ async def begin_self_login(user_id: int, event=None):
             "client": client,
             "phone": phone,
             "phone_code_hash": sent.phone_code_hash,
+            "entered_code": "",
         }
         await bot.send_message(
             user_id,
-            "🔐 کد ورود به شماره ثبت‌شده ارسال شد.\n\n"
-            "کد را به صورت اعداد ارسال کن. برای اینکه کد را سریع و بدون اشتباه وارد کنی، می‌توانی مثل نمونه زیر ارسال کنی:\n"
-            "`1.2.4.3.5`\n\n"
-            "اگر ورود دو مرحله‌ای فعال باشد، بعد از کد رمز دو مرحله‌ای را می‌پرسم."
+            _login_code_text(),
+            parse_mode="html",
+            buttons=_login_code_keyboard(user_id),
         )
     except PhoneNumberInvalidError:
         await bot.send_message(user_id, "❌ شماره ثبت‌شده معتبر نیست. دوباره شماره خودت را از طریق دکمه اشتراک‌گذاری ثبت کن.")
@@ -7290,47 +7368,36 @@ async def private_message(event):
             return
 
         if step == "code":
+            # Keep manual text entry as a backward-compatible fallback. The preferred
+            # flow is the inline keypad above; both paths share the same verifier.
             raw_code = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
             code = re.sub(r"[.\s-]", "", raw_code)
-            client = state.get("client")
-
             if not re.fullmatch(r"\d{5}", code):
-                await event.reply("❌ فرمت کد نامعتبر است. کد را مثل نمونه ارسال کن: `1.2.4.3.5`")
+                await event.reply("❌ کد باید دقیقاً ۵ رقمی باشد. برای جلوگیری از اشتباه از دکمه‌های پیام کد استفاده کن.")
                 return
-
+            state["entered_code"] = code
+            # Text messages cannot edit the keypad message reliably without its id,
+            # so perform the same verification and preserve state on an invalid code.
+            client = state.get("client")
             if not client:
                 pending.pop(user_id, None)
                 await event.reply("❌ نشست ورود پیدا نشد. دوباره تلاش کنید.")
                 return
-
-            timer = state.get("timer")
-            if timer:
-                timer.cancel()
-
             try:
-                await client.sign_in(
-                    phone=state["phone"],
-                    code=code,
-                    phone_code_hash=state.get("phone_code_hash")
-                )
+                await client.sign_in(phone=state["phone"], code=code, phone_code_hash=state.get("phone_code_hash"))
+                timer = state.get("timer")
+                if timer:
+                    timer.cancel()
                 await finish_login(user_id)
-
             except SessionPasswordNeededError:
                 state["step"] = "password"
                 state["timer"] = asyncio.create_task(code_timeout(user_id))
                 await event.reply("🔑 رمز دو مرحله‌ای را ارسال کنید.")
-
             except (PhoneCodeInvalidError, PhoneCodeExpiredError):
-                await event.reply("❌ کد اشتباه یا منقضی شده است.")
-                with contextlib.suppress(Exception):
-                    await client.disconnect()
-                pending.pop(user_id, None)
-
+                await event.reply("❌ کد اشتباه یا منقضی است. پنل کد همچنان فعال است؛ دوباره تأیید کن.")
             except Exception as exc:
-                await event.reply(f"❌ خطا در ورود: {exc}")
-                with contextlib.suppress(Exception):
-                    await client.disconnect()
-                pending.pop(user_id, None)
+                print(f"[SELF LOGIN {user_id}] code verification failed: {type(exc).__name__}: {exc}")
+                await event.reply("❌ تأیید کد انجام نشد؛ دوباره تلاش کن.")
             return
 
         if step == "password":
@@ -7676,6 +7743,36 @@ async def callbacks(event):
         return
 
     if data.startswith("sp:"):
+        # Login-code keypad callbacks use the same SELF callback namespace.
+        if data.startswith(f"sp:{int(user_id)}:login_code:"):
+            action = data.split(":", 3)[3]
+            state = pending.get(user_id)
+            if not state or state.get("step") != "code":
+                await safe_answer(event, "❌ نشست ورود منقضی شده است.", True)
+                return
+            code = str(state.get("entered_code", ""))
+            if action.isdigit() and len(action) == 1:
+                if len(code) < 5:
+                    code += action
+                    state["entered_code"] = code
+                    await safe_callback_edit(event, _login_code_text(code), parse_mode="html", buttons=_login_code_keyboard(user_id, code))
+                else:
+                    await safe_answer(event, "❌ کد ۵ رقمی کامل شده؛ تأییدش کن.", True)
+                return
+            if action == "clear":
+                state["entered_code"] = ""
+                await safe_callback_edit(event, _login_code_text(), parse_mode="html", buttons=_login_code_keyboard(user_id))
+                return
+            if action == "back":
+                state["entered_code"] = code[:-1]
+                await safe_callback_edit(event, _login_code_text(state["entered_code"]), parse_mode="html", buttons=_login_code_keyboard(user_id, state["entered_code"]))
+                return
+            if action == "display":
+                await safe_answer(event, f"کد فعلی: {code or 'خالی'}")
+                return
+            if action == "submit":
+                await _submit_login_code(event, user_id)
+                return
         await handle_self_panel_callback(event)
         return
 
