@@ -1216,7 +1216,349 @@ def self_panel_text(uid):
     )
 
 
+
+# ============================================================
+# MIOWY AUTO FEATURES
+# ============================================================
+# Per-SELF, per-group configuration. Settings live in the user's existing
+# SQLite settings table, so no existing database schema is changed.
+MIOWY_CONFIG_KEY = "miowy_auto_config"
+MIOWY_MIN_INTERVAL = 1
+MIOWY_MAX_INTERVAL = 1440
+_miowy_running = set()
+
+
+def _miowy_configs(uid):
+    """Load normalized Miowy auto settings: {chat_id: {feature: {...}}}."""
+    try:
+        raw = json.loads(self_get(uid, MIOWY_CONFIG_KEY, "{}"))
+        if not isinstance(raw, dict):
+            return {}
+    except Exception:
+        return {}
+    result = {}
+    for chat_key, cfg in raw.items():
+        try:
+            chat_id = str(int(chat_key))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(cfg, dict):
+            continue
+        clean = {}
+        for feature in ("pishi", "meow", "fishing"):
+            item = cfg.get(feature, {})
+            if not isinstance(item, dict):
+                item = {}
+            try:
+                interval = int(item.get("interval", 0) or 0)
+            except (TypeError, ValueError):
+                interval = 0
+            clean[feature] = {
+                "enabled": str(item.get("enabled", "off")).lower() == "on",
+                "interval": max(0, interval),
+                "last_run": float(item.get("last_run", 0) or 0),
+            }
+        result[chat_id] = clean
+    return result
+
+
+def _miowy_save_configs(uid, configs):
+    self_set(uid, MIOWY_CONFIG_KEY, json.dumps(configs, ensure_ascii=False, separators=(",", ":")))
+
+
+def _miowy_feature_label(feature):
+    return {"pishi": "پیشی", "meow": "میو", "fishing": "ماهیگیری"}.get(feature, feature)
+
+
+def _miowy_get_chat_config(uid, chat_id, create=True):
+    configs = _miowy_configs(uid)
+    key = str(int(chat_id))
+    if key not in configs and create:
+        configs[key] = {
+            "pishi": {"enabled": False, "interval": 0, "last_run": 0},
+            "meow": {"enabled": False, "interval": 0, "last_run": 0},
+            "fishing": {"enabled": False, "interval": 0, "last_run": 0},
+        }
+    return configs, configs.get(key)
+
+
+def _miowy_is_group(event):
+    return bool(getattr(event, "is_group", False) or getattr(event, "is_channel", False))
+
+
+def _miowy_status_text(uid, chat_id):
+    _, cfg = _miowy_get_chat_config(uid, chat_id, create=False)
+    if not cfg:
+        return "⚠️ برای این گپ هنوز زمان هیچ‌کدام از قابلیت‌های میویی تنظیم نشده است."
+    lines = ["🐱 <b>وضعیت میویی خودکار این گپ</b>"]
+    for feature in ("pishi", "meow", "fishing"):
+        item = cfg.get(feature, {})
+        interval = int(item.get("interval", 0) or 0)
+        enabled = item.get("enabled", False)
+        state = "روشن 🟢" if enabled else "خاموش 🔴"
+        interval_text = f"هر {interval} دقیقه" if interval else "زمان تنظیم نشده"
+        lines.append(f"• {_miowy_feature_label(feature)}: {state} — {interval_text}")
+    return "\n".join(lines)
+
+
+async def _miowy_click_matching_button(client, chat_id, keywords, limit=15):
+    """Find a recent Miowy inline button by its visible text and click it."""
+    try:
+        async for msg in client.iter_messages(chat_id, limit=limit):
+            buttons = getattr(msg, "buttons", None) or []
+            for row_index, row in enumerate(buttons):
+                for col_index, button in enumerate(row):
+                    label = str(getattr(button, "text", "") or "").strip().casefold()
+                    if any(str(k).casefold() in label for k in keywords):
+                        try:
+                            await msg.click(row_index, col_index)
+                        except TypeError:
+                            await msg.click(col_index)
+                        return True
+    except Exception as exc:
+        print(f"[MIOWY] button scan/click failed chat={chat_id}: {exc}")
+    return False
+
+
+async def _miowy_run_feature(client, uid, chat_id, feature):
+    """Run one scheduled Miowy action in exactly one configured group."""
+    key = (int(uid), int(chat_id), feature)
+    if key in _miowy_running:
+        return
+    _miowy_running.add(key)
+    try:
+        configs = _miowy_configs(uid)
+        cfg = configs.get(str(int(chat_id))) or {}
+        item = cfg.get(feature) or {}
+        if not item.get("enabled"):
+            return
+        interval = int(item.get("interval", 0) or 0)
+        if interval < MIOWY_MIN_INTERVAL:
+            return
+
+        trigger = {"pishi": "پیشی", "meow": "میو", "fishing": "ماهیگیری"}[feature]
+        keywords = {
+            "pishi": ("پیشی", "🐱 پیشی", "میو پوینت", "پوینت"),
+            "meow": (),
+            "fishing": ("ماهی", "ماهیگیری", "🎣"),
+        }[feature]
+
+        # "میو خودکار" is intentionally a plain periodic message. The other
+        # two features additionally inspect the Miowy response for a matching
+        # inline button and click it with the logged-in SELF account.
+        await client.send_message(chat_id, trigger)
+        if feature != "meow":
+            await asyncio.sleep(0.8)
+            clicked = await _miowy_click_matching_button(client, chat_id, keywords)
+            if not clicked:
+                print(f"[MIOWY {uid}] no matching {feature} button found in chat={chat_id}")
+
+        # Persist the execution timestamp only after the trigger was sent.
+        configs = _miowy_configs(uid)
+        chat_cfg = configs.setdefault(str(int(chat_id)), {})
+        feature_cfg = chat_cfg.setdefault(feature, {"enabled": True, "interval": interval, "last_run": 0})
+        feature_cfg["last_run"] = time.time()
+        _miowy_save_configs(uid, configs)
+    except FloodWaitError as exc:
+        print(f"[MIOWY {uid}] {feature} flood wait: {exc.seconds}s")
+        await asyncio.sleep(min(int(exc.seconds), 3600))
+    except Exception as exc:
+        print(f"[MIOWY {uid}] {feature} failed chat={chat_id}: {exc}")
+    finally:
+        _miowy_running.discard(key)
+
+
+async def _miowy_worker_tick(client, uid):
+    """Schedule due Miowy actions without blocking the main SELF worker."""
+    configs = _miowy_configs(uid)
+    if not configs:
+        return
+    now = time.time()
+    changed = False
+    for chat_key, cfg in list(configs.items()):
+        try:
+            chat_id = int(chat_key)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(cfg, dict):
+            continue
+        for feature in ("pishi", "meow", "fishing"):
+            item = cfg.get(feature) or {}
+            if not item.get("enabled"):
+                continue
+            try:
+                interval = int(item.get("interval", 0) or 0)
+                last_run = float(item.get("last_run", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if interval < MIOWY_MIN_INTERVAL:
+                continue
+            if last_run and now - last_run < interval * 60:
+                continue
+            # Reserve the slot immediately to prevent duplicate scheduling on
+            # the one-second SELF worker loop while the action is in flight.
+            item["last_run"] = now
+            changed = True
+            asyncio.create_task(_miowy_run_feature(client, uid, chat_id, feature))
+    if changed:
+        _miowy_save_configs(uid, configs)
+
+
+async def _handle_miowy_command(event, uid, text):
+    """Handle Miowy commands. Timing may be set in PV; toggles require a group."""
+    normalized = _fa_digits(text).strip().casefold()
+
+    # Status is useful in both PV and groups.
+    if normalized == "وضعیت میویی":
+        if _miowy_is_group(event):
+            await event.edit(_miowy_status_text(uid, event.chat_id), parse_mode="html")
+        else:
+            configs = _miowy_configs(uid)
+            if not configs:
+                await event.edit("🐱 هنوز هیچ گپی برای میویی تنظیم نشده است.")
+                return True
+            lines = ["🐱 <b>گپ‌های دارای تنظیم میویی</b>"]
+            for chat_key in configs:
+                try:
+                    lines.append(f"\n<code>{int(chat_key)}</code>\n{_miowy_status_text(uid, int(chat_key))}")
+                except (TypeError, ValueError):
+                    continue
+            await event.edit("\n".join(lines), parse_mode="html")
+        return True
+
+    # Timing can be configured from private chat OR from the target group.
+    m = re.fullmatch(r"تنظیم\s+زمان\s+(پیشی|میو|ماهی\s*گیری)\s+([0-9]+)", normalized)
+    if m:
+        feature_name = m.group(1).replace(" ", "")
+        feature = {"پیشی": "pishi", "میو": "meow", "ماهیگیری": "fishing"}[feature_name]
+        minutes = int(m.group(2))
+        if not MIOWY_MIN_INTERVAL <= minutes <= MIOWY_MAX_INTERVAL:
+            await event.edit(f"❌ زمان باید بین {MIOWY_MIN_INTERVAL} تا {MIOWY_MAX_INTERVAL} دقیقه باشد.")
+            return True
+        # In PV there is no target group in the current message. Store a small
+        # pending timing value; it is applied automatically on the next group
+        # toggle command from the same SELF owner.
+        if not _miowy_is_group(event):
+            self_set(uid, f"miowy_pending_{feature}_interval", str(minutes))
+            await event.edit(
+                f"✅ زمان {_miowy_feature_label(feature)} روی <b>{minutes} دقیقه</b> تنظیم شد.\n\n"
+                "حالا برای فعال‌کردن، داخل همان گپ بنویس:\n"
+                f"<code>{_miowy_feature_label(feature)} خودکار روشن</code>",
+                parse_mode="html",
+            )
+            return True
+
+        configs, cfg = _miowy_get_chat_config(uid, event.chat_id, create=True)
+        cfg[feature]["interval"] = minutes
+        # Keep last_run at zero so enabling it starts on the next worker tick.
+        cfg[feature]["last_run"] = 0
+        _miowy_save_configs(uid, configs)
+        await event.edit(
+            f"⏱ زمان {_miowy_feature_label(feature)} خودکار این گپ روی <b>{minutes} دقیقه</b> تنظیم شد.\n"
+            f"حالا بنویس: <code>{_miowy_feature_label(feature)} خودکار روشن</code>",
+            parse_mode="html",
+        )
+        return True
+
+    # The short timing form without a number gives a clear instruction instead
+    # of silently doing nothing.
+    m = re.fullmatch(r"تنظیم\s+زمان\s+(پیشی|میو|ماهی\s*گیری)", normalized)
+    if m:
+        name = m.group(1).replace(" ", "")
+        feature = {"پیشی": "pishi", "میو": "meow", "ماهیگیری": "fishing"}[name]
+        await event.edit(
+            f"⏱ برای تنظیم زمان {_miowy_feature_label(feature)} عدد دقیقه را هم بنویس.\n"
+            f"مثال: <code>تنظیم زمان {_miowy_feature_label(feature)} 10</code>",
+            parse_mode="html",
+        )
+        return True
+
+    # Toggle commands are deliberately group-only, as requested.
+    toggle = re.fullmatch(r"(پیشی|میو|ماهی\s*گیری)\s+خودکار\s+(روشن|خاموش)", normalized)
+    if toggle:
+        if not _miowy_is_group(event):
+            await event.edit("❌ روشن و خاموش‌کردن میویی خودکار فقط باید داخل همان گپ انجام شود.")
+            return True
+        name = toggle.group(1).replace(" ", "")
+        feature = {"پیشی": "pishi", "میو": "meow", "ماهیگیری": "fishing"}[name]
+        enabled = toggle.group(2) == "روشن"
+        configs, cfg = _miowy_get_chat_config(uid, event.chat_id, create=True)
+        feature_cfg = cfg[feature]
+        if enabled:
+            if not int(feature_cfg.get("interval", 0) or 0):
+                pending_key = f"miowy_pending_{feature}_interval"
+                pending_interval = int(self_get(uid, pending_key, "0") or 0)
+                if pending_interval:
+                    feature_cfg["interval"] = pending_interval
+                else:
+                    await event.edit(
+                        f"❌ ابتدا زمان {_miowy_feature_label(feature)} را تنظیم کن.\n\n"
+                        f"مثال: <code>تنظیم زمان {_miowy_feature_label(feature)} 10</code>\n"
+                        f"می‌توانی این دستور را در پیوی هم تنظیم کنی؛ سپس همین روشن‌کردن را داخل گپ بزن.",
+                        parse_mode="html",
+                    )
+                    return True
+            feature_cfg["enabled"] = True
+            feature_cfg["last_run"] = 0
+        else:
+            feature_cfg["enabled"] = False
+        _miowy_save_configs(uid, configs)
+        state = "روشن 🟢" if enabled else "خاموش 🔴"
+        interval = int(feature_cfg.get("interval", 0) or 0)
+        await event.edit(
+            f"🐱 {_miowy_feature_label(feature)} خودکار <b>{state}</b> شد.\n"
+            f"⏱ زمان: هر <b>{interval} دقیقه</b>\n"
+            f"📍 این تنظیم فقط برای همین گپ است.",
+            parse_mode="html",
+        )
+        return True
+
+    return False
+
 SELF_FEATURE_GUIDES = {
+    "miowy": ("""🐱 <b>میویی خودکار</b>
+
+این بخش سه قابلیت خودکار برای بازی «میویی» دارد و تنظیمات هر گپ کاملاً جدا از گپ‌های دیگر ذخیره می‌شود:
+
+⭐️ <b>پیشی خودکار</b>
+سلف در زمان‌بندی مشخص‌شده، کلمه «پیشی» را داخل همان گپ می‌فرستد، پاسخ میویی را تشخیص می‌دهد و در صورت وجود دکمه مناسب «پیشی/میو پوینت» روی آن کلیک می‌کند تا برداشت خودکار انجام شود.
+
+<b>تنظیم زمان:</b>
+<code>تنظیم زمان پیشی 10</code>
+
+این دستور را می‌توانی در پیوی یا همان گپ بزنی. عدد برحسب دقیقه است.
+
+<b>روشن/خاموش:</b>
+<code>پیشی خودکار روشن</code>
+<code>پیشی خودکار خاموش</code>
+
+⚠️ روشن و خاموش‌کردن حتماً باید داخل همان گپی انجام شود که می‌خواهی پیشی خودکار در آن اجرا شود. قبل از روشن‌کردن، زمان باید تنظیم شده باشد.
+
+🐈‍⬛ <b>میو خودکار</b>
+پیام «میو» را در بازه زمانی تنظیم‌شده داخل همان گپ ارسال می‌کند.
+
+<code>تنظیم زمان میو 15</code>
+<code>میو خودکار روشن</code>
+<code>میو خودکار خاموش</code>
+
+🎣 <b>ماهیگیری خودکار</b>
+در زمان تعیین‌شده، «ماهیگیری» را داخل همان گپ اجرا می‌کند و پاسخ میویی را برای پیدا کردن دکمه ماهیگیری بررسی می‌کند و در صورت وجود، روی دکمه مربوط کلیک می‌کند.
+
+<code>تنظیم زمان ماهیگیری 20</code>
+<code>ماهیگیری خودکار روشن</code>
+<code>ماهیگیری خودکار خاموش</code>
+
+<b>ترتیب پیشنهادی برای هر گپ:</b>
+① در پیوی یا گپ: <code>تنظیم زمان پیشی 10</code>
+② داخل همان گپ: <code>پیشی خودکار روشن</code>
+
+برای دو قابلیت دیگر نیز همین ترتیب را انجام بده.
+
+💡 برای دیدن وضعیت تنظیمات گپ فعلی:
+<code>وضعیت میویی</code>
+
+⚠️ اجرای خودکار با اکانت SELF انجام می‌شود؛ بنابراین SELF باید در گپ حضور داشته باشد و برای ارسال پیام/کلیک دکمه محدودیت یا دسترسی نامناسب نداشته باشد. اگر خود بازی میویی متن یا دکمه‌هایش را تغییر دهد، تشخیص دکمه نیز ممکن است به تغییر نیاز داشته باشد."""),
+
     "clock": ("""🕐 <b>ساعت روی نام پروفایل</b>
 
 این قابلیت ساعت ایران را به انتهای نام پروفایل سلف اضافه می‌کند و به‌صورت خودکار آن را به‌روزرسانی می‌کند.
@@ -1724,6 +2066,7 @@ SELF می‌تواند از طریق دستور، یک گروه یا کانال 
 
 def self_feature_guide_buttons(uid):
     labels = [
+        ("🐱 میویی خودکار", "miowy"),
         ("🕐 ساعت روی نام", "clock"), ("🔤 فونت‌ها", "fonts"),
         ("🌐 ترجمه", "translate"), ("👁 سین / تایپینگ / بازی", "presence"),
         ("💬 پاسخ خودکار", "autoreply"), ("❤️ ریاکشن", "reaction"),
@@ -2897,6 +3240,10 @@ async def handle_self_panel_callback(event):
         return True
 
 
+    if action == "miowy_help":
+        body = SELF_FEATURE_GUIDES.get("miowy")
+        await safe_callback_edit(event, body, parse_mode="html", buttons=[[btn("🔙 بازگشت به راهنما", _self_cb(uid, "feature_help_menu"), "primary")]])
+        return True
     if action == "feature_help_menu":
         await safe_callback_edit(event, "📚 <b>راهنمای قابلیت‌ها</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=self_feature_guide_buttons(uid))
         return True
@@ -5321,6 +5668,8 @@ async def self_handle_outgoing(event, uid):
         return
 
     # Feature commands must run before the general outgoing-message logic.
+    if await _handle_miowy_command(event, uid, text):
+        return
     if await _self_currency_command(event, uid, text):
         return
     if await _self_logo_command(event, uid, text):
@@ -6277,6 +6626,11 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
                 await _banner_worker_tick(client, user_id)
             except Exception as exc:
                 print(f"[BANNER {user_id}] worker tick error: {type(exc).__name__}: {exc}")
+
+            try:
+                await _miowy_worker_tick(client, user_id)
+            except Exception as exc:
+                print(f"[MIOWY {user_id}] worker tick error: {type(exc).__name__}: {exc}")
 
             # Billing: 2.5 diamonds/hour, accumulated safely using whole-diamond balance.
             # We charge floor(total_elapsed * 2.5), so the average rate is exactly 2.5/hour.
